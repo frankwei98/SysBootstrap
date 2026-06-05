@@ -23,11 +23,11 @@ type SSHModule struct{}
 
 func NewSSHModule() *SSHModule { return &SSHModule{} }
 
-func (m *SSHModule) ID() string            { return "ssh" }
-func (m *SSHModule) Name() string          { return "SSH Hardening" }
-func (m *SSHModule) Description() string   { return "SSH port change and key management" }
-func (m *SSHModule) DefaultEnabled() bool  { return false }
-func (m *SSHModule) RequiresRoot() bool    { return true }
+func (m *SSHModule) ID() string             { return "ssh" }
+func (m *SSHModule) Name() string           { return "SSH Hardening" }
+func (m *SSHModule) Description() string    { return "SSH port change and key management" }
+func (m *SSHModule) DefaultEnabled() bool   { return false }
+func (m *SSHModule) RequiresRoot() bool     { return true }
 func (m *SSHModule) Dependencies() []string { return nil }
 
 func (m *SSHModule) Check(ctx context.Context, sys *system.Context) CheckResult {

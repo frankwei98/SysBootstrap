@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/huh"
 	"github.com/FrankWiZe/sys-bootstrap/internal/app"
 	"github.com/FrankWiZe/sys-bootstrap/internal/logging"
 	"github.com/FrankWiZe/sys-bootstrap/internal/modules"
 	"github.com/FrankWiZe/sys-bootstrap/internal/system"
 	"github.com/FrankWiZe/sys-bootstrap/internal/types"
 	"github.com/FrankWiZe/sys-bootstrap/internal/ui"
+	"github.com/charmbracelet/huh"
 )
 
 // DoctorResult holds the outcome of a doctor check.
@@ -180,7 +180,9 @@ func DoctorCmd() (*DoctorResult, error) {
 		{"apt-get", sys.HasApt, boolStr(sys.HasApt, "yes", "not found"), true},
 		{"bash", sys.HasBash, boolStr(sys.HasBash, "yes", "not found"), false},
 		{"curl", sys.HasCurl, boolStr(sys.HasCurl, "yes", "not found"), false},
+		{"network", sys.HasNetwork, boolStr(sys.HasNetwork, "DNS OK", "DNS resolution failed"), true},
 		{"sshd", sys.HasSSHD, boolStr(sys.HasSSHD, "yes", "not found"), false},
+		{"sshd service", sys.HasSSHDService, boolStr(sys.HasSSHDService, "yes", "systemd unit not found"), false},
 	}
 
 	result := &DoctorResult{}

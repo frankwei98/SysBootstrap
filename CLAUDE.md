@@ -4,53 +4,124 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OneLineSetup is a modular bash script for server provisioning on Debian 11+ and Ubuntu 22+. It uses [Charmbracelet Gum](https://github.com/charmbracelet/gum) for interactive terminal UI.
+sys-bootstrap is a personal Linux VM provisioning tool, written in Go. It compiles to a single binary and uses [charmbracelet/huh](https://github.com/charmbracelet/huh) for interactive terminal UI.
+
+Supports Debian 11+ and Ubuntu 22+ (and any apt-based distro).
 
 ## Usage
 
 ```bash
-# Interactive mode (gum menu)
-sudo bash setup.sh
+# Default: doctor check → interactive provisioning
+sys-bootstrap
 
-# Specific modules
-sudo bash setup.sh --modules ssh,node,ai
+# Interactive provisioning
+sys-bootstrap run
 
-# All modules
-sudo bash setup.sh --all
+# Show execution plan (text or JSON)
+sys-bootstrap plan
+sys-bootstrap plan --json
+
+# Check system compatibility
+sys-bootstrap doctor
+
+# Run a single module
+sys-bootstrap module <id>
+
+# Version info
+sys-bootstrap version
 ```
 
-Must run as root. Not designed for `curl | bash` (local execution only).
+## Build & Test
+
+```bash
+# Build
+go build -o sys-bootstrap ./cmd/sys-bootstrap/
+
+# Test
+go test ./...
+
+# Build with version injection
+go build -ldflags="-s -w \
+  -X github.com/FrankWiZe/sys-bootstrap/internal/app.Version=dev \
+  -X github.com/FrankWiZe/sys-bootstrap/internal/app.Commit=$(git rev-parse --short HEAD) \
+  -X github.com/FrankWiZe/sys-bootstrap/internal/app.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -o sys-bootstrap ./cmd/sys-bootstrap/
+```
 
 ## Architecture
 
-**Execution flow:** `setup.sh` → load `lib/` → load `modules/` → run modules in order
+**Execution flow:** `cmd/sys-bootstrap/main.go` → `internal/cli/` → `internal/app/` → `internal/modules/`
 
-- **lib/common.sh** — Logging (`log_info`, `log_success`, `log_warn`, `log_error`, `die`), `require_root`, `ensure_installed` (idempotent apt install)
-- **lib/detect.sh** — OS detection and version validation. Populates `OS_ID`, `OS_VERSION`, `OS_VERSION_MAJOR`, `OS_CODENAME`
-- **modules/*.sh** — Each module exports a `module_xxx()` function. Auto-discovered by glob in `setup.sh`
+```
+cmd/sys-bootstrap/main.go   Entry point, subcommand routing
+internal/
+  cli/commands.go            CLI command implementations (RunCmd, PlanCmd, DoctorCmd, ModuleCmd, VersionCmd)
+  app/
+    app.go                   Registry setup, registers all modules
+    plan.go                  Plan generation and formatting (text + JSON)
+    runner.go                Module execution engine (dependency order, root check, logging)
+    version.go               Build-time version variables
+  modules/
+    module.go                Module interface definition
+    registry.go              Module registry with dependency resolution (topological sort)
+    base.go                  apt update/upgrade, base packages, zellij
+    ssh.go                   SSH hardening (port, keys, root/password login)
+    node.go                  nvm, Node.js LTS, pnpm, bun
+    ai.go                    Claude Code, Codex (pnpm global install)
+    user.go                  System user creation with sudo/SSH key options
+    ssh_keygen.go            SSH keypair generation (ed25519/rsa)
+  system/
+    context.go               OS detection, tool detection, root check
+    command.go               Command execution helpers (Run, RunWithContext, RunWithInput, DpkgInstalled, CommandExists)
+  types/types.go             Config struct, Step struct (plan output)
+  ui/forms.go                Huh interactive forms
+  logging/logger.go          Colorized terminal + file logging (~/.local/state/sys-bootstrap/logs/)
+```
+
+## Module Interface
+
+All modules implement `modules.Module`:
+
+```go
+type Module interface {
+    ID() string
+    Name() string
+    Description() string
+    DefaultEnabled() bool
+    RequiresRoot() bool
+    Dependencies() []string
+    Check(ctx context.Context, sys *system.Context) CheckResult
+    Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error)
+    Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error
+}
+```
 
 ## Module Conventions
 
-- **Function name** must match filename: `ssh.sh` → `module_ssh()`
-- **Idempotency** is required — check if already installed/configured before acting (use `command -v`, `dpkg -s`, file existence checks)
-- **Always use `set -euo pipefail`** at the top of every file
-- **Error handling** — use `|| die "message"` after curl/install commands
-- **User interaction** — use `gum input`, `gum choose`, `gum confirm`, `gum write` (gum is always available after `module_base` + `module_gum` run)
-- **New modules** need to be registered in the `AVAILABLE_MODULES` array in `setup.sh`
+- **Idempotency** is required — `Check()` should return `Satisfied: true` when already configured
+- **Dependencies** — declare in `Dependencies()`, registry resolves topological order
+- **Root check** — set `RequiresRoot() bool`; runner enforces before execution
+- **Error handling** — return descriptive errors with context; runner logs stderr on failure
+- **User interaction** — use `huh` forms in `ui/forms.go`, not inline in modules
+- **New modules** — register in `app.NewRegistry()` in `internal/app/app.go`
 
 ## Module Dependency Order
 
 ```
-base → gum → ssh → node → ai
-                    ↘ user
-                    ↘ ssh_keygen
+base (always first, mandatory)
+  ↓
+node → ai (ai depends on node)
+ssh, user, ssh_keygen (independent)
 ```
-
-`base` and `gum` always run first. `node` must run before `ai`. Other modules are independent.
 
 ## Key Safety Patterns
 
-- SSH config changes: backup → modify → `sshd -t` validate → restore on failure → restart
-- Port validation: numeric check, range 1-65535, reject port 22
-- Public key validation: regex check for `ssh-rsa`, `ssh-ed25519`, `ecdsa-sha2`, `sk-` prefixes
+- SSH config changes: backup → modify → `sshd -t` validate → rollback on failure → restart
+- Port validation: numeric check, range 1-65535
+- Public key validation: regex for `ssh-rsa`, `ssh-ed25519`, `ecdsa-sha2`, `sk-` prefixes
 - Always warn user to test new SSH port before closing old connection
+- Dependency prompt: `module <id>` checks unsatisfied deps and asks user before auto-running them
+
+## Release
+
+Releases are tag-based (`v*`), built via GitHub Actions with `CGO_ENABLED=0` for linux/amd64 and linux/arm64. Install via `scripts/install.sh`.

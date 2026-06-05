@@ -19,11 +19,11 @@ type UserModule struct{}
 
 func NewUserModule() *UserModule { return &UserModule{} }
 
-func (m *UserModule) ID() string            { return "user" }
-func (m *UserModule) Name() string          { return "Create User" }
-func (m *UserModule) Description() string   { return "Create a new system user" }
-func (m *UserModule) DefaultEnabled() bool  { return false }
-func (m *UserModule) RequiresRoot() bool    { return true }
+func (m *UserModule) ID() string             { return "user" }
+func (m *UserModule) Name() string           { return "Create User" }
+func (m *UserModule) Description() string    { return "Create a new system user" }
+func (m *UserModule) DefaultEnabled() bool   { return false }
+func (m *UserModule) RequiresRoot() bool     { return true }
 func (m *UserModule) Dependencies() []string { return nil }
 
 func (m *UserModule) Check(ctx context.Context, sys *system.Context) CheckResult {

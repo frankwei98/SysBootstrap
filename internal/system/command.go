@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -82,6 +84,15 @@ func RunQuiet(name string, args ...string) bool {
 	return cmd.Run() == nil
 }
 
+// RunQuietOutput executes a command and returns trimmed stdout.
+func RunQuietOutput(name string, args ...string) string {
+	res, err := Run(name, args...)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(res.Stdout)
+}
+
 // DpkgInstalled checks if a Debian package is installed.
 func DpkgInstalled(pkg string) bool {
 	return RunQuiet("dpkg", "-s", pkg)
@@ -90,4 +101,35 @@ func DpkgInstalled(pkg string) bool {
 // CommandExists checks if a command is available in PATH.
 func CommandExists(name string) bool {
 	return commandExists(name)
+}
+
+// NvmDir returns the NVM directory, defaulting to ~/.nvm.
+func NvmDir() string {
+	if d := os.Getenv("NVM_DIR"); d != "" {
+		return d
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".nvm")
+}
+
+// NvmShellScript wraps a script body with nvm.sh sourcing so that
+// node/pnpm/bun installed via nvm are available on PATH.
+func NvmShellScript(script string) string {
+	return fmt.Sprintf(`export NVM_DIR="%s"
+export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
+export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+export PATH="$PNPM_HOME:$PNPM_HOME/bin:$BUN_INSTALL/bin:$PATH"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+%s`, NvmDir(), script)
+}
+
+// RunInNvmShell executes a script in a bash shell with nvm sourced.
+func RunInNvmShell(script string) (*Result, error) {
+	return RunWithInput("", "bash", "-c", NvmShellScript(script))
+}
+
+// NvmCommandExists checks if a binary is available inside an nvm-aware shell.
+func NvmCommandExists(name string) bool {
+	res, err := RunInNvmShell(fmt.Sprintf("command -v %s", name))
+	return err == nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != ""
 }

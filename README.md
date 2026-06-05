@@ -26,8 +26,14 @@ sys-bootstrap version      # Show version info
 
 ## Supported Systems
 
+**Primary (tested):**
+
 - Debian 11+
 - Ubuntu 22+
+
+**Compatible (untested, apt-based):**
+
+- Linux Mint, Pop!_OS, and other Debian/Ubuntu derivatives with `apt-get`
 
 ## Modules
 

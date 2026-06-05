@@ -57,19 +57,17 @@ check_deps() {
 # Download the latest release
 download() {
     local platform="$1"
-    local url
+    local version url
 
-    # Get download URL from GitHub API
-    url=$(curl -fsSL "$GITHUB_API" | grep -o "\"browser_download_url\": *\"[^\"]*${platform}\"" | head -1 | sed 's/.*": *"//' | sed 's/"$//')
+    # Get latest tag from GitHub API, then construct direct URL
+    version=$(curl -fsSL "$GITHUB_API" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//' | sed 's/".*//')
 
-    if [[ -z "$url" ]]; then
-        # Fallback: try direct URL pattern
-        local version
-        version=$(curl -fsSL "$GITHUB_API" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//' | sed 's/".*//')
-        url="https://github.com/${REPO}/releases/download/${version}/${BINARY}_${platform}"
+    if [[ -z "$version" ]]; then
+        die "Could not determine latest release version. Check https://github.com/${REPO}/releases"
     fi
 
-    info "Downloading from: $url"
+    url="https://github.com/${REPO}/releases/download/${version}/${BINARY}_${platform}"
+    info "Downloading ${version} from: $url"
     curl -fsSL "$url" -o "/tmp/${BINARY}"
     chmod +x "/tmp/${BINARY}"
 }

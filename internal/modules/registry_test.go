@@ -118,6 +118,67 @@ func TestRegistryDuplicateRegister(t *testing.T) {
 	}
 }
 
+func TestRegistryResolveOrderBaseAITransitive(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&mockModule{id: "base"})
+	r.Register(&mockModule{id: "ssh"})
+	r.Register(&mockModule{id: "node"})
+	r.Register(&mockModule{id: "ai", deps: []string{"node"}})
+	r.Register(&mockModule{id: "user"})
+	r.Register(&mockModule{id: "ssh_keygen"})
+
+	// Selecting base + ai should resolve to base → node → ai
+	ordered, err := r.ResolveOrder([]string{"base", "ai"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ordered) != 3 {
+		t.Fatalf("expected 3 modules, got %d: %v", len(ordered), ordered)
+	}
+	if ordered[0] != "base" {
+		t.Errorf("expected base first, got %q", ordered[0])
+	}
+	if ordered[1] != "node" {
+		t.Errorf("expected node second, got %q", ordered[1])
+	}
+	if ordered[2] != "ai" {
+		t.Errorf("expected ai third, got %q", ordered[2])
+	}
+}
+
+func TestRegistryResolveOrderFullSelection(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&mockModule{id: "base"})
+	r.Register(&mockModule{id: "ssh"})
+	r.Register(&mockModule{id: "node"})
+	r.Register(&mockModule{id: "ai", deps: []string{"node"}})
+	r.Register(&mockModule{id: "user"})
+	r.Register(&mockModule{id: "ssh_keygen"})
+
+	// Select all — should preserve registration order
+	allIDs := []string{"base", "ssh", "node", "ai", "user", "ssh_keygen"}
+	ordered, err := r.ResolveOrder(allIDs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ordered) != 6 {
+		t.Fatalf("expected 6 modules, got %d: %v", len(ordered), ordered)
+	}
+	// node must come before ai
+	nodeIdx, aiIdx := -1, -1
+	for i, id := range ordered {
+		if id == "node" {
+			nodeIdx = i
+		}
+		if id == "ai" {
+			aiIdx = i
+		}
+	}
+	if nodeIdx >= aiIdx {
+		t.Errorf("node (idx %d) must come before ai (idx %d)", nodeIdx, aiIdx)
+	}
+}
+
 func moduleIDs(mods []Module) []string {
 	ids := make([]string, len(mods))
 	for i, m := range mods {

@@ -15,11 +15,11 @@ type SSHKeygenModule struct{}
 
 func NewSSHKeygenModule() *SSHKeygenModule { return &SSHKeygenModule{} }
 
-func (m *SSHKeygenModule) ID() string            { return "ssh_keygen" }
-func (m *SSHKeygenModule) Name() string          { return "SSH Key Generation" }
-func (m *SSHKeygenModule) Description() string   { return "Generate SSH keypair" }
-func (m *SSHKeygenModule) DefaultEnabled() bool  { return false }
-func (m *SSHKeygenModule) RequiresRoot() bool    { return false }
+func (m *SSHKeygenModule) ID() string             { return "ssh_keygen" }
+func (m *SSHKeygenModule) Name() string           { return "SSH Key Generation" }
+func (m *SSHKeygenModule) Description() string    { return "Generate SSH keypair" }
+func (m *SSHKeygenModule) DefaultEnabled() bool   { return false }
+func (m *SSHKeygenModule) RequiresRoot() bool     { return false }
 func (m *SSHKeygenModule) Dependencies() []string { return nil }
 
 func (m *SSHKeygenModule) Check(ctx context.Context, sys *system.Context) CheckResult {

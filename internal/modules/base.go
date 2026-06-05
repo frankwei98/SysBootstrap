@@ -3,6 +3,7 @@ package modules
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/FrankWiZe/sys-bootstrap/internal/logging"
 	"github.com/FrankWiZe/sys-bootstrap/internal/system"
@@ -18,11 +19,11 @@ type BaseModule struct{}
 
 func NewBaseModule() *BaseModule { return &BaseModule{} }
 
-func (m *BaseModule) ID() string            { return "base" }
-func (m *BaseModule) Name() string          { return "Base Environment" }
-func (m *BaseModule) Description() string   { return "System update and essential packages" }
-func (m *BaseModule) DefaultEnabled() bool  { return true }
-func (m *BaseModule) RequiresRoot() bool    { return true }
+func (m *BaseModule) ID() string             { return "base" }
+func (m *BaseModule) Name() string           { return "Base Environment" }
+func (m *BaseModule) Description() string    { return "System update and essential packages" }
+func (m *BaseModule) DefaultEnabled() bool   { return true }
+func (m *BaseModule) RequiresRoot() bool     { return true }
 func (m *BaseModule) Dependencies() []string { return nil }
 
 func (m *BaseModule) Check(ctx context.Context, sys *system.Context) CheckResult {
@@ -48,7 +49,7 @@ func (m *BaseModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 		steps = append(steps, types.Step{
 			Module: "base",
 			Title:  "Install zellij",
-			Detail: "Terminal multiplexer via official installer",
+			Detail: "Terminal multiplexer via GitHub release binary",
 		})
 	}
 	return steps, nil
@@ -84,10 +85,39 @@ func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 		log.Info("zellij already installed, skipping")
 	} else {
 		log.Info("Installing zellij...")
-		if res, err := system.RunWithInput("", "bash", "-c", "curl -fsSL https://zellij.dev/launch | bash"); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("zellij installation failed")
+		if err := installZellij(ctx); err != nil {
+			return err
 		}
 		log.Success("zellij installed")
+	}
+
+	return nil
+}
+
+func installZellij(ctx context.Context) error {
+	arch := "x86_64"
+	if strings.Contains(system.RunQuietOutput("uname", "-m"), "aarch64") || strings.Contains(system.RunQuietOutput("uname", "-m"), "arm64") {
+		arch = "aarch64"
+	}
+
+	url := fmt.Sprintf("https://github.com/zellij-org/zellij/releases/latest/download/zellij-%s-unknown-linux-musl.tar.gz", arch)
+	script := fmt.Sprintf(`
+set -euo pipefail
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+curl -fsSL %q -o "$tmpdir/zellij.tar.gz"
+tar -xzf "$tmpdir/zellij.tar.gz" -C "$tmpdir"
+install -m 0755 "$tmpdir/zellij" /usr/local/bin/zellij
+`, url)
+
+	if res, err := system.RunWithContext(ctx, "bash", "-lc", script); err != nil {
+		return fmt.Errorf("zellij installation failed: %w", err)
+	} else if res.ExitCode != 0 {
+		return fmt.Errorf("zellij installation failed (exit %d): %s", res.ExitCode, res.Stderr)
+	}
+
+	if !system.CommandExists("zellij") {
+		return fmt.Errorf("zellij installation completed but zellij is still not available on PATH")
 	}
 
 	return nil
