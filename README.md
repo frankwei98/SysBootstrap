@@ -6,10 +6,10 @@ Personal Linux VM provisioning tool — a single Go binary that sets up your ser
 
 ```bash
 # Install and run interactively
-curl -fsSL https://raw.githubusercontent.com/FrankWiZe/OneLineSetup/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/scripts/install.sh | bash
 
 # Or install to /usr/local/bin
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/FrankWiZe/OneLineSetup/main/scripts/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/scripts/install.sh)"
 ```
 
 ## Commands

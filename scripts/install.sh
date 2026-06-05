@@ -2,13 +2,13 @@
 # install.sh — sys-bootstrap installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/FrankWiZe/OneLineSetup/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/scripts/install.sh | bash
 #
 # Supports: Debian 11+ / Ubuntu 22+
 
 set -euo pipefail
 
-REPO="FrankWiZe/OneLineSetup"
+REPO="frankwei98/SysBootstrap"
 BINARY="sys-bootstrap"
 INSTALL_DIR="/usr/local/bin"
 GITHUB_API="https://api.github.com/repos/${REPO}/releases/latest"
