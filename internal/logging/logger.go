@@ -35,11 +35,11 @@ const colorReset = "\033[0m"
 
 // Logger writes to both terminal and a log file.
 type Logger struct {
-	stdout   io.Writer
-	stderr   io.Writer
-	file     *os.File
-	quiet    bool
-	module   string
+	stdout io.Writer
+	stderr io.Writer
+	file   *os.File
+	quiet  bool
+	module string
 }
 
 // New creates a logger that writes to stdout/stderr and a log file.
@@ -97,10 +97,18 @@ func (l *Logger) Error(msg string) {
 	l.write(LevelError, msg)
 }
 
-func (l *Logger) Infof(format string, args ...interface{})    { l.write(LevelInfo, fmt.Sprintf(format, args...)) }
-func (l *Logger) Successf(format string, args ...interface{}) { l.write(LevelSuccess, fmt.Sprintf(format, args...)) }
-func (l *Logger) Warnf(format string, args ...interface{})    { l.write(LevelWarn, fmt.Sprintf(format, args...)) }
-func (l *Logger) Errorf(format string, args ...interface{})   { l.write(LevelError, fmt.Sprintf(format, args...)) }
+func (l *Logger) Infof(format string, args ...interface{}) {
+	l.write(LevelInfo, fmt.Sprintf(format, args...))
+}
+func (l *Logger) Successf(format string, args ...interface{}) {
+	l.write(LevelSuccess, fmt.Sprintf(format, args...))
+}
+func (l *Logger) Warnf(format string, args ...interface{}) {
+	l.write(LevelWarn, fmt.Sprintf(format, args...))
+}
+func (l *Logger) Errorf(format string, args ...interface{}) {
+	l.write(LevelError, fmt.Sprintf(format, args...))
+}
 
 // ErrorWithOutput logs an error with command output details.
 func (l *Logger) ErrorWithOutput(msg string, exitCode int, stdout, stderr string) {

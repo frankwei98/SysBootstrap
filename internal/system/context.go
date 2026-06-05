@@ -3,6 +3,7 @@ package system
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -12,20 +13,22 @@ import (
 
 // Context holds runtime information about the current system.
 type Context struct {
-	OSID          string
-	OSVersion     string
+	OSID           string
+	OSVersion      string
 	OSVersionMajor int
-	OSCodename    string
-	Arch          string
-	IsRoot        bool
-	CurrentUser   *user.User
-	HasSystemd    bool
-	HasApt        bool
-	HasBash       bool
-	HasCurl       bool
-	HasSSHD       bool
-	HasUFW        bool
-	UFWActive     bool
+	OSCodename     string
+	Arch           string
+	IsRoot         bool
+	CurrentUser    *user.User
+	HasSystemd     bool
+	HasApt         bool
+	HasBash        bool
+	HasCurl        bool
+	HasSSHD        bool
+	HasUFW         bool
+	UFWActive      bool
+	HasNetwork     bool
+	HasSSHDService bool
 }
 
 // NewContext creates a system context by detecting the current environment.
@@ -57,6 +60,14 @@ func NewContext() (*Context, error) {
 
 	if ctx.HasUFW {
 		ctx.UFWActive = isUFWActive()
+	}
+
+	// Network check — DNS resolution
+	ctx.HasNetwork = checkNetwork()
+
+	// SSH service availability (systemd unit, not just command)
+	if ctx.HasSystemd {
+		ctx.HasSSHDService = serviceExists("sshd") || serviceExists("ssh")
 	}
 
 	return ctx, nil
@@ -127,4 +138,19 @@ func isUFWActive() bool {
 		return false
 	}
 	return strings.Contains(string(out), "active")
+}
+
+// checkNetwork tests basic DNS resolution as a proxy for network connectivity.
+func checkNetwork() bool {
+	addrs, err := net.LookupHost("deb.debian.org")
+	return err == nil && len(addrs) > 0
+}
+
+// serviceExists checks if a systemd unit file exists for the given service.
+func serviceExists(name string) bool {
+	out, err := exec.Command("systemctl", "list-unit-files", name+".service").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), name+".service")
 }

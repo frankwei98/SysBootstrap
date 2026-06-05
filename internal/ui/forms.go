@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/huh"
 	"github.com/FrankWiZe/sys-bootstrap/internal/modules"
 	"github.com/FrankWiZe/sys-bootstrap/internal/types"
+	"github.com/charmbracelet/huh"
 )
 
 // ModuleSelect shows a multi-select for optional modules.

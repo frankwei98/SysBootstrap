@@ -17,20 +17,15 @@ type NodeModule struct{}
 
 func NewNodeModule() *NodeModule { return &NodeModule{} }
 
-func (m *NodeModule) ID() string            { return "node" }
-func (m *NodeModule) Name() string          { return "Node.js Environment" }
-func (m *NodeModule) Description() string   { return "nvm, Node.js LTS, pnpm, and bun" }
-func (m *NodeModule) DefaultEnabled() bool  { return false }
-func (m *NodeModule) RequiresRoot() bool    { return false }
+func (m *NodeModule) ID() string             { return "node" }
+func (m *NodeModule) Name() string           { return "Node.js Environment" }
+func (m *NodeModule) Description() string    { return "nvm, Node.js LTS, pnpm, and bun" }
+func (m *NodeModule) DefaultEnabled() bool   { return false }
+func (m *NodeModule) RequiresRoot() bool     { return false }
 func (m *NodeModule) Dependencies() []string { return nil }
 
 func (m *NodeModule) Check(ctx context.Context, sys *system.Context) CheckResult {
-	nvmDir := os.Getenv("NVM_DIR")
-	if nvmDir == "" {
-		home, _ := os.UserHomeDir()
-		nvmDir = filepath.Join(home, ".nvm")
-	}
-	nvmScript := filepath.Join(nvmDir, "nvm.sh")
+	nvmScript := filepath.Join(system.NvmDir(), "nvm.sh")
 
 	msg := ""
 	allInstalled := true
@@ -40,19 +35,19 @@ func (m *NodeModule) Check(ctx context.Context, sys *system.Context) CheckResult
 		allInstalled = false
 		msg += "nvm missing. "
 	}
-	if system.CommandExists("node") {
+	if system.NvmCommandExists("node") {
 		msg += "Node.js installed. "
 	} else {
 		allInstalled = false
 		msg += "Node.js missing. "
 	}
-	if system.CommandExists("pnpm") {
+	if system.NvmCommandExists("pnpm") {
 		msg += "pnpm installed. "
 	} else {
 		allInstalled = false
 		msg += "pnpm missing. "
 	}
-	if system.CommandExists("bun") {
+	if system.NvmCommandExists("bun") {
 		msg += "bun installed. "
 	} else {
 		allInstalled = false
@@ -75,12 +70,7 @@ func (m *NodeModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 }
 
 func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
-	home, _ := os.UserHomeDir()
-	nvmDir := os.Getenv("NVM_DIR")
-	if nvmDir == "" {
-		nvmDir = filepath.Join(home, ".nvm")
-	}
-	nvmScript := filepath.Join(nvmDir, "nvm.sh")
+	nvmScript := filepath.Join(system.NvmDir(), "nvm.sh")
 
 	// Install nvm
 	if _, err := os.Stat(nvmScript); err == nil {
@@ -99,38 +89,44 @@ func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 		return fmt.Errorf("nvm.sh not found at %s after installation", nvmScript)
 	}
 
-	// Install Node.js LTS
-	if system.CommandExists("node") {
+	// Install Node.js LTS (must go through nvm-aware shell)
+	if system.NvmCommandExists("node") {
 		log.Info("Node.js already installed, skipping")
 	} else {
 		log.Info("Installing Node.js LTS...")
-		cmd := fmt.Sprintf("source %s && nvm install --lts && nvm use --lts && nvm alias default lts/*", nvmScript)
-		if res, err := system.RunWithInput("", "bash", "-c", cmd); err != nil || res.ExitCode != 0 {
+		script := "nvm install --lts && nvm use --lts && nvm alias default lts/*"
+		if res, err := system.RunInNvmShell(script); err != nil || res.ExitCode != 0 {
 			return fmt.Errorf("Node.js installation failed")
 		}
 		log.Success("Node.js LTS installed")
 	}
 
 	// Install pnpm
-	if system.CommandExists("pnpm") {
+	if system.NvmCommandExists("pnpm") {
 		log.Info("pnpm already installed, skipping")
 	} else {
 		log.Info("Installing pnpm...")
-		cmd := "curl -fsSL https://get.pnpm.io/install.sh | sh -"
-		if res, err := system.RunWithInput("", "bash", "-c", cmd); err != nil || res.ExitCode != 0 {
+		script := `corepack enable
+corepack prepare pnpm@latest --activate`
+		if res, err := system.RunInNvmShell(script); err != nil || res.ExitCode != 0 {
 			return fmt.Errorf("pnpm installation failed")
+		}
+		if !system.NvmCommandExists("pnpm") {
+			return fmt.Errorf("pnpm installation completed but pnpm is still not available on PATH")
 		}
 		log.Success("pnpm installed")
 	}
 
 	// Install bun
-	if system.CommandExists("bun") {
+	if system.NvmCommandExists("bun") {
 		log.Info("bun already installed, skipping")
 	} else {
 		log.Info("Installing bun...")
-		cmd := "curl -fsSL https://bun.sh/install | bash"
-		if res, err := system.RunWithInput("", "bash", "-c", cmd); err != nil || res.ExitCode != 0 {
+		if res, err := system.RunWithInput("", "bash", "-c", "curl -fsSL https://bun.sh/install | bash"); err != nil || res.ExitCode != 0 {
 			return fmt.Errorf("bun installation failed")
+		}
+		if !system.NvmCommandExists("bun") {
+			return fmt.Errorf("bun installation completed but bun is still not available on PATH")
 		}
 		log.Success("bun installed")
 	}

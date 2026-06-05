@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/charmbracelet/huh"
 	"github.com/FrankWiZe/sys-bootstrap/internal/app"
 	"github.com/FrankWiZe/sys-bootstrap/internal/cli"
+	"github.com/charmbracelet/huh"
 )
 
 func main() {
