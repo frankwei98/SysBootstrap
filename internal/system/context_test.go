@@ -1,6 +1,8 @@
 package system
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 )
@@ -37,6 +39,24 @@ func TestCommandExists(t *testing.T) {
 
 	if CommandExists("nonexistent_command_xyz_12345") {
 		t.Error("expected nonexistent command to not exist")
+	}
+}
+
+func TestCommandExistsFallsBackToSbinPaths(t *testing.T) {
+	dir := t.TempDir()
+	cmdPath := filepath.Join(dir, "sshd")
+	if err := os.WriteFile(cmdPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	orig := []string{"/usr/local/sbin", "/usr/sbin", "/sbin"}
+	t.Cleanup(func() {
+		sbinSearchPaths = orig
+	})
+	sbinSearchPaths = []string{dir}
+
+	if !commandExists("sshd") {
+		t.Fatal("expected commandExists to find sshd via sbin fallback path")
 	}
 }
 

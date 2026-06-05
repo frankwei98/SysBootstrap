@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -30,6 +31,8 @@ type Context struct {
 	HasNetwork     bool
 	HasSSHDService bool
 }
+
+var sbinSearchPaths = []string{"/usr/local/sbin", "/usr/sbin", "/sbin"}
 
 // NewContext creates a system context by detecting the current environment.
 func NewContext() (*Context, error) {
@@ -129,7 +132,19 @@ func (ctx *Context) IsSupportedOS() bool {
 
 func commandExists(name string) bool {
 	_, err := exec.LookPath(name)
-	return err == nil
+	if err == nil {
+		return true
+	}
+
+	for _, dir := range sbinSearchPaths {
+		path := filepath.Join(dir, name)
+		info, statErr := os.Stat(path)
+		if statErr == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return true
+		}
+	}
+
+	return false
 }
 
 func isUFWActive() bool {
