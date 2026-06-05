@@ -15,6 +15,8 @@ GITHUB_API="https://api.github.com/repos/${REPO}/releases/latest"
 JSDELIVR_API="https://data.jsdelivr.com/v1/package/gh/${REPO}"
 REGION="overseas"
 VERSION=""
+LANG_CHOICE="en"
+APT_MIRROR=""
 
 # Colors
 RED='\033[0;31m'
@@ -27,15 +29,76 @@ warn()    { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 die()     { error "$@"; exit 1; }
 
+# --- Language Selection ---
+choose_language() {
+    local choice
+
+    echo ""
+    echo "Language / 语言:"
+    echo "  1) English (default)"
+    echo "  2) 中文"
+    echo ""
+    read -rp "Selection / 选择 [1/2]: " choice
+
+    case "${choice:-1}" in
+        1)
+            LANG_CHOICE="en"
+            ;;
+        2)
+            LANG_CHOICE="zh-CN"
+            ;;
+        *)
+            die "Invalid selection"
+            ;;
+    esac
+}
+
+# --- APT Mirror ---
+ask_apt_mirror() {
+    local choice
+
+    echo ""
+    if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+        echo "是否切换 APT 镜像到 CERNET（mirrors.cernet.edu.cn）？"
+        echo "  仅影响 Debian/Ubuntu 官方 APT 源，不影响 nvm/bun/npm 等其他下载源。"
+        echo "  安全更新源保持不变。"
+    else
+        echo "Switch APT mirror to CERNET (mirrors.cernet.edu.cn)?"
+        echo "  Only affects Debian/Ubuntu official APT sources."
+        echo "  Security sources remain unchanged."
+    fi
+    echo ""
+    read -rp "[y/N]: " choice
+
+    case "${choice:-N}" in
+        [Yy]*)
+            APT_MIRROR="cernet"
+            info "APT 镜像将切换到 CERNET / APT mirror will be switched to CERNET"
+            ;;
+        *)
+            info "保持默认 APT 源 / Using default APT sources"
+            ;;
+    esac
+}
+
+# --- Region Selection ---
 choose_region() {
     local choice
 
     echo ""
-    echo "Download region:"
-    echo "  1) Overseas (default)"
-    echo "  2) China mainland (prefer mirror/proxy CDN)"
-    echo ""
-    read -rp "Selection [1/2]: " choice
+    if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+        echo "下载区域："
+        echo "  1) 海外（默认）"
+        echo "  2) 中国大陆（优先使用镜像/代理 CDN）"
+        echo ""
+        read -rp "选择 [1/2]: " choice
+    else
+        echo "Download region:"
+        echo "  1) Overseas (default)"
+        echo "  2) China mainland (prefer mirror/proxy CDN)"
+        echo ""
+        read -rp "Selection [1/2]: " choice
+    fi
 
     case "${choice:-1}" in
         1)
@@ -220,30 +283,66 @@ install_or_run() {
     local choice
 
     echo ""
-    echo "sys-bootstrap installer"
-    echo "======================="
-    echo ""
-    echo "Choose installation method:"
-    echo "  1) Run temporarily (download and execute)"
-    echo "  2) Install to ${INSTALL_DIR} (requires sudo)"
-    echo ""
-    read -rp "Selection [1/2]: " choice
+    if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+        echo "sys-bootstrap 安装程序"
+        echo "======================="
+        echo ""
+        echo "选择安装方式："
+        echo "  1) 临时运行（下载后直接执行）"
+        echo "  2) 安装到 ${INSTALL_DIR}（需要 sudo）"
+        echo ""
+        read -rp "选择 [1/2]: " choice
+    else
+        echo "sys-bootstrap installer"
+        echo "======================="
+        echo ""
+        echo "Choose installation method:"
+        echo "  1) Run temporarily (download and execute)"
+        echo "  2) Install to ${INSTALL_DIR} (requires sudo)"
+        echo ""
+        read -rp "Selection [1/2]: " choice
+    fi
+
+    # Build environment variables for the binary
+    local env_args=""
+    if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+        env_args="SYS_BOOTSTRAP_LANG=zh-CN"
+    fi
+    if [[ -n "$APT_MIRROR" ]]; then
+        env_args="${env_args:+${env_args} }SYS_BOOTSTRAP_APT_MIRROR=${APT_MIRROR}"
+    fi
 
     case "$choice" in
         1)
-            info "Running sys-bootstrap..."
+            if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+                info "正在运行 sys-bootstrap..."
+            else
+                info "Running sys-bootstrap..."
+            fi
+            # shellcheck disable=SC2086
+            [[ -n "$env_args" ]] && export $env_args
             exec "/tmp/${BINARY}"
             ;;
         2)
             if [[ $EUID -ne 0 ]]; then
-                warn "Installing to ${INSTALL_DIR} requires root."
-                info "Re-running with sudo..."
+                if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+                    warn "安装到 ${INSTALL_DIR} 需要 root 权限。"
+                    info "正在使用 sudo 重新执行..."
+                else
+                    warn "Installing to ${INSTALL_DIR} requires root."
+                    info "Re-running with sudo..."
+                fi
                 sudo cp "/tmp/${BINARY}" "${INSTALL_DIR}/${BINARY}"
             else
                 cp "/tmp/${BINARY}" "${INSTALL_DIR}/${BINARY}"
             fi
-            info "Installed to ${INSTALL_DIR}/${BINARY}"
-            info "Run: sys-bootstrap --help"
+            if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+                info "已安装到 ${INSTALL_DIR}/${BINARY}"
+                info "运行：sys-bootstrap --help"
+            else
+                info "Installed to ${INSTALL_DIR}/${BINARY}"
+                info "Run: sys-bootstrap --help"
+            fi
             ;;
         *)
             die "Invalid selection"
@@ -252,12 +351,18 @@ install_or_run() {
 }
 
 main() {
+    choose_language
     check_deps
     choose_region
+    ask_apt_mirror
 
     local platform
     platform=$(detect_platform)
-    info "Detected platform: $platform"
+    if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+        info "检测到平台：$platform"
+    else
+        info "Detected platform: $platform"
+    fi
 
     download "$platform"
     install_or_run

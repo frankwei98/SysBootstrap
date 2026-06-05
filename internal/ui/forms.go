@@ -6,10 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/huh"
+	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/modules"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
-	"github.com/charmbracelet/huh"
 )
 
 // ModuleSelect shows a multi-select for optional modules.
@@ -26,8 +27,8 @@ func ModuleSelect(registry *modules.Registry) ([]string, error) {
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
-				Title("Select modules to run").
-				Description("Use space to select, enter to confirm").
+				Title(i18n.T("form_select_modules")).
+				Description(i18n.T("form_select_modules_desc")).
 				Options(options...).
 				Value(&selected),
 		),
@@ -48,21 +49,21 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 	groups := []*huh.Group{
 		huh.NewGroup(
 			huh.NewInput().
-				Title("SSH Port").
-				Description("Port for sshd to listen on").
+				Title(i18n.T("form_ssh_port")).
+				Description(i18n.T("form_ssh_port_desc")).
 				Placeholder("22122").
 				Value(&port),
 			huh.NewConfirm().
-				Title("Disable root login?").
-				Description("Set PermitRootLogin no").
+				Title(i18n.T("form_disable_root")).
+				Description(i18n.T("form_disable_root_desc")).
 				Value(&cfg.SSHDisableRoot),
 			huh.NewConfirm().
-				Title("Disable password authentication?").
-				Description("Set PasswordAuthentication no (key-only login)").
+				Title(i18n.T("form_disable_pass")).
+				Description(i18n.T("form_disable_pass_desc")).
 				Value(&cfg.SSHDisablePass),
 			huh.NewConfirm().
-				Title("Add SSH public key?").
-				Description("Paste a public key to add to authorized_keys").
+				Title(i18n.T("form_add_ssh_key")).
+				Description(i18n.T("form_add_ssh_key_desc")).
 				Value(&cfg.SSHAddKey),
 		),
 	}
@@ -72,8 +73,8 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 		cfg.SSHAllowUFW = true // default to true
 		groups = append(groups, huh.NewGroup(
 			huh.NewConfirm().
-				Title("Allow new SSH port in UFW firewall?").
-				Description("Runs ufw allow <port>/tcp to ensure the new port is reachable").
+				Title(i18n.T("form_allow_ufw")).
+				Description(i18n.T("form_allow_ufw_desc")).
 				Value(&cfg.SSHAllowUFW),
 		))
 	}
@@ -90,8 +91,8 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 		keyForm := huh.NewForm(
 			huh.NewGroup(
 				huh.NewText().
-					Title("SSH Public Key").
-					Description("Paste your public key (ssh-ed25519 AAAA...)").
+					Title(i18n.T("form_ssh_pubkey")).
+					Description(i18n.T("form_ssh_pubkey_desc")).
 					Placeholder("ssh-ed25519 AAAA...").
 					Value(&key),
 			),
@@ -112,22 +113,22 @@ func UserConfigForm(cfg *types.Config) error {
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Username").
-				Description("New system user to create").
+				Title(i18n.T("form_username")).
+				Description(i18n.T("form_username_desc")).
 				Placeholder("deploy").
 				Value(&cfg.NewUsername),
 			huh.NewSelect[string]().
-				Title("Default Shell").
+				Title(i18n.T("form_shell")).
 				Options(
 					huh.NewOption("bash", "bash"),
 					huh.NewOption("zsh", "zsh"),
 				).
 				Value(&shell),
 			huh.NewConfirm().
-				Title("Add to sudo group?").
+				Title(i18n.T("form_add_sudo")).
 				Value(&cfg.UserAddSudo),
 			huh.NewConfirm().
-				Title("Add SSH public key?").
+				Title(i18n.T("form_add_user_key")).
 				Value(&cfg.UserAddKey),
 		),
 	)
@@ -141,10 +142,10 @@ func UserConfigForm(cfg *types.Config) error {
 		sourceForm := huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
-					Title("Public key source").
+					Title(i18n.T("form_key_source")).
 					Options(
-						huh.NewOption("Paste public key", "paste"),
-						huh.NewOption("Fetch from GitHub", "github"),
+						huh.NewOption(i18n.T("form_key_source_paste"), "paste"),
+						huh.NewOption(i18n.T("form_key_source_github"), "github"),
 					).
 					Value(&source),
 			),
@@ -159,8 +160,8 @@ func UserConfigForm(cfg *types.Config) error {
 			keyForm := huh.NewForm(
 				huh.NewGroup(
 					huh.NewText().
-						Title("SSH Public Key").
-						Description("Paste your public key").
+						Title(i18n.T("form_ssh_pubkey")).
+						Description(i18n.T("form_ssh_pubkey_desc")).
 						Placeholder("ssh-ed25519 AAAA...").
 						Value(&key),
 				),
@@ -174,8 +175,8 @@ func UserConfigForm(cfg *types.Config) error {
 			ghForm := huh.NewForm(
 				huh.NewGroup(
 					huh.NewInput().
-						Title("GitHub Username").
-						Description("Public keys will be fetched from github.com/<user>.keys").
+						Title(i18n.T("form_github_user")).
+						Description(i18n.T("form_github_user_desc")).
 						Value(&ghUser),
 				),
 			)
@@ -211,15 +212,15 @@ func SSHKeygenForm(cfg *types.Config) error {
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
-				Title("Key Algorithm").
+				Title(i18n.T("form_keygen_algo")).
 				Options(
 					huh.NewOption("ed25519 (recommended)", "ed25519"),
 					huh.NewOption("RSA 4096", "rsa"),
 				).
 				Value(&keyType),
 			huh.NewInput().
-				Title("Key Comment").
-				Description("Optional comment for the key").
+				Title(i18n.T("form_keygen_comment")).
+				Description(i18n.T("form_keygen_comment_desc")).
 				Placeholder(placeholder).
 				Value(&comment),
 		),
@@ -236,8 +237,8 @@ func SSHKeygenForm(cfg *types.Config) error {
 		if err := huh.NewForm(
 			huh.NewGroup(
 				huh.NewConfirm().
-					Title(fmt.Sprintf("WARNING: %s ALREADY EXISTS. OVERWRITE?", keyFile)).
-					Description("THIS WILL REPLACE THE EXISTING PRIVATE AND PUBLIC KEY FILES.\nTHIS ACTION CANNOT BE UNDONE.\n\n警告：这将覆盖现有的私钥和公钥文件，且无法撤销。\n警告：既存の秘密鍵と公開鍵ファイルを上書きし、この操作は元に戻せません。\n경고: 기존 개인키와 공개키 파일을 덮어쓰며, 이 작업은 되돌릴 수 없습니다.\nAVERTISSEMENT : ceci remplacera les fichiers de cle privee et de cle publique existants, et cette action est irreversible.").
+					Title(fmt.Sprintf(i18n.T("form_keygen_overwrite"), keyFile)).
+					Description(i18n.T("form_keygen_overwrite_desc")).
 					Value(&cfg.KeygenOverwrite),
 			),
 		).Run(); err != nil {
@@ -254,11 +255,11 @@ func ConfirmRun(planText string) (bool, error) {
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewNote().
-				Title("Execution Plan").
+				Title(i18n.T("plan_title")).
 				Description(planText),
 			huh.NewConfirm().
-				Title("Proceed with execution?").
-				Description("This will modify your system").
+				Title(i18n.T("form_confirm_run")).
+				Description(i18n.T("form_confirm_run_desc")).
 				Value(&confirm),
 		),
 	)
@@ -275,8 +276,8 @@ func AIConfigForm(cfg *types.Config) error {
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
-				Title("AI CLI Tools").
-				Description("Select tools to install").
+				Title(i18n.T("form_ai_tools")).
+				Description(i18n.T("form_ai_tools_desc")).
 				Options(
 					huh.NewOption("Claude Code", "claude-code"),
 					huh.NewOption("Codex", "codex"),

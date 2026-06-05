@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/modules"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
@@ -77,9 +78,10 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 }
 
 // FormatPlanText formats a plan as human-readable text.
+// Uses i18n for display strings; status field values remain English for JSON compatibility.
 func FormatPlanText(plan *PlanResult) string {
 	var b strings.Builder
-	b.WriteString("Execution Plan\n")
+	b.WriteString(i18n.T("plan_title") + "\n")
 	b.WriteString("==============\n\n")
 
 	for _, mp := range plan.Modules {

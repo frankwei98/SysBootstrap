@@ -2,6 +2,9 @@ package types
 
 // Config holds user selections for a run.
 type Config struct {
+	// APT mirror override (not serialized to plan --json)
+	AptMirror string `json:"-"` // "cernet" or ""
+
 	// SSH
 	SSHPort        int
 	SSHAddKey      bool

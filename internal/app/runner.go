@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/modules"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -40,15 +41,15 @@ func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error
 		}
 
 		if m.RequiresRoot() && !r.sys.IsRoot {
-			return fmt.Errorf("module %s requires root, please re-run with sudo", m.Name())
+			return fmt.Errorf(i18n.T("runner_module_needs_root"), m.Name())
 		}
 
 		r.log.SetModule(m.Name())
-		r.log.Infof("Starting %s...", m.Name())
+		r.log.Infof(i18n.T("runner_starting"), m.Name())
 
 		check := m.Check(ctx, r.sys)
 		if ShouldSkipSatisfiedForModule(m.ID(), cfg, check) {
-			r.log.Successf("%s — already configured, skipping", m.Name())
+			r.log.Successf(i18n.T("runner_skipping"), m.Name())
 			if check.Message != "" {
 				r.log.Warn(check.Message)
 			}
@@ -56,11 +57,11 @@ func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error
 		}
 
 		if err := m.Run(ctx, r.sys, cfg, r.log); err != nil {
-			r.log.Errorf("%s failed: %v", m.Name(), err)
+			r.log.Errorf(i18n.T("runner_failed"), m.Name(), err)
 			return fmt.Errorf("module %s failed: %w", m.Name(), err)
 		}
 
-		r.log.Successf("%s completed", m.Name())
+		r.log.Successf(i18n.T("runner_completed"), m.Name())
 	}
 
 	r.log.SetModule("")

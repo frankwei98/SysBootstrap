@@ -6,13 +6,14 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/frankwei98/sys-bootstrap/internal/app"
+	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/modules"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 	"github.com/frankwei98/sys-bootstrap/internal/ui"
-	"github.com/charmbracelet/huh"
 )
 
 // DoctorResult holds the outcome of a doctor check.
@@ -66,8 +67,20 @@ func RunCmd(registry *modules.Registry) error {
 		return err
 	}
 
+	// Root user install protection: check before collecting config
+	if err := app.CheckRootUserInstall(sys, ordered, isInteractiveTerminal()); err != nil {
+		return err
+	}
+
 	// Collect config from forms
 	cfg := &types.Config{SSHPort: 22122}
+
+	// APT mirror selection: env var override or interactive form
+	if !applyAptMirrorEnv(cfg) {
+		if err := aptMirrorForm(cfg); err != nil {
+			return err
+		}
+	}
 
 	for _, id := range ordered {
 		switch id {
@@ -104,7 +117,7 @@ func RunCmd(registry *modules.Registry) error {
 		return err
 	}
 	if !confirmed {
-		log.Warn("Execution cancelled")
+		log.Warn(i18n.T("runner_cancelled"))
 		return nil
 	}
 
@@ -114,7 +127,7 @@ func RunCmd(registry *modules.Registry) error {
 		return err
 	}
 
-	log.Success("All done!")
+	log.Success(i18n.T("runner_all_done"))
 	return nil
 }
 
@@ -134,6 +147,7 @@ func PlanCmd(registry *modules.Registry, jsonOutput bool) error {
 		SSHPort:     22122,
 		SSHAllowUFW: sys.HasUFW && sys.UFWActive, // recommended default when UFW is active
 	}
+	applyAptMirrorEnv(cfg)
 	plan, err := app.GeneratePlan(ctx, sys, cfg, registry, ids)
 	if err != nil {
 		return err
@@ -157,7 +171,7 @@ func PlanCmd(registry *modules.Registry, jsonOutput bool) error {
 func DoctorCmd() (*DoctorResult, error) {
 	sys, err := system.NewContext()
 	if err != nil {
-		fmt.Printf("✗ System detection failed: %v\n", err)
+		fmt.Printf("✗ %v\n", err)
 		return &DoctorResult{HasFatal: true}, err
 	}
 
@@ -166,7 +180,7 @@ func DoctorCmd() (*DoctorResult, error) {
 	primarySupported := (sys.OSID == "debian" && sys.OSVersionMajor >= 11) ||
 		(sys.OSID == "ubuntu" && sys.OSVersionMajor >= 22)
 	if !primarySupported && sys.HasApt {
-		osDetail += " (apt-compatible, untested)"
+		osDetail += i18n.T("doctor_os_detail_apt_compat")
 	}
 
 	checks := []struct {
@@ -179,14 +193,14 @@ func DoctorCmd() (*DoctorResult, error) {
 		{"OS Version", sys.OSVersion != "", sys.OSVersion, true},
 		{"Supported OS", sys.IsSupportedOS(), osDetail, false},
 		{"Architecture", true, sys.Arch, false},
-		{"Root", sys.IsRoot, boolStr(sys.IsRoot, "yes", "no (some modules need sudo)"), false},
-		{"systemd", sys.HasSystemd, boolStr(sys.HasSystemd, "yes", "not found"), false},
-		{"apt-get", sys.HasApt, boolStr(sys.HasApt, "yes", "not found"), true},
-		{"bash", sys.HasBash, boolStr(sys.HasBash, "yes", "not found"), false},
-		{"curl", sys.HasCurl, boolStr(sys.HasCurl, "yes", "not found"), false},
-		{"network", sys.HasNetwork, boolStr(sys.HasNetwork, "DNS OK", "DNS resolution failed"), true},
-		{"sshd", sys.HasSSHD, boolStr(sys.HasSSHD, "yes", "not found"), false},
-		{"sshd service", sys.HasSSHDService, boolStr(sys.HasSSHDService, "yes", "systemd unit not found"), false},
+		{"Root", sys.IsRoot, boolStr(sys.IsRoot, i18n.T("doctor_root_yes"), i18n.T("doctor_root_no")), false},
+		{"systemd", sys.HasSystemd, boolStr(sys.HasSystemd, i18n.T("doctor_systemd_yes"), i18n.T("doctor_systemd_no")), false},
+		{"apt-get", sys.HasApt, boolStr(sys.HasApt, i18n.T("doctor_apt_yes"), i18n.T("doctor_apt_no")), true},
+		{"bash", sys.HasBash, boolStr(sys.HasBash, i18n.T("doctor_bash_yes"), i18n.T("doctor_bash_no")), false},
+		{"curl", sys.HasCurl, boolStr(sys.HasCurl, i18n.T("doctor_curl_yes"), i18n.T("doctor_curl_no")), false},
+		{"network", sys.HasNetwork, boolStr(sys.HasNetwork, i18n.T("doctor_network_ok"), i18n.T("doctor_network_fail")), true},
+		{"sshd", sys.HasSSHD, boolStr(sys.HasSSHD, i18n.T("doctor_sshd_yes"), i18n.T("doctor_sshd_no")), false},
+		{"sshd service", sys.HasSSHDService, boolStr(sys.HasSSHDService, i18n.T("doctor_sshd_svc_yes"), i18n.T("doctor_sshd_svc_no")), false},
 	}
 
 	result := &DoctorResult{}
@@ -230,13 +244,14 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 	}
 
 	if m.RequiresRoot() && !sys.IsRoot {
-		return fmt.Errorf("module %s requires root — please re-run with sudo", m.Name())
+		return fmt.Errorf(i18n.T("module_requires_root"), m.Name())
 	}
 
-	// Check dependencies
+	// Check dependencies first so root user install covers both the target
+	// module and any dependencies that will be auto-run.
 	deps := m.Dependencies()
+	var missing []string
 	if len(deps) > 0 {
-		var missing []string
 		for _, dep := range deps {
 			dm, err := registry.Get(dep)
 			if err != nil {
@@ -247,38 +262,46 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 				missing = append(missing, dep)
 			}
 		}
-		if len(missing) > 0 {
-			log.Warnf("Module %s has unsatisfied dependencies: %s", m.Name(), strings.Join(missing, ", "))
-			if !isInteractiveTerminal() {
-				return fmt.Errorf("module %s has unsatisfied dependencies (%s); run them first or use an interactive TTY", m.Name(), strings.Join(missing, ", "))
-			}
-			var confirm bool
-			if err := huh.NewForm(
-				huh.NewGroup(
-					huh.NewConfirm().
-						Title(fmt.Sprintf("Run missing dependencies (%s) first?", strings.Join(missing, ", "))).
-						Description("Required modules will be executed before this one").
-						Value(&confirm),
-				),
-			).Run(); err != nil {
-				return err
-			}
-			if !confirm {
-				return fmt.Errorf("cannot run %s without dependencies: %s", m.Name(), strings.Join(missing, ", "))
-			}
-			runner := app.NewRunner(registry, sys, log)
-			if err := runner.Run(ctx, &types.Config{SSHPort: 22122}, missing); err != nil {
-				return fmt.Errorf("dependency %s failed: %w", strings.Join(missing, ", "), err)
-			}
+	}
+
+	// Root user install protection: covers target module + missing deps
+	modsToCheck := append([]string{moduleID}, missing...)
+	if err := app.CheckRootUserInstall(sys, modsToCheck, isInteractiveTerminal()); err != nil {
+		return err
+	}
+
+	if len(missing) > 0 {
+		log.Warnf(i18n.T("module_needs_deps"), m.Name(), strings.Join(missing, ", "))
+		if !isInteractiveTerminal() {
+			return fmt.Errorf(i18n.T("module_needs_deps_tty"), m.Name(), strings.Join(missing, ", "))
+		}
+		var confirm bool
+		if err := huh.NewForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title(fmt.Sprintf(i18n.T("module_run_deps_title"), strings.Join(missing, ", "))).
+					Description(i18n.T("module_run_deps_desc")).
+					Value(&confirm),
+			),
+		).Run(); err != nil {
+			return err
+		}
+		if !confirm {
+			return fmt.Errorf(i18n.T("module_cannot_run_without"), m.Name(), strings.Join(missing, ", "))
+		}
+		runner := app.NewRunner(registry, sys, log)
+		if err := runner.Run(ctx, &types.Config{SSHPort: 22122}, missing); err != nil {
+			return fmt.Errorf("dependency %s failed: %w", strings.Join(missing, ", "), err)
 		}
 	}
 
 	// Collect config
 	cfg := &types.Config{SSHPort: 22122}
+	applyAptMirrorEnv(cfg)
 	switch moduleID {
 	case "ssh":
 		if !isInteractiveTerminal() {
-			return fmt.Errorf("module %s requires an interactive TTY for configuration", m.Name())
+			return fmt.Errorf(i18n.T("module_needs_tty"), m.Name())
 		}
 		if err := ui.SSHConfigForm(cfg, sys); err != nil {
 			return err
@@ -294,14 +317,14 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 		}
 	case "user":
 		if !isInteractiveTerminal() {
-			return fmt.Errorf("module %s requires an interactive TTY for configuration", m.Name())
+			return fmt.Errorf(i18n.T("module_needs_tty"), m.Name())
 		}
 		if err := ui.UserConfigForm(cfg); err != nil {
 			return err
 		}
 	case "ssh_keygen":
 		if !isInteractiveTerminal() {
-			return fmt.Errorf("module %s requires an interactive TTY for configuration", m.Name())
+			return fmt.Errorf(i18n.T("module_needs_tty"), m.Name())
 		}
 		if err := ui.SSHKeygenForm(cfg); err != nil {
 			return err
@@ -309,19 +332,19 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 	}
 
 	log.SetModule(m.Name())
-	log.Infof("Starting %s...", m.Name())
+	log.Infof(i18n.T("runner_starting"), m.Name())
 
 	check := m.Check(ctx, sys)
 	if app.ShouldSkipSatisfiedForModule(moduleID, cfg, check) {
-		log.Successf("%s — already configured, skipping", m.Name())
+		log.Successf(i18n.T("runner_skipping"), m.Name())
 		return nil
 	}
 
 	if err := m.Run(ctx, sys, cfg, log); err != nil {
-		return fmt.Errorf("module %s failed: %w", m.Name(), err)
+		return fmt.Errorf(i18n.T("runner_failed"), m.Name(), err)
 	}
 
-	log.Successf("%s completed", m.Name())
+	log.Successf(i18n.T("runner_completed"), m.Name())
 	return nil
 }
 
@@ -333,11 +356,11 @@ func isInteractiveTerminal() bool {
 // VersionCmd handles the `version` command.
 func VersionCmd() {
 	v := app.GetVersion()
-	fmt.Printf("sys-bootstrap %s\n", v.Version)
-	fmt.Printf("  commit:     %s\n", v.Commit)
-	fmt.Printf("  built:      %s\n", v.BuildDate)
-	fmt.Printf("  go:         %s\n", v.GoVersion)
-	fmt.Printf("  platform:   %s/%s\n", v.OS, v.Arch)
+	fmt.Printf(i18n.T("version_label"), v.Version)
+	fmt.Printf(i18n.T("version_commit"), v.Commit)
+	fmt.Printf(i18n.T("version_built"), v.BuildDate)
+	fmt.Printf(i18n.T("version_go"), v.GoVersion)
+	fmt.Printf(i18n.T("version_platform"), v.OS, v.Arch)
 }
 
 func boolStr(b bool, trueStr, falseStr string) string {
@@ -345,4 +368,41 @@ func boolStr(b bool, trueStr, falseStr string) string {
 		return trueStr
 	}
 	return falseStr
+}
+
+// applyAptMirrorEnv reads SYS_BOOTSTRAP_APT_MIRROR and sets cfg.AptMirror.
+// Returns true if the env var was set to a recognized value.
+// Unknown values are logged to stderr and ignored.
+func applyAptMirrorEnv(cfg *types.Config) bool {
+	v := os.Getenv("SYS_BOOTSTRAP_APT_MIRROR")
+	if v == "" {
+		return false
+	}
+	switch v {
+	case "cernet":
+		cfg.AptMirror = v
+		return true
+	default:
+		fmt.Fprintf(os.Stderr, "Warning: ignoring unknown SYS_BOOTSTRAP_APT_MIRROR=%q (valid: cernet)\n", v)
+		return false
+	}
+}
+
+// aptMirrorForm shows an interactive form to ask about CERNET APT mirror.
+func aptMirrorForm(cfg *types.Config) error {
+	useCernet := false
+	if err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(i18n.T("apt_mirror_form_title")).
+				Description(i18n.T("apt_mirror_form_desc")).
+				Value(&useCernet),
+		),
+	).Run(); err != nil {
+		return err
+	}
+	if useCernet {
+		cfg.AptMirror = "cernet"
+	}
+	return nil
 }

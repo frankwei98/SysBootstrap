@@ -41,10 +41,18 @@ func (m *BaseModule) Check(ctx context.Context, sys *system.Context) CheckResult
 }
 
 func (m *BaseModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
-	steps := []types.Step{
-		{Module: "base", Title: "Run apt update & upgrade", Detail: "Update package lists and upgrade installed packages"},
-		{Module: "base", Title: "Install base packages", Detail: fmt.Sprintf("%v", basePackages)},
+	var steps []types.Step
+	if cfg.AptMirror == "cernet" {
+		steps = append(steps, types.Step{
+			Module: "base",
+			Title:  "Switch APT mirror to CERNET",
+			Detail: "Rewrite Debian/Ubuntu official sources to mirrors.cernet.edu.cn (security sources unchanged)",
+		})
 	}
+	steps = append(steps,
+		types.Step{Module: "base", Title: "Run apt update & upgrade", Detail: "Update package lists and upgrade installed packages"},
+		types.Step{Module: "base", Title: "Install base packages", Detail: fmt.Sprintf("%v", basePackages)},
+	)
 	if !system.CommandExists("zellij") {
 		steps = append(steps, types.Step{
 			Module: "base",
@@ -56,11 +64,51 @@ func (m *BaseModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 }
 
 func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
-	log.Info("Running apt update & upgrade...")
-	if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil {
-		return fmt.Errorf("apt-get update failed: %w", err)
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("apt-get update failed (exit %d): %s", res.ExitCode, res.Stderr)
+	// Switch APT mirror to CERNET if requested (before apt-get update)
+	aptUpdateDone := false
+	if cfg.AptMirror == "cernet" {
+		log.Info("Switching APT mirror to CERNET...")
+		result, restoreFunc, err := system.SwitchAPTMirrorToCernet()
+		if err != nil {
+			return fmt.Errorf("APT mirror switch failed: %w", err)
+		}
+		if len(result.ChangedFiles) > 0 {
+			log.Successf("APT mirror switched to CERNET (%d file(s) modified)", len(result.ChangedFiles))
+			for _, f := range result.ChangedFiles {
+				log.Infof("  Modified: %s", f)
+			}
+
+			// Verify with apt-get update
+			log.Info("Verifying APT sources with apt-get update...")
+			res, updateErr := system.RunWithContext(ctx, "apt-get", "update", "-y")
+			if updateErr != nil || res.ExitCode != 0 {
+				log.Warn("apt-get update failed after mirror switch, restoring backup...")
+				if restoreErr := restoreFunc(); restoreErr != nil {
+					return fmt.Errorf("APT mirror switch failed and restore also failed: update error: %v (restore error: %v)", updateErr, restoreErr)
+				}
+				log.Info("APT sources restored from backup")
+				// Re-run apt-get update with original sources
+				if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil {
+					return fmt.Errorf("apt-get update failed after restore: %w", err)
+				} else if res.ExitCode != 0 {
+					return fmt.Errorf("apt-get update failed after restore (exit %d): %s", res.ExitCode, res.Stderr)
+				}
+			}
+			aptUpdateDone = true
+		} else {
+			log.Info("No APT sources matched for CERNET mirror switch")
+		}
+	}
+
+	if !aptUpdateDone {
+		log.Info("Running apt update & upgrade...")
+		if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil {
+			return fmt.Errorf("apt-get update failed: %w", err)
+		} else if res.ExitCode != 0 {
+			return fmt.Errorf("apt-get update failed (exit %d): %s", res.ExitCode, res.Stderr)
+		}
+	} else {
+		log.Info("Running apt upgrade...")
 	}
 
 	if res, err := system.RunWithContext(ctx, "apt-get", "upgrade", "-y"); err != nil {
