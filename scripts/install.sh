@@ -22,8 +22,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-info()    { echo -e "${GREEN}[INFO]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
+info()    { echo -e "${GREEN}[INFO]${NC} $*" >&2; }
+warn()    { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 die()     { error "$@"; exit 1; }
 
@@ -83,20 +83,28 @@ check_deps() {
 }
 
 resolve_version() {
-    local version raw_version
+    local version github_version raw_version
 
     if [[ "$REGION" == "china" ]]; then
         raw_version=$(
             curl -fsSL "$JSDELIVR_API" \
                 | sed -n '/"versions"/,/\]/p' \
                 | grep -o '"[^"]*"' \
-                | sed -n '2p' \
+                | tail -1 \
                 | tr -d '"'
         )
-        version="v${raw_version}"
-    else
-        version=$(curl -fsSL "$GITHUB_API" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//' | sed 's/".*//')
+        if [[ -n "${raw_version:-}" ]]; then
+            version="v${raw_version}"
+        fi
     fi
+
+    github_version=$(curl -fsSL "$GITHUB_API" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//' | sed 's/".*//')
+    [[ -n "${github_version:-}" ]] || die "Could not determine latest release version from GitHub API."
+
+    if [[ "$REGION" == "china" && -n "${version:-}" && "$version" != "$github_version" ]]; then
+        warn "jsDelivr metadata is stale (${version}); using GitHub latest ${github_version}"
+    fi
+    version="$github_version"
 
     [[ -n "${version:-}" ]] || die "Could not determine latest release version."
     echo "$version"
@@ -109,6 +117,7 @@ download_from_url() {
     rm -f "$tmp_file"
     info "Downloading from: $url"
     curl -fsSL "$url" -o "$tmp_file" || return 1
+    [[ -s "$tmp_file" ]] || return 1
     chmod +x "$tmp_file"
     mv "$tmp_file" "/tmp/${BINARY}"
 }
