@@ -31,8 +31,12 @@ func (m *UserModule) Check(ctx context.Context, sys *system.Context) CheckResult
 }
 
 func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
-	steps := []types.Step{
-		{Module: "user", Title: "Create user", Detail: cfg.NewUsername},
+	var steps []types.Step
+
+	if cfg.NewUsername != "" && userExists(cfg.NewUsername) {
+		steps = append(steps, types.Step{Module: "user", Title: "Supplement existing user", Detail: fmt.Sprintf("%s already exists — will apply supplemental updates only", cfg.NewUsername)})
+	} else {
+		steps = append(steps, types.Step{Module: "user", Title: "Create user", Detail: cfg.NewUsername})
 	}
 	if cfg.UserAddSudo {
 		steps = append(steps, types.Step{Module: "user", Title: "Add to sudo group", Detail: cfg.NewUsername})
@@ -44,7 +48,7 @@ func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 			steps = append(steps, types.Step{Module: "user", Title: "Write SSH public key", Detail: "authorized_keys"})
 		}
 	}
-	steps = append(steps, types.Step{Module: "user", Title: "Set password", Detail: "User must run passwd manually", Risk: "manual-step"})
+	steps = append(steps, types.Step{Module: "user", Title: "Set password", Detail: "No password set automatically — run passwd " + cfg.NewUsername + " manually", Risk: "manual-step"})
 	return steps, nil
 }
 

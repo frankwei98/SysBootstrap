@@ -38,10 +38,14 @@ func (m *SSHModule) Check(ctx context.Context, sys *system.Context) CheckResult 
 }
 
 func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
+	port := cfg.SSHPort
+	if port == 0 {
+		port = defaultSSHPort
+	}
+
 	steps := []types.Step{
-		{Module: "ssh", Title: "Configure SSH port", Detail: fmt.Sprintf("Set port to %d", cfg.SSHPort), Risk: "high"},
+		{Module: "ssh", Title: "Configure SSH port", Detail: fmt.Sprintf("Set port to %d", port), Risk: "high"},
 		{Module: "ssh", Title: "Validate sshd config", Detail: "Run sshd -t after changes"},
-		{Module: "ssh", Title: "Restart sshd", Detail: "Restart SSH service"},
 	}
 	if cfg.SSHDisableRoot {
 		steps = append(steps, types.Step{Module: "ssh", Title: "Disable root login", Detail: "PermitRootLogin no", Risk: "high"})
@@ -53,8 +57,13 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 		steps = append(steps, types.Step{Module: "ssh", Title: "Add SSH public key", Detail: "Write to authorized_keys"})
 	}
 	if sys.HasUFW && sys.UFWActive {
-		steps = append(steps, types.Step{Module: "ssh", Title: "UFW firewall rule", Detail: fmt.Sprintf("Allow port %d/tcp", cfg.SSHPort)})
+		if cfg.SSHAllowUFW {
+			steps = append(steps, types.Step{Module: "ssh", Title: "Allow SSH port in UFW", Detail: fmt.Sprintf("ufw allow %d/tcp", port)})
+		} else {
+			steps = append(steps, types.Step{Module: "ssh", Title: "UFW firewall warning", Detail: fmt.Sprintf("Port %d may need manual UFW rule", port), Risk: "manual-step"})
+		}
 	}
+	steps = append(steps, types.Step{Module: "ssh", Title: "Restart sshd", Detail: "Restart SSH service"})
 	return steps, nil
 }
 
@@ -122,7 +131,15 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 
 	// UFW handling
 	if sys.HasUFW && sys.UFWActive {
-		log.Warnf("UFW firewall is active — port %d may need to be allowed", port)
+		if cfg.SSHAllowUFW {
+			log.Infof("Allowing port %d in UFW...", port)
+			if res, err := system.Run("ufw", "allow", fmt.Sprintf("%d/tcp", port)); err != nil || res.ExitCode != 0 {
+				return fmt.Errorf("ufw allow failed: %s", res.Stderr)
+			}
+			log.Successf("UFW rule added: allow %d/tcp", port)
+		} else {
+			log.Warnf("UFW firewall is active — please manually verify port %d is allowed", port)
+		}
 	}
 
 	// Restart sshd (detect service name)

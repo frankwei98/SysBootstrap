@@ -8,6 +8,7 @@ type Config struct {
 	SSHPublicKey   string
 	SSHDisableRoot bool
 	SSHDisablePass bool
+	SSHAllowUFW    bool
 
 	// Node
 	InstallNVM  bool

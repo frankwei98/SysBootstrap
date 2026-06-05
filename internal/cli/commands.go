@@ -71,7 +71,7 @@ func RunCmd(registry *modules.Registry) error {
 	for _, id := range ordered {
 		switch id {
 		case "ssh":
-			if err := ui.SSHConfigForm(cfg); err != nil {
+			if err := ui.SSHConfigForm(cfg, sys); err != nil {
 				return err
 			}
 		case "ai":
@@ -129,7 +129,10 @@ func PlanCmd(registry *modules.Registry, jsonOutput bool) error {
 	// Include all module IDs in registration order
 	ids := registry.IDs()
 
-	cfg := &types.Config{SSHPort: 22122}
+	cfg := &types.Config{
+		SSHPort:     22122,
+		SSHAllowUFW: sys.HasUFW && sys.UFWActive, // recommended default when UFW is active
+	}
 	plan, err := app.GeneratePlan(ctx, sys, cfg, registry, ids)
 	if err != nil {
 		return err
@@ -270,7 +273,7 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 	cfg := &types.Config{SSHPort: 22122}
 	switch moduleID {
 	case "ssh":
-		if err := ui.SSHConfigForm(cfg); err != nil {
+		if err := ui.SSHConfigForm(cfg, sys); err != nil {
 			return err
 		}
 	case "ai":

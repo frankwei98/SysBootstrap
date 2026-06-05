@@ -20,7 +20,7 @@ func (m *AIModule) Name() string           { return "AI CLI Tools" }
 func (m *AIModule) Description() string    { return "Claude Code and Codex" }
 func (m *AIModule) DefaultEnabled() bool   { return false }
 func (m *AIModule) RequiresRoot() bool     { return false }
-func (m *AIModule) Dependencies() []string { return nil }
+func (m *AIModule) Dependencies() []string { return []string{"node"} }
 
 func (m *AIModule) Check(ctx context.Context, sys *system.Context) CheckResult {
 	if _, err := os.Stat(filepath.Join(system.NvmDir(), "nvm.sh")); err != nil {

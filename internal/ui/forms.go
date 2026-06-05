@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/FrankWiZe/sys-bootstrap/internal/modules"
+	"github.com/FrankWiZe/sys-bootstrap/internal/system"
 	"github.com/FrankWiZe/sys-bootstrap/internal/types"
 	"github.com/charmbracelet/huh"
 )
@@ -38,13 +39,13 @@ func ModuleSelect(registry *modules.Registry) ([]string, error) {
 }
 
 // SSHConfigForm collects SSH module configuration.
-func SSHConfigForm(cfg *types.Config) error {
+func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 	port := fmt.Sprintf("%d", cfg.SSHPort)
 	if port == "0" {
 		port = "22122"
 	}
 
-	form := huh.NewForm(
+	groups := []*huh.Group{
 		huh.NewGroup(
 			huh.NewInput().
 				Title("SSH Port").
@@ -64,7 +65,20 @@ func SSHConfigForm(cfg *types.Config) error {
 				Description("Paste a public key to add to authorized_keys").
 				Value(&cfg.SSHAddKey),
 		),
-	)
+	}
+
+	// Ask about UFW only when UFW is present and active
+	if sys != nil && sys.HasUFW && sys.UFWActive {
+		cfg.SSHAllowUFW = true // default to true
+		groups = append(groups, huh.NewGroup(
+			huh.NewConfirm().
+				Title("Allow new SSH port in UFW firewall?").
+				Description("Runs ufw allow <port>/tcp to ensure the new port is reachable").
+				Value(&cfg.SSHAllowUFW),
+		))
+	}
+
+	form := huh.NewForm(groups...)
 	if err := form.Run(); err != nil {
 		return err
 	}
