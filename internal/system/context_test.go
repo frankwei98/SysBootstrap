@@ -39,3 +39,24 @@ func TestCommandExists(t *testing.T) {
 		t.Error("expected nonexistent command to not exist")
 	}
 }
+
+func TestParseUFWActive(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"active", "Status: active\n", true},
+		{"inactive", "Status: inactive\n", false},
+		{"verbose active", "Status: active\nLogging: on (low)\n", true},
+		{"empty", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseUFWActive(tt.out); got != tt.want {
+				t.Errorf("parseUFWActive(%q) = %v, want %v", tt.out, got, tt.want)
+			}
+		})
+	}
+}

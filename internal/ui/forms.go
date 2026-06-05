@@ -270,7 +270,7 @@ func ConfirmRun(planText string) (bool, error) {
 
 // AIConfigForm collects AI module configuration.
 func AIConfigForm(cfg *types.Config) error {
-	var selected []string
+	selected := []string{"claude-code", "codex"}
 
 	form := huh.NewForm(
 		huh.NewGroup(

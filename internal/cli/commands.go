@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/FrankWiZe/sys-bootstrap/internal/app"
@@ -248,6 +249,9 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 		}
 		if len(missing) > 0 {
 			log.Warnf("Module %s has unsatisfied dependencies: %s", m.Name(), strings.Join(missing, ", "))
+			if !isInteractiveTerminal() {
+				return fmt.Errorf("module %s has unsatisfied dependencies (%s); run them first or use an interactive TTY", m.Name(), strings.Join(missing, ", "))
+			}
 			var confirm bool
 			if err := huh.NewForm(
 				huh.NewGroup(
@@ -273,18 +277,32 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 	cfg := &types.Config{SSHPort: 22122}
 	switch moduleID {
 	case "ssh":
+		if !isInteractiveTerminal() {
+			return fmt.Errorf("module %s requires an interactive TTY for configuration", m.Name())
+		}
 		if err := ui.SSHConfigForm(cfg, sys); err != nil {
 			return err
 		}
 	case "ai":
-		if err := ui.AIConfigForm(cfg); err != nil {
-			return err
+		if isInteractiveTerminal() {
+			if err := ui.AIConfigForm(cfg); err != nil {
+				return err
+			}
+		} else {
+			cfg.InstallClaudeCode = true
+			cfg.InstallCodex = true
 		}
 	case "user":
+		if !isInteractiveTerminal() {
+			return fmt.Errorf("module %s requires an interactive TTY for configuration", m.Name())
+		}
 		if err := ui.UserConfigForm(cfg); err != nil {
 			return err
 		}
 	case "ssh_keygen":
+		if !isInteractiveTerminal() {
+			return fmt.Errorf("module %s requires an interactive TTY for configuration", m.Name())
+		}
 		if err := ui.SSHKeygenForm(cfg); err != nil {
 			return err
 		}
@@ -305,6 +323,11 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 
 	log.Successf("%s completed", m.Name())
 	return nil
+}
+
+func isInteractiveTerminal() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && (info.Mode()&os.ModeCharDevice) != 0
 }
 
 // VersionCmd handles the `version` command.

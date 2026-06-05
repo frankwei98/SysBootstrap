@@ -137,7 +137,16 @@ func isUFWActive() bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(out), "active")
+	return parseUFWActive(string(out))
+}
+
+func parseUFWActive(out string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "Status: active" {
+			return true
+		}
+	}
+	return false
 }
 
 // checkNetwork tests basic DNS resolution as a proxy for network connectivity.
