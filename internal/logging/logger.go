@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"time"
 )
@@ -51,7 +52,7 @@ func New(quiet bool) (*Logger, error) {
 	}
 
 	// Open log file in user state directory
-	stateDir, err := os.UserHomeDir()
+	stateDir, err := stateHomeDir()
 	if err == nil {
 		logDir := filepath.Join(stateDir, ".local", "state", "sys-bootstrap", "logs")
 		os.MkdirAll(logDir, 0o755)
@@ -63,6 +64,17 @@ func New(quiet bool) (*Logger, error) {
 	}
 
 	return l, nil
+}
+
+func stateHomeDir() (string, error) {
+	sudoUser := os.Getenv("SUDO_USER")
+	if sudoUser != "" && sudoUser != "root" {
+		u, err := user.Lookup(sudoUser)
+		if err == nil && u.HomeDir != "" {
+			return u.HomeDir, nil
+		}
+	}
+	return os.UserHomeDir()
 }
 
 // SetModule sets the current module name for log messages.
