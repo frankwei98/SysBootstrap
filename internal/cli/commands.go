@@ -312,7 +312,7 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 	log.Infof("Starting %s...", m.Name())
 
 	check := m.Check(ctx, sys)
-	if check.Satisfied {
+	if app.ShouldSkipSatisfiedForModule(moduleID, cfg, check) {
 		log.Successf("%s — already configured, skipping", m.Name())
 		return nil
 	}

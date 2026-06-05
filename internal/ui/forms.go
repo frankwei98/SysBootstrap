@@ -236,8 +236,8 @@ func SSHKeygenForm(cfg *types.Config) error {
 		if err := huh.NewForm(
 			huh.NewGroup(
 				huh.NewConfirm().
-					Title(fmt.Sprintf("Key %s already exists. Overwrite?", keyFile)).
-					Description("This will replace the existing key").
+					Title(fmt.Sprintf("WARNING: %s ALREADY EXISTS. OVERWRITE?", keyFile)).
+					Description("THIS WILL REPLACE THE EXISTING PRIVATE AND PUBLIC KEY FILES.\nTHIS ACTION CANNOT BE UNDONE.\n\n警告：这将覆盖现有的私钥和公钥文件，且无法撤销。\n警告：既存の秘密鍵と公開鍵ファイルを上書きし、この操作は元に戻せません。\n경고: 기존 개인키와 공개키 파일을 덮어쓰며, 이 작업은 되돌릴 수 없습니다.\nAVERTISSEMENT : ceci remplacera les fichiers de cle privee et de cle publique existants, et cette action est irreversible.").
 					Value(&cfg.KeygenOverwrite),
 			),
 		).Run(); err != nil {

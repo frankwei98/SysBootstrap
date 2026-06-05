@@ -47,7 +47,7 @@ func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error
 		r.log.Infof("Starting %s...", m.Name())
 
 		check := m.Check(ctx, r.sys)
-		if check.Satisfied {
+		if ShouldSkipSatisfiedForModule(m.ID(), cfg, check) {
 			r.log.Successf("%s — already configured, skipping", m.Name())
 			if check.Message != "" {
 				r.log.Warn(check.Message)
@@ -65,4 +65,16 @@ func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error
 
 	r.log.SetModule("")
 	return nil
+}
+
+func ShouldSkipSatisfiedForModule(moduleID string, cfg *types.Config, check modules.CheckResult) bool {
+	if !check.Satisfied {
+		return false
+	}
+
+	if moduleID == "ssh_keygen" {
+		return false
+	}
+
+	return true
 }
