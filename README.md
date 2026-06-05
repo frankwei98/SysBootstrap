@@ -10,6 +10,13 @@ curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/script
 
 # Or install to /usr/local/bin
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/scripts/install.sh)"
+
+# 如果你在中国，临时运行：
+curl -fsSL https://cdn.jsdelivr.net/gh/frankwei98/SysBootstrap@main/scripts/install.sh | bash
+
+# 或者安装到本机的 `/usr/local/bin` 作为 `sys-bootstrap` 命令
+sudo bash -c "$(curl -fsSL https://cdn.jsdelivr.net/gh/frankwei98/SysBootstrap@main/scripts/install.sh)"
+
 ```
 
 ## Commands
@@ -33,18 +40,18 @@ sys-bootstrap version      # Show version info
 
 **Compatible (untested, apt-based):**
 
-- Linux Mint, Pop!_OS, and other Debian/Ubuntu derivatives with `apt-get`
+- Linux Mint, Pop!\_OS, and other Debian/Ubuntu derivatives with `apt-get`
 
 ## Modules
 
-| Module | Description | Root |
-|--------|-------------|------|
-| `base` | System update, essential packages, zellij | Yes |
-| `ssh` | SSH port change, key management, hardening | Yes |
-| `node` | nvm, Node.js LTS, pnpm, bun | No |
-| `ai` | Claude Code, Codex | No |
-| `user` | Create system user with sudo/SSH options | Yes |
-| `ssh_keygen` | Generate SSH keypair | No |
+| Module       | Description                                | Root |
+| ------------ | ------------------------------------------ | ---- |
+| `base`       | System update, essential packages, zellij  | Yes  |
+| `ssh`        | SSH port change, key management, hardening | Yes  |
+| `node`       | nvm, Node.js LTS, pnpm, bun                | No   |
+| `ai`         | Claude Code, Codex                         | No   |
+| `user`       | Create system user with sudo/SSH options   | Yes  |
+| `ssh_keygen` | Generate SSH keypair                       | No   |
 
 ## Examples
 

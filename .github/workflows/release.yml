@@ -27,6 +27,11 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X github.com/FrankWiZe/sys-bootstrap/internal/app.Version=${GITHUB_REF_NAME} -X github.com/FrankWiZe/sys-bootstrap/internal/app.Commit=${GITHUB_SHA::8} -X github.com/FrankWiZe/sys-bootstrap/internal/app.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o sys-bootstrap_linux_amd64 ./cmd/sys-bootstrap/
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X github.com/FrankWiZe/sys-bootstrap/internal/app.Version=${GITHUB_REF_NAME} -X github.com/FrankWiZe/sys-bootstrap/internal/app.Commit=${GITHUB_SHA::8} -X github.com/FrankWiZe/sys-bootstrap/internal/app.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o sys-bootstrap_linux_arm64 ./cmd/sys-bootstrap/
 
+      - name: Generate checksums
+        run: |
+          sha256sum sys-bootstrap_linux_amd64 > sys-bootstrap_linux_amd64.sha256
+          sha256sum sys-bootstrap_linux_arm64 > sys-bootstrap_linux_arm64.sha256
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -35,4 +40,6 @@ jobs:
           files: |
             sys-bootstrap_linux_amd64
             sys-bootstrap_linux_arm64
+            sys-bootstrap_linux_amd64.sha256
+            sys-bootstrap_linux_arm64.sha256
           generate_release_notes: true
