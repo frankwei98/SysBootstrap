@@ -1,7 +1,7 @@
 package app
 
 import (
-	"github.com/FrankWiZe/sys-bootstrap/internal/modules"
+	"github.com/frankwei98/sys-bootstrap/internal/modules"
 )
 
 // NewRegistry creates a registry with all Phase 1 modules.

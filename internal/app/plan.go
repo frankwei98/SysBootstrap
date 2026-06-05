@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/FrankWiZe/sys-bootstrap/internal/modules"
-	"github.com/FrankWiZe/sys-bootstrap/internal/system"
-	"github.com/FrankWiZe/sys-bootstrap/internal/types"
+	"github.com/frankwei98/sys-bootstrap/internal/modules"
+	"github.com/frankwei98/sys-bootstrap/internal/system"
+	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
 // PlanResult is the output of plan generation.

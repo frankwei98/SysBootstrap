@@ -42,9 +42,9 @@ go test ./...
 
 # Build with version injection
 go build -ldflags="-s -w \
-  -X github.com/FrankWiZe/sys-bootstrap/internal/app.Version=dev \
-  -X github.com/FrankWiZe/sys-bootstrap/internal/app.Commit=$(git rev-parse --short HEAD) \
-  -X github.com/FrankWiZe/sys-bootstrap/internal/app.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -X github.com/frankwei98/sys-bootstrap/internal/app.Version=dev \
+  -X github.com/frankwei98/sys-bootstrap/internal/app.Commit=$(git rev-parse --short HEAD) \
+  -X github.com/frankwei98/sys-bootstrap/internal/app.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -o sys-bootstrap ./cmd/sys-bootstrap/
 ```
 

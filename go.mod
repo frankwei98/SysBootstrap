@@ -1,4 +1,4 @@
-module github.com/FrankWiZe/sys-bootstrap
+module github.com/frankwei98/sys-bootstrap
 
 go 1.22
 

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/FrankWiZe/sys-bootstrap/internal/system"
+	"github.com/frankwei98/sys-bootstrap/internal/system"
 )
 
 func TestNodeModuleCheckNoNvm(t *testing.T) {

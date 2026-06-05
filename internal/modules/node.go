@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/FrankWiZe/sys-bootstrap/internal/logging"
-	"github.com/FrankWiZe/sys-bootstrap/internal/system"
-	"github.com/FrankWiZe/sys-bootstrap/internal/types"
+	"github.com/frankwei98/sys-bootstrap/internal/logging"
+	"github.com/frankwei98/sys-bootstrap/internal/system"
+	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
 const nvmVersion = "v0.40.4"

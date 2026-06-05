@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/FrankWiZe/sys-bootstrap/internal/system"
-	"github.com/FrankWiZe/sys-bootstrap/internal/types"
+	"github.com/frankwei98/sys-bootstrap/internal/system"
+	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
 func TestValidatePublicKey(t *testing.T) {
