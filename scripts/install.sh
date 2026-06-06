@@ -66,9 +66,60 @@ require_tty() {
 
 run_with_tty() {
     if has_tty; then
-        exec < /dev/tty
+        "$@" < /dev/tty
+        return
     fi
-    exec "$@"
+    "$@"
+}
+
+shell_reload_command() {
+    local shell_path="${SHELL:-}"
+    if [[ -z "$shell_path" || ! -x "$shell_path" ]]; then
+        shell_path="/bin/bash"
+    fi
+    printf 'exec %q -l' "$shell_path"
+}
+
+reload_current_shell() {
+    local shell_path="${SHELL:-}"
+    if [[ -z "$shell_path" || ! -x "$shell_path" ]]; then
+        shell_path="/bin/bash"
+    fi
+    exec "$shell_path" -l
+}
+
+maybe_reload_shell_after_temp_run() {
+    local choice reload_cmd
+
+    has_tty || return 0
+    reload_cmd="$(shell_reload_command)"
+
+    echo ""
+    if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+        echo "如果刚安装了 Node.js、bun、Claude Code 或 Codex，当前 Shell 需要重新加载后才能立即使用。"
+        prompt_read choice "现在重新加载登录 Shell？[Y/n]: "
+    else
+        echo "If you just installed Node.js, bun, Claude Code, or Codex, reload the current shell to use them immediately."
+        prompt_read choice "Reload the login shell now? [Y/n]: "
+    fi
+
+    case "${choice:-Y}" in
+        [Nn]*)
+            if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+                info "稍后可手动运行：${reload_cmd}"
+            else
+                info "You can reload later with: ${reload_cmd}"
+            fi
+            ;;
+        *)
+            if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+                info "正在重新加载登录 Shell..."
+            else
+                info "Reloading login shell..."
+            fi
+            reload_current_shell
+            ;;
+    esac
 }
 
 init_download_paths() {
@@ -481,6 +532,7 @@ install_or_run() {
                     export "${env_args[@]}"
                 fi
                 run_with_tty "$DOWNLOAD_PATH"
+                maybe_reload_shell_after_temp_run
             else
                 # Full initialization: needs root
                 if ! can_run_as_root; then
@@ -512,6 +564,7 @@ install_or_run() {
                 else
                     run_with_tty sudo env "${env_args[@]}" "$DOWNLOAD_PATH"
                 fi
+                maybe_reload_shell_after_temp_run
             fi
             ;;
         2)

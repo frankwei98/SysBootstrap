@@ -194,6 +194,9 @@ func RunCmd(registry *modules.Registry) error {
 	}
 
 	log.Success(i18n.T("runner_all_done"))
+	if needsShellReloadHint(ordered) {
+		log.Warnf(i18n.T("shell_reload_hint"), shellReloadCommand())
+	}
 	return nil
 }
 
@@ -413,7 +416,27 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 	}
 
 	log.Successf(i18n.T("runner_completed"), m.Name())
+	if needsShellReloadHint(append(append([]string{}, missing...), moduleID)) {
+		log.Warnf(i18n.T("shell_reload_hint"), shellReloadCommand())
+	}
 	return nil
+}
+
+func needsShellReloadHint(moduleIDs []string) bool {
+	for _, id := range moduleIDs {
+		if id == "node" || id == "ai" {
+			return true
+		}
+	}
+	return false
+}
+
+func shellReloadCommand() string {
+	shellPath := os.Getenv("SHELL")
+	if shellPath == "" {
+		shellPath = "/bin/bash"
+	}
+	return fmt.Sprintf("exec %s -l", shellPath)
 }
 
 // uninstallFlags holds parsed uninstall command flags.

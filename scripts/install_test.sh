@@ -45,12 +45,14 @@ assert_equal() {
 }
 
 CAPTURED_CMD=""
+CAPTURED_RELOAD_CMD=""
 PROMPT_VALUES=()
 PROMPT_INDEX=0
 CAN_USE_SUDO_STUB=0
 
 reset_state() {
     CAPTURED_CMD=""
+    CAPTURED_RELOAD_CMD=""
     PROMPT_VALUES=()
     PROMPT_INDEX=0
     # These globals are consumed by the sourced installer logic.
@@ -102,6 +104,10 @@ run_with_tty() {
     CAPTURED_CMD="$*"
 }
 
+reload_current_shell() {
+    CAPTURED_RELOAD_CMD="$(shell_reload_command)"
+}
+
 can_use_sudo() {
     return "$CAN_USE_SUDO_STUB"
 }
@@ -137,7 +143,7 @@ test_choose_run_mode_default() {
 test_temp_user_mode_no_sudo() {
     TEST_NAME="temp run user mode: no sudo"
     reset_state
-    PROMPT_VALUES=("1" "1")
+    PROMPT_VALUES=("1" "1" "n")
     install_or_run >/dev/null
     assert_not_contains "$CAPTURED_CMD" "sudo"
     assert_contains "$CAPTURED_CMD" "/tmp/fake/sys-bootstrap"
@@ -147,7 +153,7 @@ test_temp_user_mode_no_sudo() {
 test_temp_full_mode_nonroot_uses_sudo() {
     TEST_NAME="temp run full mode non-root: uses sudo env"
     reset_state
-    PROMPT_VALUES=("1" "2")
+    PROMPT_VALUES=("1" "2" "n")
     SYS_BOOTSTRAP_TEST_EUID=1000
     CAN_USE_SUDO_STUB=0
     install_or_run >/dev/null
@@ -159,7 +165,7 @@ test_temp_full_mode_nonroot_uses_sudo() {
 test_temp_full_mode_root_no_sudo() {
     TEST_NAME="temp run full mode root: no sudo"
     reset_state
-    PROMPT_VALUES=("1" "2")
+    PROMPT_VALUES=("1" "2" "n")
     SYS_BOOTSTRAP_TEST_EUID=0
     install_or_run >/dev/null
     assert_not_contains "$CAPTURED_CMD" "sudo"
@@ -198,7 +204,7 @@ test_env_vars_zh_cn() {
     TEST_NAME="env vars: SYS_BOOTSTRAP_LANG=zh-CN"
     reset_state
     LANG_CHOICE="zh-CN"
-    PROMPT_VALUES=("1" "1")
+    PROMPT_VALUES=("1" "1" "n")
     install_or_run >/dev/null
     assert_equal "${SYS_BOOTSTRAP_LANG:-}" "zh-CN"
 }
@@ -207,7 +213,7 @@ test_env_vars_apt_mirror() {
     TEST_NAME="env vars: SYS_BOOTSTRAP_APT_MIRROR passed when set"
     reset_state
     APT_MIRROR="cernet"
-    PROMPT_VALUES=("1" "1")
+    PROMPT_VALUES=("1" "1" "n")
     install_or_run >/dev/null
     assert_equal "${SYS_BOOTSTRAP_APT_MIRROR:-}" "cernet"
 }
@@ -219,7 +225,7 @@ test_env_vars_full_mode_combined() {
     LANG_CHOICE="zh-CN"
     # shellcheck disable=SC2034
     APT_MIRROR="cernet"
-    PROMPT_VALUES=("1" "2")
+    PROMPT_VALUES=("1" "2" "n")
     # shellcheck disable=SC2034
     SYS_BOOTSTRAP_TEST_EUID=1000
     CAN_USE_SUDO_STUB=0
@@ -228,6 +234,23 @@ test_env_vars_full_mode_combined() {
     assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_LANG=zh-CN"
     assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_APT_MIRROR=cernet"
     assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_RUN_MODE=full"
+}
+
+test_temp_run_reload_shell_declined() {
+    TEST_NAME="temp run: decline shell reload"
+    reset_state
+    PROMPT_VALUES=("1" "1" "n")
+    install_or_run >/dev/null
+    assert_equal "$CAPTURED_RELOAD_CMD" ""
+}
+
+test_temp_run_reload_shell_default_yes() {
+    TEST_NAME="temp run: shell reload defaults to yes"
+    reset_state
+    PROMPT_VALUES=("1" "1" "")
+    install_or_run >/dev/null
+    assert_contains "$CAPTURED_RELOAD_CMD" "exec "
+    assert_contains "$CAPTURED_RELOAD_CMD" " -l"
 }
 
 echo "Running install.sh tests..."
@@ -244,6 +267,8 @@ test_install_requires_root
 test_env_vars_zh_cn
 test_env_vars_apt_mirror
 test_env_vars_full_mode_combined
+test_temp_run_reload_shell_declined
+test_temp_run_reload_shell_default_yes
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
