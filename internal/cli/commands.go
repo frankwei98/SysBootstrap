@@ -25,13 +25,6 @@ const (
 	RunModeFull RunMode = "full"
 )
 
-// userLevelModuleIDs are the modules that can run without root.
-var userLevelModuleIDs = map[string]bool{
-	"node":       true,
-	"ai":         true,
-	"ssh_keygen": true,
-}
-
 // resolveRunMode determines the run mode from env var or interactive prompt.
 // Priority: SYS_BOOTSTRAP_RUN_MODE env > interactive prompt > error.
 func resolveRunMode(interactive bool) (RunMode, error) {
@@ -105,7 +98,7 @@ func RunCmd(registry *modules.Registry) error {
 	case RunModeUser:
 		log.Info(i18n.T("run_mode_user_header"))
 		// User-level mode: only show user-level modules, no base injection
-		selected, err = ui.ModuleSelectFiltered(registry, userLevelModuleIDs)
+		selected, err = ui.ModuleSelectFiltered(registry, app.UserLevelModuleSet())
 		if err != nil {
 			return err
 		}
@@ -118,48 +111,15 @@ func RunCmd(registry *modules.Registry) error {
 		}
 	}
 
-	// Check if ai is selected without node
-	hasAI := false
-	hasNode := false
-	for _, id := range selected {
-		if id == "ai" {
-			hasAI = true
-		}
-		if id == "node" {
-			hasNode = true
-		}
-	}
-	if hasAI && !hasNode {
-		log.Warn("AI module requires Node.js — adding node to selection")
-		selected = append([]string{"node"}, selected...)
-	}
-
-	// Inject base only in full mode
-	if mode == RunModeFull {
-		selected = append([]string{"base"}, selected...)
-	}
-
-	// Resolve order
-	ordered, err := registry.ResolveOrder(selected)
+	// Build final module list (ai→node injection, base injection, dependency order)
+	ordered, err := buildModuleList(registry, mode, selected)
 	if err != nil {
 		return err
 	}
 
-	// In full mode, check if root-required modules are selected and we're not root
-	if mode == RunModeFull && !sys.IsRoot {
-		var rootMods []string
-		for _, id := range ordered {
-			m, err := registry.Get(id)
-			if err != nil {
-				continue
-			}
-			if m.RequiresRoot() {
-				rootMods = append(rootMods, m.Name())
-			}
-		}
-		if len(rootMods) > 0 {
-			return fmt.Errorf(i18n.T("run_full_needs_root"), strings.Join(rootMods, ", "))
-		}
+	// In full mode, fail early if root-required modules are present without root
+	if err := checkFullModeRoot(registry, ordered, sys.IsRoot); err != nil {
+		return err
 	}
 
 	// Root user install protection: check before collecting config

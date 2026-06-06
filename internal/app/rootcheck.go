@@ -11,10 +11,27 @@ import (
 )
 
 // userLevelModules lists module IDs that install into the current user's home directory.
+// This is the single source of truth for the user-level module set.
 var userLevelModules = map[string]bool{
 	"node":       true,
 	"ai":         true,
 	"ssh_keygen": true,
+}
+
+// IsUserLevelModule reports whether the given module ID is a user-level module
+// (does not require root). This is the single source of truth.
+func IsUserLevelModule(id string) bool {
+	return userLevelModules[id]
+}
+
+// UserLevelModuleSet returns a copy of the user-level module ID set.
+// Callers should not modify the returned map; use IsUserLevelModule for checks.
+func UserLevelModuleSet() map[string]bool {
+	cp := make(map[string]bool, len(userLevelModules))
+	for k, v := range userLevelModules {
+		cp[k] = v
+	}
+	return cp
 }
 
 // CheckRootUserInstall warns when root is running user-level modules.

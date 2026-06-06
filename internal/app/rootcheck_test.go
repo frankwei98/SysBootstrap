@@ -123,3 +123,47 @@ func TestUserLevelModuleIDs_WithDeps(t *testing.T) {
 		t.Errorf("UserLevelModuleIDs([ai, node]) = %v, want both ai and node", got)
 	}
 }
+
+func TestIsUserLevelModule(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{"node", true},
+		{"ai", true},
+		{"ssh_keygen", true},
+		{"base", false},
+		{"ssh", false},
+		{"user", false},
+		{"nonexistent", false},
+	}
+	for _, tt := range tests {
+		if got := IsUserLevelModule(tt.id); got != tt.want {
+			t.Errorf("IsUserLevelModule(%q) = %v, want %v", tt.id, got, tt.want)
+		}
+	}
+}
+
+func TestUserLevelModuleSet_ReturnsCopy(t *testing.T) {
+	s1 := UserLevelModuleSet()
+	s2 := UserLevelModuleSet()
+
+	// Verify contents
+	expected := map[string]bool{"node": true, "ai": true, "ssh_keygen": true}
+	for id := range expected {
+		if !s1[id] {
+			t.Errorf("UserLevelModuleSet() missing %q", id)
+		}
+	}
+	for id := range s1 {
+		if !expected[id] {
+			t.Errorf("UserLevelModuleSet() has unexpected %q", id)
+		}
+	}
+
+	// Verify independence
+	s1["injected"] = true
+	if s2["injected"] {
+		t.Error("UserLevelModuleSet should return independent copies")
+	}
+}

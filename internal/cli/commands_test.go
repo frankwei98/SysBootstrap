@@ -267,18 +267,3 @@ func TestResolveRunMode_NonInteractive_NoEnv(t *testing.T) {
 		t.Error("expected error when non-interactive and no env var")
 	}
 }
-
-func TestUserLevelModuleIDs(t *testing.T) {
-	expected := map[string]bool{"node": true, "ai": true, "ssh_keygen": true}
-	for id := range expected {
-		if !userLevelModuleIDs[id] {
-			t.Errorf("userLevelModuleIDs missing %q", id)
-		}
-	}
-	// Ensure root modules are not in the map
-	for _, id := range []string{"base", "ssh", "user"} {
-		if userLevelModuleIDs[id] {
-			t.Errorf("userLevelModuleIDs should not contain %q", id)
-		}
-	}
-}

@@ -37,6 +37,14 @@ has_tty() {
     [[ -r /dev/tty && -w /dev/tty ]]
 }
 
+current_euid() {
+    if [[ -n "${SYS_BOOTSTRAP_TEST_EUID:-}" ]]; then
+        echo "$SYS_BOOTSTRAP_TEST_EUID"
+        return
+    fi
+    echo "$EUID"
+}
+
 prompt_read() {
     local __var_name="$1"
     local __prompt="$2"
@@ -75,11 +83,11 @@ can_use_sudo() {
 }
 
 can_run_as_root() {
-    [[ $EUID -eq 0 ]] || can_use_sudo
+    [[ $(current_euid) -eq 0 ]] || can_use_sudo
 }
 
 root_access_label() {
-    if [[ $EUID -eq 0 ]]; then
+    if [[ $(current_euid) -eq 0 ]]; then
         if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
             echo "已具备（当前为 root）"
         else
@@ -101,7 +109,7 @@ root_access_label() {
 }
 
 root_required_label() {
-    if [[ $EUID -eq 0 ]]; then
+    if [[ $(current_euid) -eq 0 ]]; then
         if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
             echo "需要 root：当前为 root"
         else
@@ -123,7 +131,7 @@ root_required_label() {
 }
 
 run_as_root() {
-    if [[ $EUID -eq 0 ]]; then
+    if [[ $(current_euid) -eq 0 ]]; then
         "$@"
         return
     fi
@@ -484,13 +492,13 @@ install_or_run() {
                 fi
                 env_args+=("SYS_BOOTSTRAP_RUN_MODE=full")
                 if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
-                    if [[ $EUID -eq 0 ]]; then
+                    if [[ $(current_euid) -eq 0 ]]; then
                         info "正在以完整初始化模式运行..."
                     else
                         info "正在使用 sudo 以完整初始化模式运行..."
                     fi
                 else
-                    if [[ $EUID -eq 0 ]]; then
+                    if [[ $(current_euid) -eq 0 ]]; then
                         info "Running in full initialization mode..."
                     else
                         info "Running in full initialization mode with sudo..."
@@ -499,7 +507,7 @@ install_or_run() {
                 if [[ ${#env_args[@]} -gt 0 ]]; then
                     export "${env_args[@]}"
                 fi
-                if [[ $EUID -eq 0 ]]; then
+                if [[ $(current_euid) -eq 0 ]]; then
                     run_with_tty "$DOWNLOAD_PATH"
                 else
                     run_with_tty sudo env "${env_args[@]}" "$DOWNLOAD_PATH"
@@ -514,7 +522,7 @@ install_or_run() {
                     die "Installing to ${INSTALL_DIR} requires root, but sudo is not available."
                 fi
             fi
-            if [[ $EUID -ne 0 ]]; then
+            if [[ $(current_euid) -ne 0 ]]; then
                 if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
                     info "正在使用 sudo 安装到 ${INSTALL_DIR}..."
                 else
@@ -579,4 +587,6 @@ main() {
     install_or_run
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
