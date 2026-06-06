@@ -83,6 +83,8 @@ var zhCNMessages = map[string]string{
 	"form_username_desc":         "要创建的系统用户",
 	"form_shell":                 "默认 Shell",
 	"form_add_sudo":              "添加到 sudo 组？",
+	"form_passwordless_sudo":      "启用免密 sudo？",
+	"form_passwordless_sudo_desc": "会写入 sudoers.d 的 NOPASSWD 规则。如关闭，将运行 passwd 为该用户设置 sudo 密码。",
 	"form_add_user_key":          "添加 SSH 公钥？",
 	"form_key_source":            "公钥来源",
 	"form_key_source_paste":      "粘贴公钥",

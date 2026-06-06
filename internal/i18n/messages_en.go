@@ -83,6 +83,8 @@ var enMessages = map[string]string{
 	"form_username_desc":         "New system user to create",
 	"form_shell":                 "Default Shell",
 	"form_add_sudo":              "Add to sudo group?",
+	"form_passwordless_sudo":      "Enable passwordless sudo?",
+	"form_passwordless_sudo_desc": "Writes a sudoers.d rule for NOPASSWD. If disabled, passwd will run so the user can sudo with a password.",
 	"form_add_user_key":          "Add SSH public key?",
 	"form_key_source":            "Public key source",
 	"form_key_source_paste":      "Paste public key",

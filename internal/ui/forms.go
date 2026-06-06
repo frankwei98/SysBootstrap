@@ -109,6 +109,7 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 // UserConfigForm collects user module configuration.
 func UserConfigForm(cfg *types.Config) error {
 	shell := "zsh"
+	passwordlessSudo := true
 
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -136,6 +137,21 @@ func UserConfigForm(cfg *types.Config) error {
 		return err
 	}
 	cfg.UserShell = shell
+
+	if cfg.UserAddSudo {
+		sudoForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title(i18n.T("form_passwordless_sudo")).
+					Description(i18n.T("form_passwordless_sudo_desc")).
+					Value(&passwordlessSudo),
+			),
+		)
+		if err := sudoForm.Run(); err != nil {
+			return err
+		}
+		cfg.UserPasswordlessSudo = passwordlessSudo
+	}
 
 	if cfg.UserAddKey {
 		source := "paste"

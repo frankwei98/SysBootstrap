@@ -102,6 +102,20 @@ func RunQuiet(name string, args ...string) bool {
 	return cmd.Run() == nil
 }
 
+// RunInteractiveContext executes a command attached to the current terminal.
+func RunInteractiveContext(ctx context.Context, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// RunInteractive executes a command attached to the current terminal.
+func RunInteractive(name string, args ...string) error {
+	return RunInteractiveContext(context.Background(), name, args...)
+}
+
 // RunQuietOutput executes a command and returns trimmed stdout.
 func RunQuietOutput(name string, args ...string) string {
 	res, err := Run(name, args...)

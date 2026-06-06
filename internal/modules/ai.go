@@ -72,6 +72,11 @@ func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Conf
 		log.Warn("pnpm not found in nvm environment, falling back to npm")
 	}
 	log.Infof("Using %s for installation", pm)
+	if pm == "pnpm" {
+		if err := ensurePnpmUserDirs(sys); err != nil {
+			return err
+		}
+	}
 
 	installClaude := cfg.InstallClaudeCode || (!cfg.InstallClaudeCode && !cfg.InstallCodex)
 	installCodex := cfg.InstallCodex || (!cfg.InstallClaudeCode && !cfg.InstallCodex)
@@ -104,5 +109,58 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 		log.Success("Codex installed")
 	}
 
+	return nil
+}
+
+func ensurePnpmUserDirs(sys *system.Context) error {
+	home := system.TargetHomeDir(sys)
+	if home == "" {
+		return fmt.Errorf("cannot determine target home directory for pnpm")
+	}
+
+	dirs := []string{
+		filepath.Join(home, ".local", "share", "pnpm", "bin"),
+		filepath.Join(home, ".config", "pnpm"),
+	}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("failed to create pnpm directory %s: %w", dir, err)
+		}
+	}
+
+	if os.Geteuid() != 0 {
+		return nil
+	}
+
+	username := system.TargetUsername(sys)
+	if username == "" || username == "root" {
+		return nil
+	}
+
+	targetUser := system.TargetUser(sys)
+	owner := fmt.Sprintf("%s:%s", username, username)
+	if targetUser != nil && targetUser.Uid != "" && targetUser.Gid != "" {
+		owner = fmt.Sprintf("%s:%s", targetUser.Uid, targetUser.Gid)
+	}
+	parentDirs := []string{
+		filepath.Join(home, ".local"),
+		filepath.Join(home, ".local", "share"),
+		filepath.Join(home, ".config"),
+	}
+	for _, path := range parentDirs {
+		if res, err := system.Run("chown", owner, path); err != nil || res.ExitCode != 0 {
+			return fmt.Errorf("failed to chown pnpm directory %s: %s", path, res.Stderr)
+		}
+	}
+
+	pnpmDirs := []string{
+		filepath.Join(home, ".local", "share", "pnpm"),
+		filepath.Join(home, ".config", "pnpm"),
+	}
+	for _, path := range pnpmDirs {
+		if res, err := system.Run("chown", "-R", owner, path); err != nil || res.ExitCode != 0 {
+			return fmt.Errorf("failed to chown pnpm directory %s: %s", path, res.Stderr)
+		}
+	}
 	return nil
 }

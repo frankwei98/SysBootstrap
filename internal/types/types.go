@@ -24,13 +24,14 @@ type Config struct {
 	InstallCodex      bool
 
 	// User
-	NewUsername    string
-	UserShell      string
-	UserAddSudo    bool
-	UserAddKey     bool
-	UserPublicKey  string
-	UserKeySource  string // "paste" or "github"
-	UserGitHubUser string
+	NewUsername          string
+	UserShell            string
+	UserAddSudo          bool
+	UserPasswordlessSudo bool
+	UserAddKey           bool
+	UserPublicKey        string
+	UserKeySource        string // "paste" or "github"
+	UserGitHubUser       string
 
 	// SSH Keygen
 	KeygenType      string // "ed25519" or "rsa"

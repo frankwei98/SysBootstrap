@@ -40,6 +40,11 @@ func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 	}
 	if cfg.UserAddSudo {
 		steps = append(steps, types.Step{Module: "user", Title: "Add to sudo group", Detail: cfg.NewUsername})
+		if cfg.UserPasswordlessSudo {
+			steps = append(steps, types.Step{Module: "user", Title: "Enable passwordless sudo", Detail: "/etc/sudoers.d/sys-bootstrap-" + cfg.NewUsername})
+		} else {
+			steps = append(steps, types.Step{Module: "user", Title: "Set password", Detail: "Run passwd " + cfg.NewUsername + " so sudo can prompt for a password", Risk: "interactive"})
+		}
 	}
 	if cfg.UserAddKey {
 		if cfg.UserKeySource == "github" && cfg.UserGitHubUser != "" {
@@ -48,7 +53,9 @@ func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 			steps = append(steps, types.Step{Module: "user", Title: "Write SSH public key", Detail: "authorized_keys"})
 		}
 	}
-	steps = append(steps, types.Step{Module: "user", Title: "Set password", Detail: "No password set automatically — run passwd " + cfg.NewUsername + " manually", Risk: "manual-step"})
+	if !cfg.UserAddSudo {
+		steps = append(steps, types.Step{Module: "user", Title: "Set password", Detail: "No password set automatically — run passwd " + cfg.NewUsername + " manually", Risk: "manual-step"})
+	}
 	return steps, nil
 }
 
@@ -82,6 +89,9 @@ func (m *UserModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 			return fmt.Errorf("failed to add %s to sudo group: %s", username, res.Stderr)
 		}
 		log.Successf("%s added to sudo group", username)
+		if err := m.configureSudo(username, cfg, log); err != nil {
+			return err
+		}
 	}
 
 	// Write SSH public key
@@ -89,8 +99,9 @@ func (m *UserModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 		return err
 	}
 
-	// Prompt for password
-	log.Warnf("⚠ Please set password manually: passwd %s", username)
+	if err := m.setPasswordIfNeeded(ctx, username, cfg, log); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -103,13 +114,83 @@ func (m *UserModule) supplementUser(ctx context.Context, username string, cfg *t
 		} else {
 			log.Successf("%s added to sudo group", username)
 		}
+		if err := m.configureSudo(username, cfg, log); err != nil {
+			return err
+		}
 	}
 
 	if err := m.writeSSHKey(username, cfg, log); err != nil {
 		return err
 	}
 
-	log.Warnf("⚠ Please set password manually: passwd %s", username)
+	return m.setPasswordIfNeeded(ctx, username, cfg, log)
+}
+
+func (m *UserModule) configureSudo(username string, cfg *types.Config, log *logging.Logger) error {
+	if cfg.UserPasswordlessSudo {
+		if err := writePasswordlessSudo(username); err != nil {
+			return err
+		}
+		log.Successf("Passwordless sudo enabled for %s", username)
+		return nil
+	}
+
+	if err := removePasswordlessSudo(username); err != nil {
+		return err
+	}
+	log.Infof("Passwordless sudo disabled for %s", username)
+	return nil
+}
+
+func (m *UserModule) setPasswordIfNeeded(ctx context.Context, username string, cfg *types.Config, log *logging.Logger) error {
+	if cfg.UserAddSudo && !cfg.UserPasswordlessSudo {
+		log.Warnf("Set a password for %s so sudo can authenticate this user.", username)
+		if err := system.RunInteractiveContext(ctx, "passwd", username); err != nil {
+			return fmt.Errorf("failed to set password for %s: %w", username, err)
+		}
+		return nil
+	}
+
+	if !cfg.UserAddSudo {
+		log.Warnf("⚠ Please set password manually: passwd %s", username)
+	}
+	return nil
+}
+
+func sudoersFile(username string) string {
+	return filepath.Join("/etc/sudoers.d", "sys-bootstrap-"+username)
+}
+
+func writePasswordlessSudo(username string) error {
+	path := sudoersFile(username)
+	tmp := path + ".tmp"
+	content := fmt.Sprintf("%s ALL=(ALL) NOPASSWD: ALL\n", username)
+
+	if err := os.WriteFile(tmp, []byte(content), 0o440); err != nil {
+		return fmt.Errorf("failed to write sudoers rule: %w", err)
+	}
+	if res, err := system.Run("chmod", "0440", tmp); err != nil || res.ExitCode != 0 {
+		os.Remove(tmp)
+		return fmt.Errorf("failed to chmod sudoers rule: %s", res.Stderr)
+	}
+	if system.CommandExists("visudo") {
+		if res, err := system.Run("visudo", "-cf", tmp); err != nil || res.ExitCode != 0 {
+			os.Remove(tmp)
+			return fmt.Errorf("invalid sudoers rule for %s: %s", username, res.Stderr)
+		}
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("failed to install sudoers rule: %w", err)
+	}
+	return nil
+}
+
+func removePasswordlessSudo(username string) error {
+	path := sudoersFile(username)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove passwordless sudo rule: %w", err)
+	}
 	return nil
 }
 
