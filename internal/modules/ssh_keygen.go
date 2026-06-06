@@ -23,7 +23,7 @@ func (m *SSHKeygenModule) RequiresRoot() bool     { return false }
 func (m *SSHKeygenModule) Dependencies() []string { return nil }
 
 func (m *SSHKeygenModule) Check(ctx context.Context, sys *system.Context) CheckResult {
-	home, _ := os.UserHomeDir()
+	home := system.TargetHomeDir(sys)
 	keyFile := filepath.Join(home, ".ssh", "id_ed25519")
 	if _, err := os.Stat(keyFile); err == nil {
 		return CheckResult{Satisfied: true, Message: "ed25519 key already exists"}
@@ -47,11 +47,20 @@ func (m *SSHKeygenModule) Run(ctx context.Context, sys *system.Context, cfg *typ
 		keyType = "ed25519"
 	}
 
-	home, _ := os.UserHomeDir()
+	home := system.TargetHomeDir(sys)
 	sshDir := filepath.Join(home, ".ssh")
 	keyFile := filepath.Join(sshDir, "id_"+keyType)
 
-	os.MkdirAll(sshDir, 0o700)
+	if sys != nil && sys.InvokingUser != nil {
+		if res, err := system.RunAsUserWithInput(sys, "", "mkdir", "-p", sshDir); err != nil || res.ExitCode != 0 {
+			return fmt.Errorf("failed to create .ssh directory: %s", res.Stderr)
+		}
+		if res, err := system.RunAsUserWithInput(sys, "", "chmod", "700", sshDir); err != nil || res.ExitCode != 0 {
+			return fmt.Errorf("failed to set .ssh permissions: %s", res.Stderr)
+		}
+	} else {
+		os.MkdirAll(sshDir, 0o700)
+	}
 
 	// Check if key already exists
 	if _, err := os.Stat(keyFile); err == nil {
@@ -67,7 +76,7 @@ func (m *SSHKeygenModule) Run(ctx context.Context, sys *system.Context, cfg *typ
 	comment := cfg.KeygenComment
 	if comment == "" {
 		hostname, _ := os.Hostname()
-		comment = sys.CurrentUser.Username + "@" + hostname
+		comment = system.TargetUsername(sys) + "@" + hostname
 	}
 
 	// Generate key
@@ -83,16 +92,21 @@ func (m *SSHKeygenModule) Run(ctx context.Context, sys *system.Context, cfg *typ
 	var res *system.Result
 	var err error
 	if cfg.KeygenOverwrite {
-		res, err = system.RunWithInput("y\n", "ssh-keygen", args...)
+		res, err = system.RunAsUserWithInput(sys, "y\n", "ssh-keygen", args...)
 	} else {
-		res, err = system.Run("ssh-keygen", args...)
+		res, err = system.RunAsUserWithInput(sys, "", "ssh-keygen", args...)
 	}
 	if err != nil || res.ExitCode != 0 {
 		return fmt.Errorf("ssh-keygen failed: %s", res.Stderr)
 	}
 
-	os.Chmod(keyFile, 0o600)
-	os.Chmod(keyFile+".pub", 0o644)
+	if sys != nil && sys.InvokingUser != nil {
+		system.RunAsUserWithInput(sys, "", "chmod", "600", keyFile)
+		system.RunAsUserWithInput(sys, "", "chmod", "644", keyFile+".pub")
+	} else {
+		os.Chmod(keyFile, 0o600)
+		os.Chmod(keyFile+".pub", 0o644)
+	}
 
 	log.Success("SSH key generated:")
 	log.Infof("  Private: %s", keyFile)

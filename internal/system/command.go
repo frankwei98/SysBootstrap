@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -76,6 +77,23 @@ func RunWithInputContext(ctx context.Context, input string, name string, args ..
 	return result, nil
 }
 
+// RunAsUserWithInputContext executes a command as the invoking non-root user
+// when the process is running as root via sudo. Otherwise it runs directly.
+func RunAsUserWithInputContext(ctx context.Context, sys *Context, input string, name string, args ...string) (*Result, error) {
+	if sys == nil || sys.InvokingUser == nil {
+		return RunWithInputContext(ctx, input, name, args...)
+	}
+
+	sudoArgs := []string{"-H", "-u", sys.InvokingUser.Username, "env", "HOME=" + sys.InvokingUser.HomeDir, name}
+	sudoArgs = append(sudoArgs, args...)
+	return RunWithInputContext(ctx, input, "sudo", sudoArgs...)
+}
+
+// RunAsUserWithInput executes a command as the invoking non-root user when needed.
+func RunAsUserWithInput(sys *Context, input string, name string, args ...string) (*Result, error) {
+	return RunAsUserWithInputContext(context.Background(), sys, input, name, args...)
+}
+
 // RunQuiet executes a command discarding output, returning only error status.
 func RunQuiet(name string, args ...string) bool {
 	cmd := exec.Command(name, args...)
@@ -112,6 +130,43 @@ func NvmDir() string {
 	return filepath.Join(home, ".nvm")
 }
 
+// TargetUser returns the user that should receive user-level installs.
+func TargetUser(sys *Context) *user.User {
+	if sys != nil && sys.InvokingUser != nil {
+		return sys.InvokingUser
+	}
+	if sys != nil && sys.CurrentUser != nil {
+		return sys.CurrentUser
+	}
+	u, _ := user.Current()
+	return u
+}
+
+// TargetHomeDir returns the home directory that should receive user-level installs.
+func TargetHomeDir(sys *Context) string {
+	if u := TargetUser(sys); u != nil && u.HomeDir != "" {
+		return u.HomeDir
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+// TargetUsername returns the username that should receive user-level installs.
+func TargetUsername(sys *Context) string {
+	if u := TargetUser(sys); u != nil && u.Username != "" {
+		return u.Username
+	}
+	return ""
+}
+
+// NvmDirForContext returns the NVM directory for the user-level install target.
+func NvmDirForContext(sys *Context) string {
+	if d := os.Getenv("NVM_DIR"); d != "" && (sys == nil || sys.InvokingUser == nil) {
+		return d
+	}
+	return filepath.Join(TargetHomeDir(sys), ".nvm")
+}
+
 // NvmShellScript wraps a script body with nvm.sh sourcing so that
 // node/pnpm/bun installed via nvm are available on PATH.
 func NvmShellScript(script string) string {
@@ -123,13 +178,34 @@ export PATH="$PNPM_HOME:$PNPM_HOME/bin:$BUN_INSTALL/bin:$PATH"
 %s`, NvmDir(), script)
 }
 
+// NvmShellScriptForContext wraps a script with nvm paths for the user-level target.
+func NvmShellScriptForContext(sys *Context, script string) string {
+	return fmt.Sprintf(`export NVM_DIR="%s"
+export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
+export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+export PATH="$PNPM_HOME:$PNPM_HOME/bin:$BUN_INSTALL/bin:$PATH"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+%s`, NvmDirForContext(sys), script)
+}
+
 // RunInNvmShell executes a script in a bash shell with nvm sourced.
 func RunInNvmShell(script string) (*Result, error) {
 	return RunWithInput("", "bash", "-c", NvmShellScript(script))
 }
 
+// RunInNvmShellForContext executes an nvm-aware shell as the user-level target.
+func RunInNvmShellForContext(sys *Context, script string) (*Result, error) {
+	return RunAsUserWithInput(sys, "", "bash", "-c", NvmShellScriptForContext(sys, script))
+}
+
 // NvmCommandExists checks if a binary is available inside an nvm-aware shell.
 func NvmCommandExists(name string) bool {
 	res, err := RunInNvmShell(fmt.Sprintf("command -v %s", name))
+	return err == nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != ""
+}
+
+// NvmCommandExistsForContext checks command availability for the user-level target.
+func NvmCommandExistsForContext(sys *Context, name string) bool {
+	res, err := RunInNvmShellForContext(sys, fmt.Sprintf("command -v %s", name))
 	return err == nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != ""
 }

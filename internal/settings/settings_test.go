@@ -2,6 +2,7 @@ package settings
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -143,6 +144,21 @@ func TestSaveUser_EmptyFieldsOmitted(t *testing.T) {
 	content := string(data)
 	if strings.Contains(content, "apt_mirror") {
 		t.Errorf("config should not contain apt_mirror when empty: %s", content)
+	}
+}
+
+func TestUserHomeDirUsesSudoUser(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Skipf("cannot determine current user: %v", err)
+	}
+	if current.Username == "" || current.HomeDir == "" || current.Username == "root" {
+		t.Skip("test requires a non-root current user")
+	}
+
+	t.Setenv("SUDO_USER", current.Username)
+	if got := userHomeDir(); got != current.HomeDir {
+		t.Errorf("userHomeDir() = %q, want %q", got, current.HomeDir)
 	}
 }
 

@@ -36,6 +36,10 @@ func CheckRootUserInstall(sys *system.Context, moduleIDs []string, interactive b
 		return nil // no user-level modules selected
 	}
 
+	if sys.InvokingUser != nil {
+		return nil // root via sudo: user-level modules target the invoking user
+	}
+
 	modList := strings.Join(userMods, ", ")
 
 	// Check for explicit override

@@ -23,15 +23,15 @@ func (m *AIModule) RequiresRoot() bool     { return false }
 func (m *AIModule) Dependencies() []string { return []string{"node"} }
 
 func (m *AIModule) Check(ctx context.Context, sys *system.Context) CheckResult {
-	if _, err := os.Stat(filepath.Join(system.NvmDir(), "nvm.sh")); err != nil {
+	if _, err := os.Stat(filepath.Join(system.NvmDirForContext(sys), "nvm.sh")); err != nil {
 		return CheckResult{Satisfied: false, Message: "Node.js not installed (run node module first)"}
 	}
-	if !system.NvmCommandExists("node") {
+	if !system.NvmCommandExistsForContext(sys, "node") {
 		return CheckResult{Satisfied: false, Message: "Node.js not installed (run node module first)"}
 	}
 
-	hasClaude := system.NvmCommandExists("claude")
-	hasCodex := system.NvmCommandExists("codex")
+	hasClaude := system.NvmCommandExistsForContext(sys, "claude")
+	hasCodex := system.NvmCommandExistsForContext(sys, "codex")
 	if hasClaude && hasCodex {
 		return CheckResult{Satisfied: true, Message: "Claude Code and Codex installed"}
 	}
@@ -57,16 +57,16 @@ func (m *AIModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Con
 }
 
 func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
-	if _, err := os.Stat(filepath.Join(system.NvmDir(), "nvm.sh")); err != nil {
+	if _, err := os.Stat(filepath.Join(system.NvmDirForContext(sys), "nvm.sh")); err != nil {
 		return fmt.Errorf("Node.js is not installed — please run the node module first")
 	}
-	if !system.NvmCommandExists("node") {
+	if !system.NvmCommandExistsForContext(sys, "node") {
 		return fmt.Errorf("Node.js is not installed — please run the node module first")
 	}
 
 	// Detect package manager inside nvm-aware shell
 	pm := "npm"
-	if system.NvmCommandExists("pnpm") {
+	if system.NvmCommandExistsForContext(sys, "pnpm") {
 		pm = "pnpm"
 	} else {
 		log.Warn("pnpm not found in nvm environment, falling back to npm")
@@ -84,7 +84,7 @@ func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Conf
 pnpm config set global-bin-dir "$PNPM_HOME/bin"
 ` + script
 		}
-		if res, err := system.RunInNvmShell(script); err != nil || res.ExitCode != 0 {
+		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
 			return fmt.Errorf("Claude Code installation failed: %s", res.Stderr)
 		}
 		log.Success("Claude Code installed")
@@ -98,7 +98,7 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 pnpm config set global-bin-dir "$PNPM_HOME/bin"
 ` + script
 		}
-		if res, err := system.RunInNvmShell(script); err != nil || res.ExitCode != 0 {
+		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
 			return fmt.Errorf("Codex installation failed: %s", res.Stderr)
 		}
 		log.Success("Codex installed")

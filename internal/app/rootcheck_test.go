@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"os/user"
 	"testing"
 
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -71,15 +72,19 @@ func TestCheckRootUserInstall_NonInteractive_NoOverride(t *testing.T) {
 }
 
 func TestCheckRootUserInstall_NonInteractive_SudoUser(t *testing.T) {
-	// Non-interactive, sudo user, no override — should fail with clear message
+	// Non-interactive root via sudo targets the invoking user, not /root.
 	os.Unsetenv("SYS_BOOTSTRAP_CONFIRM_ROOT_USER_INSTALL")
-	os.Setenv("SUDO_USER", "frank")
-	defer os.Unsetenv("SUDO_USER")
 
-	sys := &system.Context{IsRoot: true}
+	sys := &system.Context{
+		IsRoot: true,
+		InvokingUser: &user.User{
+			Username: "frank",
+			HomeDir:  "/home/frank",
+		},
+	}
 	err := CheckRootUserInstall(sys, []string{"ai", "ssh_keygen"}, false)
-	if err == nil {
-		t.Error("CheckRootUserInstall(non-interactive, sudo) = nil, want error")
+	if err != nil {
+		t.Errorf("CheckRootUserInstall(non-interactive, sudo) = %v, want nil", err)
 	}
 }
 

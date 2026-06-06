@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -25,13 +26,25 @@ var SystemConfigPath = DefaultSystemConfigPath
 func defaultUserConfigPath() string {
 	xdg := os.Getenv("XDG_CONFIG_HOME")
 	if xdg == "" {
-		home, _ := os.UserHomeDir()
+		home := userHomeDir()
 		if home == "" {
 			return ""
 		}
 		xdg = filepath.Join(home, ".config")
 	}
 	return filepath.Join(xdg, "sys-bootstrap", "config.env")
+}
+
+func userHomeDir() string {
+	sudoUser := os.Getenv("SUDO_USER")
+	if sudoUser != "" && sudoUser != "root" {
+		u, err := user.Lookup(sudoUser)
+		if err == nil && u.HomeDir != "" {
+			return u.HomeDir
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return home
 }
 
 // UserConfigPath returns the user-level config file path. Overridable for tests.

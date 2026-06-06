@@ -1,6 +1,8 @@
 package system
 
 import (
+	"os/user"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -57,5 +59,36 @@ func TestNvmDirCustom(t *testing.T) {
 	dir := NvmDir()
 	if dir != "/opt/nvm" {
 		t.Errorf("expected /opt/nvm, got: %s", dir)
+	}
+}
+
+func TestTargetHomeDirUsesInvokingUser(t *testing.T) {
+	sys := &Context{
+		InvokingUser: &user.User{
+			Username: "frank",
+			HomeDir:  "/home/frank",
+		},
+	}
+
+	if got := TargetHomeDir(sys); got != "/home/frank" {
+		t.Errorf("TargetHomeDir() = %q, want /home/frank", got)
+	}
+	if got := TargetUsername(sys); got != "frank" {
+		t.Errorf("TargetUsername() = %q, want frank", got)
+	}
+}
+
+func TestNvmDirForContextIgnoresRootNvmDirForInvokingUser(t *testing.T) {
+	t.Setenv("NVM_DIR", "/root/.nvm")
+	sys := &Context{
+		InvokingUser: &user.User{
+			Username: "frank",
+			HomeDir:  "/home/frank",
+		},
+	}
+
+	want := filepath.Join("/home/frank", ".nvm")
+	if got := NvmDirForContext(sys); got != want {
+		t.Errorf("NvmDirForContext() = %q, want %q", got, want)
 	}
 }

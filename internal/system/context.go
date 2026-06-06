@@ -21,6 +21,7 @@ type Context struct {
 	Arch           string
 	IsRoot         bool
 	CurrentUser    *user.User
+	InvokingUser   *user.User
 	HasSystemd     bool
 	HasApt         bool
 	HasBash        bool
@@ -47,6 +48,13 @@ func NewContext() (*Context, error) {
 	}
 	ctx.CurrentUser = u
 	ctx.IsRoot = u.Uid == "0"
+	if ctx.IsRoot {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
+			if invokingUser, lookupErr := user.Lookup(sudoUser); lookupErr == nil {
+				ctx.InvokingUser = invokingUser
+			}
+		}
+	}
 
 	// OS detection
 	if err := ctx.detectOS(); err != nil {

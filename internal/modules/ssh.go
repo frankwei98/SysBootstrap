@@ -159,7 +159,7 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 		if !ValidatePublicKey(cfg.SSHPublicKey) {
 			log.Error("Invalid public key format, skipping authorized_keys write")
 		} else {
-			home := sys.CurrentUser.HomeDir
+			home := system.TargetHomeDir(sys)
 			sshDir := filepath.Join(home, ".ssh")
 			keyFile := filepath.Join(sshDir, "authorized_keys")
 
@@ -173,6 +173,9 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 			key := strings.TrimSpace(cfg.SSHPublicKey)
 			fmt.Fprintln(f, key)
 			f.Close()
+			if sys != nil && sys.InvokingUser != nil {
+				system.Run("chown", "-R", fmt.Sprintf("%s:%s", sys.InvokingUser.Username, sys.InvokingUser.Username), sshDir)
+			}
 			log.Success("SSH public key written to authorized_keys")
 		}
 	}
