@@ -2,7 +2,10 @@ package modules
 
 import (
 	"context"
+	"os"
+	"os/user"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -58,6 +61,120 @@ func TestAIModuleCheckRequiresNode(t *testing.T) {
 	result := m.Check(context.Background(), &system.Context{})
 	if result.Satisfied {
 		t.Error("ai module should not be satisfied without node")
+	}
+}
+
+func TestEnsurePnpmShellPathWritesStartupFiles(t *testing.T) {
+	home := t.TempDir()
+	sys := &system.Context{
+		CurrentUser: &user.User{
+			Username: "testuser",
+			HomeDir:  home,
+		},
+	}
+
+	if pnpmShellPathConfigured(sys) {
+		t.Fatal("pnpm shell path should not be configured before writing rc files")
+	}
+	if err := ensurePnpmShellPath(sys); err != nil {
+		t.Fatalf("ensurePnpmShellPath failed: %v", err)
+	}
+	if !pnpmShellPathConfigured(sys) {
+		t.Fatal("pnpm shell path should be configured after writing rc files")
+	}
+
+	zshrc := filepath.Join(home, ".zshrc")
+	content, err := os.ReadFile(zshrc)
+	if err != nil {
+		t.Fatalf("reading .zshrc failed: %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, `export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"`) {
+		t.Errorf(".zshrc missing PNPM_HOME export: %s", text)
+	}
+	if !strings.Contains(text, `export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"`) {
+		t.Errorf(".zshrc missing PNPM_HOME PATH export: %s", text)
+	}
+
+	if err := ensurePnpmShellPath(sys); err != nil {
+		t.Fatalf("second ensurePnpmShellPath failed: %v", err)
+	}
+	content, err = os.ReadFile(zshrc)
+	if err != nil {
+		t.Fatalf("reading .zshrc after second run failed: %v", err)
+	}
+	if count := strings.Count(string(content), "SYS_BOOTSTRAP_PNPM_HOME"); count != 1 {
+		t.Errorf("expected one pnpm marker after second run, got %d", count)
+	}
+}
+
+func TestEnsurePnpmShellPathRequiresEveryStartupFile(t *testing.T) {
+	home := t.TempDir()
+	sys := &system.Context{
+		CurrentUser: &user.User{
+			Username: "testuser",
+			HomeDir:  home,
+		},
+	}
+
+	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte(`# SYS_BOOTSTRAP_PNPM_HOME
+export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
+export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
+`), 0o644); err != nil {
+		t.Fatalf("writing .bashrc failed: %v", err)
+	}
+	if pnpmShellPathConfigured(sys) {
+		t.Fatal("pnpm shell path should require zsh, bash, and profile startup files")
+	}
+}
+
+func TestEnsureNodeShellPathWritesStartupFiles(t *testing.T) {
+	home := t.TempDir()
+	sys := &system.Context{
+		CurrentUser: &user.User{
+			Username: "testuser",
+			HomeDir:  home,
+		},
+	}
+
+	if nodeShellPathConfigured(sys) {
+		t.Fatal("node shell path should not be configured before writing rc files")
+	}
+	if err := ensureNodeShellPath(sys); err != nil {
+		t.Fatalf("ensureNodeShellPath failed: %v", err)
+	}
+	if !nodeShellPathConfigured(sys) {
+		t.Fatal("node shell path should be configured after writing rc files")
+	}
+
+	zshrc := filepath.Join(home, ".zshrc")
+	content, err := os.ReadFile(zshrc)
+	if err != nil {
+		t.Fatalf("reading .zshrc failed: %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, `export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"`) {
+		t.Errorf(".zshrc missing NVM_DIR export: %s", text)
+	}
+	if !strings.Contains(text, `[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"`) {
+		t.Errorf(".zshrc missing nvm loader: %s", text)
+	}
+	if !strings.Contains(text, `export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"`) {
+		t.Errorf(".zshrc missing BUN_INSTALL export: %s", text)
+	}
+	if !strings.Contains(text, `export PATH="$BUN_INSTALL/bin:$PATH"`) {
+		t.Errorf(".zshrc missing bun PATH export: %s", text)
+	}
+
+	if err := ensureNodeShellPath(sys); err != nil {
+		t.Fatalf("second ensureNodeShellPath failed: %v", err)
+	}
+	content, err = os.ReadFile(zshrc)
+	if err != nil {
+		t.Fatalf("reading .zshrc after second run failed: %v", err)
+	}
+	if count := strings.Count(string(content), "SYS_BOOTSTRAP_NODE_ENV"); count != 1 {
+		t.Errorf("expected one node marker after second run, got %d", count)
 	}
 }
 

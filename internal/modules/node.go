@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -53,6 +54,12 @@ func (m *NodeModule) Check(ctx context.Context, sys *system.Context) CheckResult
 		allInstalled = false
 		msg += "bun missing. "
 	}
+	if nodeShellPathConfigured(sys) {
+		msg += "shell startup configured. "
+	} else {
+		allInstalled = false
+		msg += "shell startup missing. "
+	}
 	if allInstalled {
 		return CheckResult{Satisfied: true, Message: msg}
 	}
@@ -87,6 +94,9 @@ func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 
 	if _, err := os.Stat(nvmScript); err != nil {
 		return fmt.Errorf("nvm.sh not found at %s after installation", nvmScript)
+	}
+	if err := ensureNodeShellPath(sys); err != nil {
+		return err
 	}
 
 	// Install Node.js LTS (must go through nvm-aware shell)
@@ -132,4 +142,70 @@ corepack prepare pnpm@latest --activate`
 	}
 
 	return nil
+}
+
+func nodeShellPathConfigured(sys *system.Context) bool {
+	rcFiles := nodeShellRCFiles(sys)
+	if len(rcFiles) == 0 {
+		return false
+	}
+	for _, rcFile := range rcFiles {
+		content, err := os.ReadFile(rcFile)
+		if err != nil {
+			return false
+		}
+		if !nodeShellFileConfigured(string(content)) {
+			return false
+		}
+	}
+	return true
+}
+
+func nodeShellFileConfigured(content string) bool {
+	return strings.Contains(content, "SYS_BOOTSTRAP_NODE_ENV") ||
+		(strings.Contains(content, "nvm.sh") && strings.Contains(content, "BUN_INSTALL"))
+}
+
+func ensureNodeShellPath(sys *system.Context) error {
+	home := system.TargetHomeDir(sys)
+	if home == "" {
+		return fmt.Errorf("cannot determine target home directory for node shell setup")
+	}
+
+	script := fmt.Sprintf(`set -e
+export HOME=%q
+marker="# SYS_BOOTSTRAP_NODE_ENV"
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+  touch "$rc"
+  if ! grep -qF "$marker" "$rc"; then
+    cat >> "$rc" <<'EOF'
+
+# SYS_BOOTSTRAP_NODE_ENV
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+export PATH="$BUN_INSTALL/bin:$PATH"
+EOF
+  fi
+done`, home)
+	res, err := system.RunAsUserWithInput(sys, "", "bash", "-c", script)
+	if err != nil {
+		return fmt.Errorf("failed to update shell startup files for node: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("failed to update shell startup files for node: %s", res.Stderr)
+	}
+	return nil
+}
+
+func nodeShellRCFiles(sys *system.Context) []string {
+	home := system.TargetHomeDir(sys)
+	if home == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".zshrc"),
+		filepath.Join(home, ".bashrc"),
+		filepath.Join(home, ".profile"),
+	}
 }

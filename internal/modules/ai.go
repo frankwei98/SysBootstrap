@@ -34,6 +34,9 @@ func (m *AIModule) Check(ctx context.Context, sys *system.Context) CheckResult {
 	hasClaude := aiToolWorks(sys, "claude")
 	hasCodex := aiToolWorks(sys, "codex")
 	if hasClaude && hasCodex {
+		if !pnpmShellPathConfigured(sys) {
+			return CheckResult{Satisfied: false, Message: "AI tools installed, but pnpm global bin is missing from shell startup files"}
+		}
 		return CheckResult{Satisfied: true, Message: "Claude Code and Codex installed"}
 	}
 	if hasClaude || hasCodex {
@@ -75,6 +78,9 @@ func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Conf
 	log.Infof("Using %s for installation", pm)
 	if pm == "pnpm" {
 		if err := ensurePnpmUserDirs(sys); err != nil {
+			return err
+		}
+		if err := ensurePnpmShellPath(sys); err != nil {
 			return err
 		}
 	}
@@ -169,6 +175,69 @@ if [ -z "$postinstall" ]; then
   exit 1
 fi
 node "$postinstall"`
+}
+
+func pnpmShellPathConfigured(sys *system.Context) bool {
+	rcFiles := pnpmShellRCFiles(sys)
+	if len(rcFiles) == 0 {
+		return false
+	}
+	for _, rcFile := range rcFiles {
+		content, err := os.ReadFile(rcFile)
+		if err != nil {
+			return false
+		}
+		if !pnpmShellFileConfigured(string(content)) {
+			return false
+		}
+	}
+	return true
+}
+
+func pnpmShellFileConfigured(content string) bool {
+	return strings.Contains(content, "SYS_BOOTSTRAP_PNPM_HOME") || strings.Contains(content, "$PNPM_HOME/bin")
+}
+
+func ensurePnpmShellPath(sys *system.Context) error {
+	home := system.TargetHomeDir(sys)
+	if home == "" {
+		return fmt.Errorf("cannot determine target home directory for pnpm shell setup")
+	}
+
+	script := fmt.Sprintf(`set -e
+export HOME=%q
+marker="# SYS_BOOTSTRAP_PNPM_HOME"
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+  touch "$rc"
+  if ! grep -qF "$marker" "$rc"; then
+    cat >> "$rc" <<'EOF'
+
+# SYS_BOOTSTRAP_PNPM_HOME
+export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
+export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
+EOF
+  fi
+done`, home)
+	res, err := system.RunAsUserWithInput(sys, "", "bash", "-c", script)
+	if err != nil {
+		return fmt.Errorf("failed to update shell startup files for pnpm: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("failed to update shell startup files for pnpm: %s", res.Stderr)
+	}
+	return nil
+}
+
+func pnpmShellRCFiles(sys *system.Context) []string {
+	home := system.TargetHomeDir(sys)
+	if home == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".zshrc"),
+		filepath.Join(home, ".bashrc"),
+		filepath.Join(home, ".profile"),
+	}
 }
 
 func ensurePnpmUserDirs(sys *system.Context) error {
