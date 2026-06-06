@@ -8,12 +8,17 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/app"
 	"github.com/frankwei98/sys-bootstrap/internal/cli"
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
+	"github.com/frankwei98/sys-bootstrap/internal/modules"
+	"github.com/frankwei98/sys-bootstrap/internal/settings"
 )
 
 func main() {
-	// Initialize i18n: --lang flag > SYS_BOOTSTRAP_LANG env > default en
+	// Load persistent settings first
+	cfg := settings.Load()
+
+	// Initialize i18n: --lang flag > SYS_BOOTSTRAP_LANG env > settings > default en
 	langFlag, filteredArgs := extractLangFlag(os.Args[1:])
-	lang := i18n.DetectLang(langFlag)
+	lang := i18n.DetectLang(langFlag, cfg.Lang)
 	i18n.SetLang(lang)
 
 	registry := app.NewRegistry()
@@ -21,39 +26,8 @@ func main() {
 	args := filteredArgs
 
 	if len(args) == 0 {
-		// Default: run doctor, then offer run
-		fmt.Println(i18n.T("app_title"))
-		fmt.Println(i18n.T("app_separator"))
-		fmt.Println()
-
-		fmt.Println(i18n.T("env_check"))
-		result, err := cli.DoctorCmd()
-		if err != nil {
-			fmt.Printf("\n%s\n", i18n.T("critical_issues"))
-			if result != nil && result.HasFatal {
-				os.Exit(1)
-			}
-		}
-		fmt.Println()
-
-		// Ask whether to proceed into provisioning
-		var proceed bool
-		if err := huh.NewForm(
-			huh.NewGroup(
-				huh.NewConfirm().
-					Title(i18n.T("enter_provisioning")).
-					Description(i18n.T("enter_provisioning_desc")).
-					Value(&proceed),
-			),
-		).Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		if !proceed {
-			return
-		}
-
-		if err := cli.RunCmd(registry); err != nil {
+		// Default: doctor → menu (provisioning / settings / exit)
+		if err := mainMenu(registry); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -97,6 +71,12 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "config":
+		if err := cli.ConfigCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "version":
 		cli.VersionCmd()
 
@@ -108,6 +88,53 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s\n\n", i18n.Tf("unknown_command", args[0]))
 		printUsage()
 		os.Exit(1)
+	}
+}
+
+// mainMenu runs the doctor check then shows a menu with provisioning, settings, and exit.
+func mainMenu(registry *modules.Registry) error {
+	fmt.Println(i18n.T("app_title"))
+	fmt.Println(i18n.T("app_separator"))
+	fmt.Println()
+
+	fmt.Println(i18n.T("env_check"))
+	result, err := cli.DoctorCmd()
+	if err != nil {
+		fmt.Printf("\n%s\n", i18n.T("critical_issues"))
+		if result != nil && result.HasFatal {
+			os.Exit(1)
+		}
+	}
+	fmt.Println()
+
+	for {
+		choice := "provisioning"
+		if err := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("").
+					Options(
+						huh.NewOption(i18n.T("menu_enter_provisioning"), "provisioning"),
+						huh.NewOption(i18n.T("menu_settings"), "settings"),
+						huh.NewOption(i18n.T("menu_exit"), "exit"),
+					).
+					Value(&choice),
+			),
+		).Run(); err != nil {
+			return err
+		}
+
+		switch choice {
+		case "provisioning":
+			return cli.RunCmd(registry)
+		case "settings":
+			if err := cli.ConfigCmd(nil); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
+			// Loop back to menu
+		case "exit":
+			return nil
+		}
 	}
 }
 
@@ -140,6 +167,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, i18n.T("usage_doctor"))
 	fmt.Fprintf(os.Stderr, i18n.T("usage_module"))
 	fmt.Fprintf(os.Stderr, i18n.T("usage_uninstall"))
+	fmt.Fprintf(os.Stderr, i18n.T("usage_config"))
 	fmt.Fprintf(os.Stderr, i18n.T("usage_version"))
 	fmt.Fprintf(os.Stderr, i18n.T("usage_help"))
 }

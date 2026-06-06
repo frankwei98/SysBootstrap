@@ -11,6 +11,7 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/modules"
+	"github.com/frankwei98/sys-bootstrap/internal/settings"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 	"github.com/frankwei98/sys-bootstrap/internal/ui"
@@ -75,10 +76,19 @@ func RunCmd(registry *modules.Registry) error {
 	// Collect config from forms
 	cfg := &types.Config{SSHPort: 22122}
 
-	// APT mirror selection: env var override or interactive form
-	if !applyAptMirrorEnv(cfg) {
-		if err := aptMirrorForm(cfg); err != nil {
-			return err
+	// APT mirror: env > settings > interactive prompt
+	st := settings.Load()
+	resolved, saveNeeded := resolveAptMirror(cfg, st, isInteractiveTerminal())
+	if !resolved {
+		if saveNeeded {
+			mirrorChoice, err := aptMirrorForm(cfg)
+			if err != nil {
+				return err
+			}
+			st.AptMirror = mirrorChoice
+			if err := settings.SaveUser(st); err != nil {
+				log.Warnf(i18n.T("config_save_failed"), err)
+			}
 		}
 	}
 
@@ -147,7 +157,8 @@ func PlanCmd(registry *modules.Registry, jsonOutput bool) error {
 		SSHPort:     22122,
 		SSHAllowUFW: sys.HasUFW && sys.UFWActive, // recommended default when UFW is active
 	}
-	applyAptMirrorEnv(cfg)
+	st := settings.Load()
+	resolveAptMirror(cfg, st, false)
 	plan, err := app.GeneratePlan(ctx, sys, cfg, registry, ids)
 	if err != nil {
 		return err
@@ -297,7 +308,8 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 
 	// Collect config
 	cfg := &types.Config{SSHPort: 22122}
-	applyAptMirrorEnv(cfg)
+	st := settings.Load()
+	resolveAptMirror(cfg, st, false)
 	switch moduleID {
 	case "ssh":
 		if !isInteractiveTerminal() {
@@ -529,26 +541,45 @@ func boolStr(b bool, trueStr, falseStr string) string {
 	return falseStr
 }
 
-// applyAptMirrorEnv reads SYS_BOOTSTRAP_APT_MIRROR and sets cfg.AptMirror.
-// Returns true if the env var was set to a recognized value.
-// Unknown values are logged to stderr and ignored.
-func applyAptMirrorEnv(cfg *types.Config) bool {
-	v := os.Getenv("SYS_BOOTSTRAP_APT_MIRROR")
-	if v == "" {
-		return false
+// resolveAptMirror determines the APT mirror setting.
+// Priority: SYS_BOOTSTRAP_APT_MIRROR env > settings config > interactive prompt.
+// Returns (resolved bool, saveNeeded bool). If saveNeeded is true, the caller
+// should persist the user's answer after collecting it interactively.
+func resolveAptMirror(cfg *types.Config, st settings.Settings, interactive bool) (bool, bool) {
+	// 1. Env var override (highest)
+	if env := os.Getenv("SYS_BOOTSTRAP_APT_MIRROR"); env != "" {
+		switch env {
+		case settings.ValAptCernet:
+			cfg.AptMirror = settings.ValAptCernet
+			return true, false
+		case settings.ValAptDefault:
+			cfg.AptMirror = ""
+			return true, false
+		default:
+			fmt.Fprintf(os.Stderr, "Warning: ignoring unknown SYS_BOOTSTRAP_APT_MIRROR=%q (valid: cernet, default)\n", env)
+		}
 	}
-	switch v {
-	case "cernet":
-		cfg.AptMirror = v
-		return true
-	default:
-		fmt.Fprintf(os.Stderr, "Warning: ignoring unknown SYS_BOOTSTRAP_APT_MIRROR=%q (valid: cernet)\n", v)
-		return false
+
+	// 2. Persisted config
+	switch st.AptMirror {
+	case settings.ValAptCernet:
+		cfg.AptMirror = settings.ValAptCernet
+		return true, false
+	case settings.ValAptDefault:
+		cfg.AptMirror = ""
+		return true, false
 	}
+
+	// 3. Unset — ask interactively if possible
+	if interactive {
+		return false, true
+	}
+	return false, false
 }
 
 // aptMirrorForm shows an interactive form to ask about CERNET APT mirror.
-func aptMirrorForm(cfg *types.Config) error {
+// Returns the user's choice ("cernet" or "default").
+func aptMirrorForm(cfg *types.Config) (string, error) {
 	useCernet := false
 	if err := huh.NewForm(
 		huh.NewGroup(
@@ -558,10 +589,108 @@ func aptMirrorForm(cfg *types.Config) error {
 				Value(&useCernet),
 		),
 	).Run(); err != nil {
-		return err
+		return "", err
 	}
 	if useCernet {
-		cfg.AptMirror = "cernet"
+		cfg.AptMirror = settings.ValAptCernet
+		return settings.ValAptCernet, nil
 	}
+	return settings.ValAptDefault, nil
+}
+
+// ConfigCmd handles the `config` command.
+func ConfigCmd(args []string) error {
+	st := settings.Load()
+
+	// Direct set: config language <lang>
+	if len(args) == 2 && args[0] == "language" {
+		lang := settings.NormalizeLang(args[1])
+		if lang == "en" && strings.ToLower(args[1]) != "en" {
+			return fmt.Errorf(i18n.T("config_invalid_lang"), args[1])
+		}
+		st.Lang = lang
+		if err := settings.SaveUser(st); err != nil {
+			return fmt.Errorf(i18n.T("config_save_failed"), err)
+		}
+		fmt.Println(i18n.Tf("config_saved", settings.UserConfigPath()))
+		i18n.SetLang(i18n.Lang(lang))
+		return nil
+	}
+
+	// Direct set: config apt-mirror <mirror>
+	if len(args) == 2 && args[0] == "apt-mirror" {
+		switch args[1] {
+		case settings.ValAptCernet, settings.ValAptDefault:
+			st.AptMirror = args[1]
+		default:
+			return fmt.Errorf(i18n.T("config_invalid_mirror"), args[1])
+		}
+		if err := settings.SaveUser(st); err != nil {
+			return fmt.Errorf(i18n.T("config_save_failed"), err)
+		}
+		fmt.Println(i18n.Tf("config_saved", settings.UserConfigPath()))
+		return nil
+	}
+
+	// Interactive config menu
+	if !isInteractiveTerminal() {
+		fmt.Fprintln(os.Stderr, i18n.T("config_lang_usage"))
+		fmt.Fprintln(os.Stderr, i18n.T("config_mirror_usage"))
+		return fmt.Errorf("%s", i18n.T("config_needs_tty"))
+	}
+
+	return interactiveConfig(&st)
+}
+
+// interactiveConfig shows an interactive settings menu.
+func interactiveConfig(st *settings.Settings) error {
+	// Language selection
+	langChoice := "en"
+	if st.Lang == "zh-CN" {
+		langChoice = "zh-CN"
+	}
+	if err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(i18n.T("settings_lang_select")).
+				Description(i18n.T("settings_lang_desc")).
+				Options(
+					huh.NewOption("English", "en"),
+					huh.NewOption("中文", "zh-CN"),
+				).
+				Value(&langChoice),
+		),
+	).Run(); err != nil {
+		return err
+	}
+	st.Lang = langChoice
+	i18n.SetLang(i18n.Lang(st.Lang))
+
+	// APT mirror selection
+	mirrorChoice := settings.ValAptDefault
+	if st.AptMirror == settings.ValAptCernet {
+		mirrorChoice = settings.ValAptCernet
+	}
+	if err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(i18n.T("settings_mirror_select")).
+				Description(i18n.T("settings_mirror_desc")).
+				Options(
+					huh.NewOption(i18n.T("settings_mirror_default"), settings.ValAptDefault),
+					huh.NewOption(i18n.T("settings_mirror_cernet"), settings.ValAptCernet),
+				).
+				Value(&mirrorChoice),
+		),
+	).Run(); err != nil {
+		return err
+	}
+	st.AptMirror = mirrorChoice
+
+	// The selected language is already active for the remaining forms.
+	if err := settings.SaveUser(*st); err != nil {
+		return fmt.Errorf(i18n.T("config_save_failed"), err)
+	}
+	fmt.Println(i18n.T("settings_saved"))
 	return nil
 }

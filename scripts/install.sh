@@ -443,11 +443,35 @@ install_or_run() {
                 fi
             fi
             run_as_root cp "/tmp/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+
+            # Persist settings to system config
+            local config_dir="/etc/sys-bootstrap"
+            local config_file="${config_dir}/config.env"
+            local config_content="lang=${LANG_CHOICE}"
+            if [[ -n "$APT_MIRROR" ]]; then
+                config_content="${config_content}
+apt_mirror=${APT_MIRROR}"
+            else
+                config_content="${config_content}
+apt_mirror=default"
+            fi
+            run_as_root mkdir -p "${config_dir}"
+            local tmp_config
+            tmp_config=$(mktemp "/tmp/sys-bootstrap-config.XXXXXX") || die "Failed to create temporary config file."
+            trap 'rm -f "${tmp_config}"' RETURN
+            printf '%s\n' "${config_content}" > "${tmp_config}"
+            run_as_root cp "${tmp_config}" "${config_file}"
+            run_as_root chmod 0644 "${config_file}"
+            rm -f "${tmp_config}"
+            trap - RETURN
+
             if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
                 info "已安装到 ${INSTALL_DIR}/${BINARY}"
+                info "设置已保存到 ${config_file}"
                 info "运行：sys-bootstrap --help"
             else
                 info "Installed to ${INSTALL_DIR}/${BINARY}"
+                info "Settings saved to ${config_file}"
                 info "Run: sys-bootstrap --help"
             fi
             ;;

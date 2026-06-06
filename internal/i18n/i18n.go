@@ -32,14 +32,17 @@ func GetLang() Lang {
 	return current
 }
 
-// DetectLang determines language from env and flag override.
-// Priority: explicit flag > SYS_BOOTSTRAP_LANG env > default en.
-func DetectLang(flagValue string) Lang {
+// DetectLang determines language from flag, env, and config.
+// Priority: explicit flag > SYS_BOOTSTRAP_LANG env > cfgLang (from settings) > default en.
+func DetectLang(flagValue string, cfgLang string) Lang {
 	if flagValue != "" {
 		return NormalizeLang(flagValue)
 	}
 	if env := os.Getenv("SYS_BOOTSTRAP_LANG"); env != "" {
 		return NormalizeLang(env)
+	}
+	if cfgLang != "" {
+		return NormalizeLang(cfgLang)
 	}
 	return LangEN
 }

@@ -30,11 +30,11 @@ func TestNormalizeLang(t *testing.T) {
 }
 
 func TestDetectLang_FlagOverride(t *testing.T) {
-	// Flag takes priority over env
+	// Flag takes priority over env and config
 	os.Setenv("SYS_BOOTSTRAP_LANG", "en")
 	defer os.Unsetenv("SYS_BOOTSTRAP_LANG")
 
-	got := DetectLang("zh-CN")
+	got := DetectLang("zh-CN", "en")
 	if got != LangZhCN {
 		t.Errorf("DetectLang with flag override = %q, want %q", got, LangZhCN)
 	}
@@ -44,17 +44,34 @@ func TestDetectLang_EnvVar(t *testing.T) {
 	os.Setenv("SYS_BOOTSTRAP_LANG", "zh-CN")
 	defer os.Unsetenv("SYS_BOOTSTRAP_LANG")
 
-	got := DetectLang("")
+	got := DetectLang("", "en")
 	if got != LangZhCN {
 		t.Errorf("DetectLang from env = %q, want %q", got, LangZhCN)
 	}
 }
 
+func TestDetectLang_ConfigFallback(t *testing.T) {
+	os.Unsetenv("SYS_BOOTSTRAP_LANG")
+
+	got := DetectLang("", "zh-CN")
+	if got != LangZhCN {
+		t.Errorf("DetectLang from config = %q, want %q", got, LangZhCN)
+	}
+}
+
 func TestDetectLang_Default(t *testing.T) {
 	os.Unsetenv("SYS_BOOTSTRAP_LANG")
-	got := DetectLang("")
+	got := DetectLang("", "")
 	if got != LangEN {
 		t.Errorf("DetectLang default = %q, want %q", got, LangEN)
+	}
+}
+
+func TestDetectLang_FlagOverConfig(t *testing.T) {
+	os.Unsetenv("SYS_BOOTSTRAP_LANG")
+	got := DetectLang("en", "zh-CN")
+	if got != LangEN {
+		t.Errorf("DetectLang flag should override config: got %q, want %q", got, LangEN)
 	}
 }
 

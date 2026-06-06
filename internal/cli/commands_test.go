@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
+	"github.com/frankwei98/sys-bootstrap/internal/settings"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
@@ -12,44 +13,130 @@ func init() {
 	i18n.SetLang(i18n.LangEN)
 }
 
-func TestApplyAptMirrorEnv_Set(t *testing.T) {
+// --- resolveAptMirror tests ---
+
+func TestResolveAptMirror_EnvCernet(t *testing.T) {
 	os.Setenv("SYS_BOOTSTRAP_APT_MIRROR", "cernet")
 	defer os.Unsetenv("SYS_BOOTSTRAP_APT_MIRROR")
 
 	cfg := &types.Config{}
-	ok := applyAptMirrorEnv(cfg)
-	if !ok {
-		t.Error("expected true when env is set")
+	st := settings.Settings{}
+	resolved, saveNeeded := resolveAptMirror(cfg, st, false)
+	if !resolved {
+		t.Error("expected resolved=true")
+	}
+	if saveNeeded {
+		t.Error("expected saveNeeded=false")
 	}
 	if cfg.AptMirror != "cernet" {
-		t.Errorf("cfg.AptMirror = %q, want %q", cfg.AptMirror, "cernet")
+		t.Errorf("cfg.AptMirror = %q, want cernet", cfg.AptMirror)
 	}
 }
 
-func TestApplyAptMirrorEnv_Unset(t *testing.T) {
-	os.Unsetenv("SYS_BOOTSTRAP_APT_MIRROR")
-
-	cfg := &types.Config{}
-	ok := applyAptMirrorEnv(cfg)
-	if ok {
-		t.Error("expected false when env is unset")
-	}
-	if cfg.AptMirror != "" {
-		t.Errorf("cfg.AptMirror = %q, want empty", cfg.AptMirror)
-	}
-}
-
-func TestApplyAptMirrorEnv_UnknownValue(t *testing.T) {
-	os.Setenv("SYS_BOOTSTRAP_APT_MIRROR", "invalid-mirror")
+func TestResolveAptMirror_EnvDefault(t *testing.T) {
+	os.Setenv("SYS_BOOTSTRAP_APT_MIRROR", "default")
 	defer os.Unsetenv("SYS_BOOTSTRAP_APT_MIRROR")
 
 	cfg := &types.Config{}
-	ok := applyAptMirrorEnv(cfg)
-	if ok {
-		t.Error("expected false for unknown mirror value")
+	st := settings.Settings{AptMirror: "cernet"} // env should override
+	resolved, _ := resolveAptMirror(cfg, st, false)
+	if !resolved {
+		t.Error("expected resolved=true")
 	}
 	if cfg.AptMirror != "" {
-		t.Errorf("cfg.AptMirror = %q, want empty for unknown value", cfg.AptMirror)
+		t.Errorf("cfg.AptMirror = %q, want empty (default)", cfg.AptMirror)
+	}
+}
+
+func TestResolveAptMirror_EnvUnknown(t *testing.T) {
+	os.Setenv("SYS_BOOTSTRAP_APT_MIRROR", "invalid")
+	defer os.Unsetenv("SYS_BOOTSTRAP_APT_MIRROR")
+
+	cfg := &types.Config{}
+	st := settings.Settings{AptMirror: "cernet"} // should fall through to settings
+	resolved, _ := resolveAptMirror(cfg, st, false)
+	if !resolved {
+		t.Error("expected resolved=true from settings")
+	}
+	if cfg.AptMirror != "cernet" {
+		t.Errorf("cfg.AptMirror = %q, want cernet (from settings)", cfg.AptMirror)
+	}
+}
+
+func TestResolveAptMirror_SettingsCernet(t *testing.T) {
+	os.Unsetenv("SYS_BOOTSTRAP_APT_MIRROR")
+
+	cfg := &types.Config{}
+	st := settings.Settings{AptMirror: "cernet"}
+	resolved, saveNeeded := resolveAptMirror(cfg, st, false)
+	if !resolved {
+		t.Error("expected resolved=true")
+	}
+	if saveNeeded {
+		t.Error("expected saveNeeded=false")
+	}
+	if cfg.AptMirror != "cernet" {
+		t.Errorf("cfg.AptMirror = %q, want cernet", cfg.AptMirror)
+	}
+}
+
+func TestResolveAptMirror_SettingsDefault(t *testing.T) {
+	os.Unsetenv("SYS_BOOTSTRAP_APT_MIRROR")
+
+	cfg := &types.Config{}
+	st := settings.Settings{AptMirror: "default"}
+	resolved, saveNeeded := resolveAptMirror(cfg, st, false)
+	if !resolved {
+		t.Error("expected resolved=true")
+	}
+	if saveNeeded {
+		t.Error("expected saveNeeded=false")
+	}
+	if cfg.AptMirror != "" {
+		t.Errorf("cfg.AptMirror = %q, want empty (default means no mirror)", cfg.AptMirror)
+	}
+}
+
+func TestResolveAptMirror_Unset_Interactive(t *testing.T) {
+	os.Unsetenv("SYS_BOOTSTRAP_APT_MIRROR")
+
+	cfg := &types.Config{}
+	st := settings.Settings{} // empty
+	resolved, saveNeeded := resolveAptMirror(cfg, st, true)
+	if resolved {
+		t.Error("expected resolved=false (needs prompt)")
+	}
+	if !saveNeeded {
+		t.Error("expected saveNeeded=true (should save after prompt)")
+	}
+}
+
+func TestResolveAptMirror_Unset_NonInteractive(t *testing.T) {
+	os.Unsetenv("SYS_BOOTSTRAP_APT_MIRROR")
+
+	cfg := &types.Config{}
+	st := settings.Settings{} // empty
+	resolved, saveNeeded := resolveAptMirror(cfg, st, false)
+	if resolved {
+		t.Error("expected resolved=false")
+	}
+	if saveNeeded {
+		t.Error("expected saveNeeded=false (non-interactive, can't prompt)")
+	}
+}
+
+func TestResolveAptMirror_EnvOverridesSettings(t *testing.T) {
+	os.Setenv("SYS_BOOTSTRAP_APT_MIRROR", "default")
+	defer os.Unsetenv("SYS_BOOTSTRAP_APT_MIRROR")
+
+	cfg := &types.Config{}
+	st := settings.Settings{AptMirror: "cernet"} // settings says cernet
+	resolved, _ := resolveAptMirror(cfg, st, false)
+	if !resolved {
+		t.Error("expected resolved=true")
+	}
+	if cfg.AptMirror != "" {
+		t.Errorf("cfg.AptMirror = %q, want empty (env default overrides settings cernet)", cfg.AptMirror)
 	}
 }
 
@@ -111,7 +198,6 @@ func TestValidateUninstallFlags_NonInteractive_NoFlags(t *testing.T) {
 }
 
 func TestValidateUninstallFlags_NonInteractive_DryRun(t *testing.T) {
-	// --dry-run is exempt from --all --yes requirement
 	f := uninstallFlags{DryRun: true}
 	err := validateUninstallFlags(f, false)
 	if err != nil {
@@ -120,7 +206,6 @@ func TestValidateUninstallFlags_NonInteractive_DryRun(t *testing.T) {
 }
 
 func TestValidateUninstallFlags_Interactive_AllWithoutYes(t *testing.T) {
-	// Interactive mode: --all without --yes is allowed (will ask confirmation)
 	f := uninstallFlags{All: true, Yes: false}
 	err := validateUninstallFlags(f, true)
 	if err != nil {
@@ -129,7 +214,6 @@ func TestValidateUninstallFlags_Interactive_AllWithoutYes(t *testing.T) {
 }
 
 func TestValidateUninstallFlags_Interactive_NoFlags(t *testing.T) {
-	// Interactive mode: no flags is allowed (will show multi-select)
 	f := uninstallFlags{}
 	err := validateUninstallFlags(f, true)
 	if err != nil {
