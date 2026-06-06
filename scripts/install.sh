@@ -388,7 +388,7 @@ install_or_run() {
         echo "======================="
         echo ""
         echo "选择安装方式："
-        echo "  1) 临时运行（下载后直接执行）"
+        echo "  1) 临时运行（$(root_required_label)）"
         echo "  2) 安装到 ${INSTALL_DIR}（$(root_required_label)）"
         echo ""
         echo "Root 权限：$(root_access_label)"
@@ -399,7 +399,7 @@ install_or_run() {
         echo "======================="
         echo ""
         echo "Choose installation method:"
-        echo "  1) Run temporarily (download and execute)"
+        echo "  1) Run temporarily ($(root_required_label))"
         echo "  2) Install to ${INSTALL_DIR} ($(root_required_label))"
         echo ""
         echo "Root access: $(root_access_label)"
@@ -408,24 +408,44 @@ install_or_run() {
     fi
 
     # Build environment variables for the binary
-    local env_args=""
+    local env_args=()
     if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
-        env_args="SYS_BOOTSTRAP_LANG=zh-CN"
+        env_args+=("SYS_BOOTSTRAP_LANG=zh-CN")
     fi
     if [[ -n "$APT_MIRROR" ]]; then
-        env_args="${env_args:+${env_args} }SYS_BOOTSTRAP_APT_MIRROR=${APT_MIRROR}"
+        env_args+=("SYS_BOOTSTRAP_APT_MIRROR=${APT_MIRROR}")
     fi
 
     case "$choice" in
         1)
-            if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
-                info "正在运行 sys-bootstrap..."
-            else
-                info "Running sys-bootstrap..."
+            if ! can_run_as_root; then
+                if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+                    die "临时运行需要 root 权限，但当前无法使用 sudo。"
+                else
+                    die "Running temporarily requires root, but sudo is not available."
+                fi
             fi
-            # shellcheck disable=SC2086
-            [[ -n "$env_args" ]] && export $env_args
-            run_with_tty "/tmp/${BINARY}"
+            if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+                if [[ $EUID -eq 0 ]]; then
+                    info "正在运行 sys-bootstrap..."
+                else
+                    info "正在使用 sudo 临时运行 sys-bootstrap..."
+                fi
+            else
+                if [[ $EUID -eq 0 ]]; then
+                    info "Running sys-bootstrap..."
+                else
+                    info "Running sys-bootstrap temporarily with sudo..."
+                fi
+            fi
+            if [[ ${#env_args[@]} -gt 0 ]]; then
+                export "${env_args[@]}"
+            fi
+            if [[ $EUID -eq 0 ]]; then
+                run_with_tty "/tmp/${BINARY}"
+            else
+                run_with_tty sudo env "${env_args[@]}" "/tmp/${BINARY}"
+            fi
             ;;
         2)
             if ! can_run_as_root; then

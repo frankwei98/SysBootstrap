@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/script
 curl -fsSL https://cdn.jsdelivr.net/gh/frankwei98/SysBootstrap@main/scripts/install.sh | bash
 ```
 
-The installer detects root/sudo capability and automatically uses `sudo` only for operations that require root, such as installing the binary to `/usr/local/bin`.
+The installer detects root/sudo capability and automatically uses `sudo` when the selected action requires root, including temporary runs and installation to `/usr/local/bin`.
 
 ## Commands
 
