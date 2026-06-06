@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -30,8 +31,8 @@ func (m *AIModule) Check(ctx context.Context, sys *system.Context) CheckResult {
 		return CheckResult{Satisfied: false, Message: "Node.js not installed (run node module first)"}
 	}
 
-	hasClaude := system.NvmCommandExistsForContext(sys, "claude")
-	hasCodex := system.NvmCommandExistsForContext(sys, "codex")
+	hasClaude := aiToolWorks(sys, "claude")
+	hasCodex := aiToolWorks(sys, "codex")
 	if hasClaude && hasCodex {
 		return CheckResult{Satisfied: true, Message: "Claude Code and Codex installed"}
 	}
@@ -92,6 +93,9 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
 			return fmt.Errorf("Claude Code installation failed: %s", res.Stderr)
 		}
+		if err := verifyClaudeCode(sys, pm, log); err != nil {
+			return err
+		}
 		log.Success("Claude Code installed")
 	}
 
@@ -106,10 +110,65 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
 			return fmt.Errorf("Codex installation failed: %s", res.Stderr)
 		}
+		if err := verifyAITool(sys, "codex"); err != nil {
+			return fmt.Errorf("Codex installation verification failed: %w", err)
+		}
 		log.Success("Codex installed")
 	}
 
 	return nil
+}
+
+func aiToolWorks(sys *system.Context, name string) bool {
+	return verifyAITool(sys, name) == nil
+}
+
+func verifyAITool(sys *system.Context, name string) error {
+	res, err := system.RunInNvmShellForContext(sys, fmt.Sprintf("%s --version", name))
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		output := strings.TrimSpace(res.Stderr)
+		if output == "" {
+			output = strings.TrimSpace(res.Stdout)
+		}
+		if output == "" {
+			output = fmt.Sprintf("%s --version exited with code %d", name, res.ExitCode)
+		}
+		return fmt.Errorf("%s", output)
+	}
+	return nil
+}
+
+func verifyClaudeCode(sys *system.Context, pm string, log *logging.Logger) error {
+	if err := verifyAITool(sys, "claude"); err == nil {
+		return nil
+	} else if pm != "pnpm" {
+		return fmt.Errorf("Claude Code installation verification failed: %w", err)
+	} else {
+		log.Warnf("Claude Code verification failed, running postinstall repair: %v", err)
+	}
+
+	if res, err := system.RunInNvmShellForContext(sys, claudeCodePostinstallScript()); err != nil || res.ExitCode != 0 {
+		return fmt.Errorf("Claude Code postinstall repair failed: %s", res.Stderr)
+	}
+	if err := verifyAITool(sys, "claude"); err != nil {
+		return fmt.Errorf("Claude Code installation verification failed after postinstall repair: %w", err)
+	}
+	return nil
+}
+
+func claudeCodePostinstallScript() string {
+	return `postinstall="$(find "$PNPM_HOME/store" -path "*/@anthropic-ai/claude-code/install.cjs" -type f | head -n 1)"
+if [ -z "$postinstall" ]; then
+  postinstall="$(find "$PNPM_HOME/global" -path "*/@anthropic-ai/claude-code/install.cjs" -type f | head -n 1)"
+fi
+if [ -z "$postinstall" ]; then
+  echo "Claude Code install.cjs not found under $PNPM_HOME" >&2
+  exit 1
+fi
+node "$postinstall"`
 }
 
 func ensurePnpmUserDirs(sys *system.Context) error {
