@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,6 +147,68 @@ func TestResolveUserInfo_DetectsRoot(t *testing.T) {
 		if info.IsRoot {
 			t.Error("expected IsRoot=false when uid!=0")
 		}
+	}
+}
+
+func TestPrintUserInfo_NoRootWarningForNonRootWithSudoUser(t *testing.T) {
+	info := &UserInfo{
+		Username: "testuser",
+		UID:      "1000",
+		HomeDir:  "/home/testuser",
+		IsRoot:   false,
+		SudoUser: "frankwei",
+	}
+
+	out := captureStdout(t, func() {
+		PrintUserInfo(info)
+	})
+
+	if !strings.Contains(out, "User: testuser  UID: 1000  Home: /home/testuser") {
+		t.Fatalf("expected user info in output, got: %q", out)
+	}
+	if strings.Contains(out, "Running as root/sudo") {
+		t.Fatalf("did not expect root warning for non-root user, got: %q", out)
+	}
+	if strings.Contains(out, "SUDO_USER=frankwei") {
+		t.Fatalf("did not expect SUDO_USER note for non-root user, got: %q", out)
+	}
+}
+
+func TestPrintUserInfo_ShowsRootWarningForRoot(t *testing.T) {
+	info := &UserInfo{
+		Username: "root",
+		UID:      "0",
+		HomeDir:  "/root",
+		IsRoot:   true,
+	}
+
+	out := captureStdout(t, func() {
+		PrintUserInfo(info)
+	})
+
+	if !strings.Contains(out, "Running as root/sudo") {
+		t.Fatalf("expected root warning, got: %q", out)
+	}
+}
+
+func TestPrintUserInfo_ShowsSudoUserNoteForRootViaSudo(t *testing.T) {
+	info := &UserInfo{
+		Username: "root",
+		UID:      "0",
+		HomeDir:  "/root",
+		IsRoot:   true,
+		SudoUser: "frankwei",
+	}
+
+	out := captureStdout(t, func() {
+		PrintUserInfo(info)
+	})
+
+	if !strings.Contains(out, "Running as root/sudo") {
+		t.Fatalf("expected root warning, got: %q", out)
+	}
+	if !strings.Contains(out, "SUDO_USER=frankwei") {
+		t.Fatalf("expected SUDO_USER note, got: %q", out)
 	}
 }
 
@@ -928,4 +992,30 @@ func createTestLogger(t *testing.T) *logging.Logger {
 	}
 	t.Cleanup(func() { log.Close() })
 	return log
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("cannot create stdout pipe: %v", err)
+	}
+	os.Stdout = w
+
+	outputCh := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		outputCh <- buf.String()
+	}()
+
+	fn()
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+	out := <-outputCh
+	_ = r.Close()
+	return out
 }

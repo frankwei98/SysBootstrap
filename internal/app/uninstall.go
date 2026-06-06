@@ -456,7 +456,7 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 // PrintUserInfo displays the current effective user information.
 func PrintUserInfo(info *UserInfo) {
 	fmt.Println(i18n.Tf("uninstall_user_info", info.Username, info.UID, info.HomeDir))
-	if info.IsRoot || info.SudoUser != "" {
+	if info.IsRoot {
 		fmt.Println(i18n.T("uninstall_root_warning"))
 		if info.SudoUser != "" && info.SudoUser != "root" {
 			fmt.Println(i18n.Tf("uninstall_sudo_user_info", info.SudoUser))
