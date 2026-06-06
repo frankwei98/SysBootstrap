@@ -9,7 +9,7 @@ TEST_NAME=""
 assert_contains() {
     local haystack="$1"
     local needle="$2"
-    local msg="${3:-expected output to contain '$needle'}"
+    local msg="${3:-expected output to contain the target text}"
     if [[ "$haystack" == *"$needle"* ]]; then
         PASS=$((PASS + 1))
     else
@@ -22,7 +22,7 @@ assert_contains() {
 assert_not_contains() {
     local haystack="$1"
     local needle="$2"
-    local msg="${3:-expected output to NOT contain '$needle'}"
+    local msg="${3:-expected output to NOT contain the target text}"
     if [[ "$haystack" != *"$needle"* ]]; then
         PASS=$((PASS + 1))
     else
@@ -35,7 +35,7 @@ assert_not_contains() {
 assert_equal() {
     local actual="$1"
     local expected="$2"
-    local msg="${3:-expected '$expected', got '$actual'}"
+    local msg="${3:-values differ}"
     if [[ "$actual" == "$expected" ]]; then
         PASS=$((PASS + 1))
     else
@@ -53,10 +53,15 @@ reset_state() {
     CAPTURED_CMD=""
     PROMPT_VALUES=()
     PROMPT_INDEX=0
+    # These globals are consumed by the sourced installer logic.
+    # shellcheck disable=SC2034
     LANG_CHOICE="en"
+    # shellcheck disable=SC2034
     APT_MIRROR=""
     RUN_MODE=""
+    # shellcheck disable=SC2034
     DOWNLOAD_PATH="/tmp/fake/sys-bootstrap"
+    # shellcheck disable=SC2034
     INSTALL_DIR="/usr/local/bin"
     CAN_USE_SUDO_STUB=1
     unset SYS_BOOTSTRAP_LANG 2>/dev/null || true
@@ -210,9 +215,12 @@ test_env_vars_apt_mirror() {
 test_env_vars_full_mode_combined() {
     TEST_NAME="env vars: full mode passes all env vars through sudo env"
     reset_state
+    # shellcheck disable=SC2034
     LANG_CHOICE="zh-CN"
+    # shellcheck disable=SC2034
     APT_MIRROR="cernet"
     PROMPT_VALUES=("1" "2")
+    # shellcheck disable=SC2034
     SYS_BOOTSTRAP_TEST_EUID=1000
     CAN_USE_SUDO_STUB=0
     install_or_run >/dev/null
