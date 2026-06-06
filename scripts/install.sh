@@ -17,6 +17,7 @@ REGION="overseas"
 VERSION=""
 LANG_CHOICE="en"
 APT_MIRROR=""
+RUN_MODE=""
 DOWNLOAD_DIR=""
 DOWNLOAD_PATH=""
 CHECKSUM_PATH=""
@@ -387,6 +388,38 @@ download() {
     verify_download "$platform"
 }
 
+# --- Run Mode Selection ---
+choose_run_mode() {
+    local choice
+
+    echo ""
+    if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+        echo "选择运行模式："
+        echo "  1) 仅用户级工具（node、AI、SSH 密钥生成）— 无需 root"
+        echo "  2) 完整初始化（系统包、SSH、用户管理）— 需要 root"
+        echo ""
+        prompt_read choice "选择 [1/2]: "
+    else
+        echo "Select run mode:"
+        echo "  1) User-level tools only (node, AI, SSH keygen) — no root needed"
+        echo "  2) Full initialization (system packages, SSH, users) — requires root"
+        echo ""
+        prompt_read choice "Selection [1/2]: "
+    fi
+
+    case "${choice:-1}" in
+        1)
+            RUN_MODE="user"
+            ;;
+        2)
+            RUN_MODE="full"
+            ;;
+        *)
+            die "Invalid selection"
+            ;;
+    esac
+}
+
 # Install or run
 install_or_run() {
     local choice
@@ -397,7 +430,7 @@ install_or_run() {
         echo "======================="
         echo ""
         echo "选择安装方式："
-        echo "  1) 临时运行（$(root_required_label)）"
+        echo "  1) 临时运行（可选用户级工具模式，无需 root）"
         echo "  2) 安装到 ${INSTALL_DIR}（$(root_required_label)）"
         echo ""
         echo "Root 权限：$(root_access_label)"
@@ -408,7 +441,7 @@ install_or_run() {
         echo "======================="
         echo ""
         echo "Choose installation method:"
-        echo "  1) Run temporarily ($(root_required_label))"
+        echo "  1) Run temporarily (user-level tools mode available, no root needed)"
         echo "  2) Install to ${INSTALL_DIR} ($(root_required_label))"
         echo ""
         echo "Root access: $(root_access_label)"
@@ -427,33 +460,50 @@ install_or_run() {
 
     case "$choice" in
         1)
-            if ! can_run_as_root; then
+            choose_run_mode
+            if [[ "$RUN_MODE" == "user" ]]; then
+                # User-level tools: no sudo needed
                 if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
-                    die "临时运行需要 root 权限，但当前无法使用 sudo。"
+                    info "正在以用户级工具模式运行（无需 sudo）..."
                 else
-                    die "Running temporarily requires root, but sudo is not available."
+                    info "Running in user-level tools mode (no sudo needed)..."
                 fi
-            fi
-            if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
-                if [[ $EUID -eq 0 ]]; then
-                    info "正在运行 sys-bootstrap..."
-                else
-                    info "正在使用 sudo 临时运行 sys-bootstrap..."
+                env_args+=("SYS_BOOTSTRAP_RUN_MODE=user")
+                if [[ ${#env_args[@]} -gt 0 ]]; then
+                    export "${env_args[@]}"
                 fi
-            else
-                if [[ $EUID -eq 0 ]]; then
-                    info "Running sys-bootstrap..."
-                else
-                    info "Running sys-bootstrap temporarily with sudo..."
-                fi
-            fi
-            if [[ ${#env_args[@]} -gt 0 ]]; then
-                export "${env_args[@]}"
-            fi
-            if [[ $EUID -eq 0 ]]; then
                 run_with_tty "$DOWNLOAD_PATH"
             else
-                run_with_tty sudo env "${env_args[@]}" "$DOWNLOAD_PATH"
+                # Full initialization: needs root
+                if ! can_run_as_root; then
+                    if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+                        die "完整初始化需要 root 权限，但当前无法使用 sudo。"
+                    else
+                        die "Full initialization requires root, but sudo is not available."
+                    fi
+                fi
+                env_args+=("SYS_BOOTSTRAP_RUN_MODE=full")
+                if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+                    if [[ $EUID -eq 0 ]]; then
+                        info "正在以完整初始化模式运行..."
+                    else
+                        info "正在使用 sudo 以完整初始化模式运行..."
+                    fi
+                else
+                    if [[ $EUID -eq 0 ]]; then
+                        info "Running in full initialization mode..."
+                    else
+                        info "Running in full initialization mode with sudo..."
+                    fi
+                fi
+                if [[ ${#env_args[@]} -gt 0 ]]; then
+                    export "${env_args[@]}"
+                fi
+                if [[ $EUID -eq 0 ]]; then
+                    run_with_tty "$DOWNLOAD_PATH"
+                else
+                    run_with_tty sudo env "${env_args[@]}" "$DOWNLOAD_PATH"
+                fi
             fi
             ;;
         2)

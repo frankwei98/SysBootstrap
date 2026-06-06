@@ -220,3 +220,65 @@ func TestValidateUninstallFlags_Interactive_NoFlags(t *testing.T) {
 		t.Errorf("expected no error for no flags in interactive mode, got: %v", err)
 	}
 }
+
+// --- resolveRunMode tests ---
+
+func TestResolveRunMode_EnvUser(t *testing.T) {
+	os.Setenv("SYS_BOOTSTRAP_RUN_MODE", "user")
+	defer os.Unsetenv("SYS_BOOTSTRAP_RUN_MODE")
+
+	mode, err := resolveRunMode(false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mode != RunModeUser {
+		t.Errorf("mode = %q, want user", mode)
+	}
+}
+
+func TestResolveRunMode_EnvFull(t *testing.T) {
+	os.Setenv("SYS_BOOTSTRAP_RUN_MODE", "full")
+	defer os.Unsetenv("SYS_BOOTSTRAP_RUN_MODE")
+
+	mode, err := resolveRunMode(false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mode != RunModeFull {
+		t.Errorf("mode = %q, want full", mode)
+	}
+}
+
+func TestResolveRunMode_EnvInvalid(t *testing.T) {
+	os.Setenv("SYS_BOOTSTRAP_RUN_MODE", "invalid")
+	defer os.Unsetenv("SYS_BOOTSTRAP_RUN_MODE")
+
+	_, err := resolveRunMode(false)
+	if err == nil {
+		t.Error("expected error for invalid SYS_BOOTSTRAP_RUN_MODE")
+	}
+}
+
+func TestResolveRunMode_NonInteractive_NoEnv(t *testing.T) {
+	os.Unsetenv("SYS_BOOTSTRAP_RUN_MODE")
+
+	_, err := resolveRunMode(false)
+	if err == nil {
+		t.Error("expected error when non-interactive and no env var")
+	}
+}
+
+func TestUserLevelModuleIDs(t *testing.T) {
+	expected := map[string]bool{"node": true, "ai": true, "ssh_keygen": true}
+	for id := range expected {
+		if !userLevelModuleIDs[id] {
+			t.Errorf("userLevelModuleIDs missing %q", id)
+		}
+	}
+	// Ensure root modules are not in the map
+	for _, id := range []string{"base", "ssh", "user"} {
+		if userLevelModuleIDs[id] {
+			t.Errorf("userLevelModuleIDs should not contain %q", id)
+		}
+	}
+}

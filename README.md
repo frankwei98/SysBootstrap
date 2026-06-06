@@ -15,7 +15,17 @@ curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/script
 curl -fsSL https://cdn.jsdelivr.net/gh/frankwei98/SysBootstrap@main/scripts/install.sh | bash
 ```
 
-The installer detects root/sudo capability and automatically uses `sudo` when the selected action requires root, including temporary runs and installation to `/usr/local/bin`.
+The installer offers two temporary run modes:
+- **User-level tools** (node, AI, SSH keygen) — runs without sudo
+- **Full initialization** (system packages, SSH, users) — uses sudo when needed
+
+Installation to `/usr/local/bin` always requires root.
+
+You can also set the run mode via environment variable:
+```bash
+SYS_BOOTSTRAP_RUN_MODE=user sys-bootstrap run   # user-level tools, no sudo
+SYS_BOOTSTRAP_RUN_MODE=full sys-bootstrap run   # full initialization
+```
 
 ## Commands
 

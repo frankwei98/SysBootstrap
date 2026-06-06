@@ -160,6 +160,17 @@ var zhCNMessages = map[string]string{
 	"uninstall_dry_run_header":   "=== 模拟运行 — 不会做任何修改 ===",
 	"uninstall_all_no_yes":       "--all 需要配合 --yes 以进行非交互式卸载",
 
+	// run mode
+	"form_run_mode":               "选择运行模式",
+	"form_run_mode_desc":          "用户级工具不需要 root 权限",
+	"form_run_mode_user":          "仅用户级工具（node、AI、SSH 密钥生成）",
+	"form_run_mode_full":          "完整初始化（系统包、SSH、用户管理）",
+	"run_mode_user_header":        "=== 用户级工具模式 ===",
+	"run_mode_full_header":        "=== 完整初始化模式 ===",
+	"run_full_needs_root":         "完整模式选中的模块需要 root 权限：%s — 请使用 sudo 重新运行",
+	"run_user_no_root":            "用户级工具模式不需要 sudo",
+	"run_noninteractive_no_mode":  "未设置 SYS_BOOTSTRAP_RUN_MODE；请使用 'user' 或 'full'（或以交互方式运行）",
+
 	// config / settings
 	"usage_config":             "  config        查看或修改设置\n",
 	"config_lang_usage":        "用法：sys-bootstrap config language <en|zh-CN>",

@@ -160,6 +160,17 @@ var enMessages = map[string]string{
 	"uninstall_dry_run_header":   "=== DRY RUN — no changes will be made ===",
 	"uninstall_all_no_yes":       "--all requires --yes for non-interactive uninstall",
 
+	// run mode
+	"form_run_mode":               "Select run mode",
+	"form_run_mode_desc":          "User-level tools do not require root",
+	"form_run_mode_user":          "User-level tools only (node, AI, SSH keygen)",
+	"form_run_mode_full":          "Full initialization (system packages, SSH, users)",
+	"run_mode_user_header":        "=== User-level tools mode ===",
+	"run_mode_full_header":        "=== Full initialization mode ===",
+	"run_full_needs_root":         "Full mode selected modules require root: %s — please re-run with sudo",
+	"run_user_no_root":            "User-level tools mode does not require sudo",
+	"run_noninteractive_no_mode":  "SYS_BOOTSTRAP_RUN_MODE not set; use 'user' or 'full' (or run interactively)",
+
 	// config / settings
 	"usage_config":             "  config        Show or change settings\n",
 	"config_lang_usage":        "Usage: sys-bootstrap config language <en|zh-CN>",

@@ -39,6 +39,37 @@ func ModuleSelect(registry *modules.Registry) ([]string, error) {
 	return selected, nil
 }
 
+// ModuleSelectFiltered shows a multi-select for optional modules, filtered to
+// only include modules whose IDs are in allowedIDs. Used for user-level mode
+// where root-required modules should not appear.
+func ModuleSelectFiltered(registry *modules.Registry, allowedIDs map[string]bool) ([]string, error) {
+	var options []huh.Option[string]
+	for _, m := range registry.All() {
+		if m.DefaultEnabled() {
+			continue
+		}
+		if !allowedIDs[m.ID()] {
+			continue
+		}
+		options = append(options, huh.NewOption(m.Name(), m.ID()))
+	}
+
+	var selected []string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title(i18n.T("form_select_modules")).
+				Description(i18n.T("form_select_modules_desc")).
+				Options(options...).
+				Value(&selected),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return nil, err
+	}
+	return selected, nil
+}
+
 // SSHConfigForm collects SSH module configuration.
 func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 	port := fmt.Sprintf("%d", cfg.SSHPort)

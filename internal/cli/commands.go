@@ -17,6 +17,62 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/ui"
 )
 
+// RunMode controls which modules are available and whether root is required.
+type RunMode string
+
+const (
+	RunModeUser RunMode = "user"
+	RunModeFull RunMode = "full"
+)
+
+// userLevelModuleIDs are the modules that can run without root.
+var userLevelModuleIDs = map[string]bool{
+	"node":       true,
+	"ai":         true,
+	"ssh_keygen": true,
+}
+
+// resolveRunMode determines the run mode from env var or interactive prompt.
+// Priority: SYS_BOOTSTRAP_RUN_MODE env > interactive prompt > error.
+func resolveRunMode(interactive bool) (RunMode, error) {
+	if env := os.Getenv("SYS_BOOTSTRAP_RUN_MODE"); env != "" {
+		switch env {
+		case "user":
+			return RunModeUser, nil
+		case "full":
+			return RunModeFull, nil
+		default:
+			return "", fmt.Errorf("invalid SYS_BOOTSTRAP_RUN_MODE=%q (valid: user, full)", env)
+		}
+	}
+
+	if interactive {
+		return runModeForm()
+	}
+
+	return "", fmt.Errorf("%s", i18n.T("run_noninteractive_no_mode"))
+}
+
+// runModeForm shows an interactive form to select the run mode.
+func runModeForm() (RunMode, error) {
+	mode := string(RunModeUser)
+	if err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(i18n.T("form_run_mode")).
+				Description(i18n.T("form_run_mode_desc")).
+				Options(
+					huh.NewOption(i18n.T("form_run_mode_user"), string(RunModeUser)),
+					huh.NewOption(i18n.T("form_run_mode_full"), string(RunModeFull)),
+				).
+				Value(&mode),
+		),
+	).Run(); err != nil {
+		return "", err
+	}
+	return RunMode(mode), nil
+}
+
 // DoctorResult holds the outcome of a doctor check.
 type DoctorResult struct {
 	HasFatal bool
@@ -37,10 +93,29 @@ func RunCmd(registry *modules.Registry) error {
 	}
 	defer log.Close()
 
-	// Select modules
-	selected, err := ui.ModuleSelect(registry)
+	// Resolve run mode
+	mode, err := resolveRunMode(isInteractiveTerminal())
 	if err != nil {
 		return err
+	}
+
+	var selected []string
+
+	switch mode {
+	case RunModeUser:
+		log.Info(i18n.T("run_mode_user_header"))
+		// User-level mode: only show user-level modules, no base injection
+		selected, err = ui.ModuleSelectFiltered(registry, userLevelModuleIDs)
+		if err != nil {
+			return err
+		}
+	case RunModeFull:
+		log.Info(i18n.T("run_mode_full_header"))
+		// Full mode: show all optional modules
+		selected, err = ui.ModuleSelect(registry)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Check if ai is selected without node
@@ -59,13 +134,32 @@ func RunCmd(registry *modules.Registry) error {
 		selected = append([]string{"node"}, selected...)
 	}
 
-	// Always include base (mandatory)
-	selected = append([]string{"base"}, selected...)
+	// Inject base only in full mode
+	if mode == RunModeFull {
+		selected = append([]string{"base"}, selected...)
+	}
 
 	// Resolve order
 	ordered, err := registry.ResolveOrder(selected)
 	if err != nil {
 		return err
+	}
+
+	// In full mode, check if root-required modules are selected and we're not root
+	if mode == RunModeFull && !sys.IsRoot {
+		var rootMods []string
+		for _, id := range ordered {
+			m, err := registry.Get(id)
+			if err != nil {
+				continue
+			}
+			if m.RequiresRoot() {
+				rootMods = append(rootMods, m.Name())
+			}
+		}
+		if len(rootMods) > 0 {
+			return fmt.Errorf(i18n.T("run_full_needs_root"), strings.Join(rootMods, ", "))
+		}
 	}
 
 	// Root user install protection: check before collecting config
@@ -76,18 +170,20 @@ func RunCmd(registry *modules.Registry) error {
 	// Collect config from forms
 	cfg := &types.Config{SSHPort: 22122}
 
-	// APT mirror: env > settings > interactive prompt
-	st := settings.Load()
-	resolved, saveNeeded := resolveAptMirror(cfg, st, isInteractiveTerminal())
-	if !resolved {
-		if saveNeeded {
-			mirrorChoice, err := aptMirrorForm(cfg)
-			if err != nil {
-				return err
-			}
-			st.AptMirror = mirrorChoice
-			if err := settings.SaveUser(st); err != nil {
-				log.Warnf(i18n.T("config_save_failed"), err)
+	// APT mirror: env > settings > interactive prompt (skip in user mode)
+	if mode == RunModeFull {
+		st := settings.Load()
+		resolved, saveNeeded := resolveAptMirror(cfg, st, isInteractiveTerminal())
+		if !resolved {
+			if saveNeeded {
+				mirrorChoice, err := aptMirrorForm(cfg)
+				if err != nil {
+					return err
+				}
+				st.AptMirror = mirrorChoice
+				if err := settings.SaveUser(st); err != nil {
+					log.Warnf(i18n.T("config_save_failed"), err)
+				}
 			}
 		}
 	}
