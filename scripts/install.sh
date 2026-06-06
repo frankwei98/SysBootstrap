@@ -29,16 +29,47 @@ warn()    { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 die()     { error "$@"; exit 1; }
 
+has_tty() {
+    [[ -r /dev/tty && -w /dev/tty ]]
+}
+
+prompt_read() {
+    local __var_name="$1"
+    local __prompt="$2"
+    local __value=""
+
+    if has_tty; then
+        read -r -p "$__prompt" __value < /dev/tty
+    else
+        read -r -p "$__prompt" __value
+    fi
+
+    printf -v "$__var_name" '%s' "$__value"
+}
+
+require_tty() {
+    local message="${1:-This installer requires an interactive terminal.}"
+    has_tty || die "$message"
+}
+
+run_with_tty() {
+    if has_tty; then
+        exec < /dev/tty
+    fi
+    exec "$@"
+}
+
 # --- Language Selection ---
 choose_language() {
     local choice
 
+    require_tty "This installer requires an interactive terminal when run via curl | bash."
     echo ""
     echo "Language / 语言:"
     echo "  1) English (default)"
     echo "  2) 中文"
     echo ""
-    read -rp "Selection / 选择 [1/2]: " choice
+    prompt_read choice "Selection / 选择 [1/2]: "
 
     case "${choice:-1}" in
         1)
@@ -68,7 +99,7 @@ ask_apt_mirror() {
         echo "  Security sources remain unchanged."
     fi
     echo ""
-    read -rp "[y/N]: " choice
+    prompt_read choice "[y/N]: "
 
     case "${choice:-N}" in
         [Yy]*)
@@ -91,13 +122,13 @@ choose_region() {
         echo "  1) 海外（默认）"
         echo "  2) 中国大陆（优先使用镜像/代理 CDN）"
         echo ""
-        read -rp "选择 [1/2]: " choice
+        prompt_read choice "选择 [1/2]: "
     else
         echo "Download region:"
         echo "  1) Overseas (default)"
         echo "  2) China mainland (prefer mirror/proxy CDN)"
         echo ""
-        read -rp "Selection [1/2]: " choice
+        prompt_read choice "Selection [1/2]: "
     fi
 
     case "${choice:-1}" in
@@ -213,7 +244,7 @@ confirm_unverified_continue() {
     warn "Downloaded file SHA256: ${actual_hash}"
     warn "Check the expected checksum on https://github.com/${REPO}/releases/tag/${VERSION} if needed."
     echo ""
-    read -rp "Continue without verification? [y/N]: " choice
+    prompt_read choice "Continue without verification? [y/N]: "
     [[ "$choice" =~ ^[Yy]$ ]]
 }
 
@@ -291,7 +322,7 @@ install_or_run() {
         echo "  1) 临时运行（下载后直接执行）"
         echo "  2) 安装到 ${INSTALL_DIR}（需要 sudo）"
         echo ""
-        read -rp "选择 [1/2]: " choice
+        prompt_read choice "选择 [1/2]: "
     else
         echo "sys-bootstrap installer"
         echo "======================="
@@ -300,7 +331,7 @@ install_or_run() {
         echo "  1) Run temporarily (download and execute)"
         echo "  2) Install to ${INSTALL_DIR} (requires sudo)"
         echo ""
-        read -rp "Selection [1/2]: " choice
+        prompt_read choice "Selection [1/2]: "
     fi
 
     # Build environment variables for the binary
@@ -321,7 +352,7 @@ install_or_run() {
             fi
             # shellcheck disable=SC2086
             [[ -n "$env_args" ]] && export $env_args
-            exec "/tmp/${BINARY}"
+            run_with_tty "/tmp/${BINARY}"
             ;;
         2)
             if [[ $EUID -ne 0 ]]; then
