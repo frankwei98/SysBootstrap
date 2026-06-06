@@ -5,19 +5,17 @@ Personal Linux VM provisioning tool — a single Go binary that sets up your ser
 ## Quick Start
 
 ```bash
-# Install and run interactively
+# Install or run interactively
 curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/scripts/install.sh | bash
+```
 
-# Or install to /usr/local/bin
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/scripts/install.sh)"
-
-# 如果你在中国，临时运行：
-curl -fsSL https://cdn.jsdelivr.net/gh/frankwei98/SysBootstrap@main/scripts/install.sh | bash
-
-# 或者安装到本机的 `/usr/local/bin` 作为 `sys-bootstrap` 命令
-sudo bash -c "$(curl -fsSL https://cdn.jsdelivr.net/gh/frankwei98/SysBootstrap@main/scripts/install.sh)"
+如果你在中国，运行：
 
 ```
+curl -fsSL https://cdn.jsdelivr.net/gh/frankwei98/SysBootstrap@main/scripts/install.sh | bash
+```
+
+The installer detects root/sudo capability and automatically uses `sudo` only for operations that require root, such as installing the binary to `/usr/local/bin`.
 
 ## Commands
 

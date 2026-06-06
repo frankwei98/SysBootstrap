@@ -59,6 +59,74 @@ run_with_tty() {
     exec "$@"
 }
 
+can_use_sudo() {
+    command -v sudo &>/dev/null
+}
+
+can_run_as_root() {
+    [[ $EUID -eq 0 ]] || can_use_sudo
+}
+
+root_access_label() {
+    if [[ $EUID -eq 0 ]]; then
+        if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+            echo "已具备（当前为 root）"
+        else
+            echo "granted (running as root)"
+        fi
+    elif can_use_sudo; then
+        if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+            echo "可尝试（检测到 sudo，可能需要认证）"
+        else
+            echo "can attempt via sudo (may require authentication)"
+        fi
+    else
+        if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+            echo "不可用（未找到 sudo）"
+        else
+            echo "unavailable (sudo not found)"
+        fi
+    fi
+}
+
+root_required_label() {
+    if [[ $EUID -eq 0 ]]; then
+        if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+            echo "需要 root：当前为 root"
+        else
+            echo "requires root: running as root"
+        fi
+    elif can_use_sudo; then
+        if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+            echo "需要 root：将尝试 sudo"
+        else
+            echo "requires root: will attempt sudo"
+        fi
+    else
+        if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+            echo "需要 root：不可用，未找到 sudo"
+        else
+            echo "requires root: unavailable, sudo not found"
+        fi
+    fi
+}
+
+run_as_root() {
+    if [[ $EUID -eq 0 ]]; then
+        "$@"
+        return
+    fi
+    if can_use_sudo; then
+        sudo "$@"
+        return
+    fi
+    if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+        die "此操作需要 root 权限，但当前用户不是 root，且未找到 sudo。"
+    else
+        die "This operation requires root, but the current user is not root and sudo was not found."
+    fi
+}
+
 # --- Language Selection ---
 choose_language() {
     local choice
@@ -169,7 +237,8 @@ check_deps() {
     if ! command -v curl &>/dev/null; then
         warn "curl not found, attempting to install..."
         if command -v apt-get &>/dev/null; then
-            apt-get update -qq && apt-get install -y -qq curl ca-certificates
+            run_as_root apt-get update -qq
+            run_as_root apt-get install -y -qq curl ca-certificates
         else
             die "curl is required. Please install it manually."
         fi
@@ -320,7 +389,9 @@ install_or_run() {
         echo ""
         echo "选择安装方式："
         echo "  1) 临时运行（下载后直接执行）"
-        echo "  2) 安装到 ${INSTALL_DIR}（需要 sudo）"
+        echo "  2) 安装到 ${INSTALL_DIR}（$(root_required_label)）"
+        echo ""
+        echo "Root 权限：$(root_access_label)"
         echo ""
         prompt_read choice "选择 [1/2]: "
     else
@@ -329,7 +400,9 @@ install_or_run() {
         echo ""
         echo "Choose installation method:"
         echo "  1) Run temporarily (download and execute)"
-        echo "  2) Install to ${INSTALL_DIR} (requires sudo)"
+        echo "  2) Install to ${INSTALL_DIR} ($(root_required_label))"
+        echo ""
+        echo "Root access: $(root_access_label)"
         echo ""
         prompt_read choice "Selection [1/2]: "
     fi
@@ -355,18 +428,21 @@ install_or_run() {
             run_with_tty "/tmp/${BINARY}"
             ;;
         2)
+            if ! can_run_as_root; then
+                if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
+                    die "安装到 ${INSTALL_DIR} 需要 root 权限，但当前无法使用 sudo。"
+                else
+                    die "Installing to ${INSTALL_DIR} requires root, but sudo is not available."
+                fi
+            fi
             if [[ $EUID -ne 0 ]]; then
                 if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
-                    warn "安装到 ${INSTALL_DIR} 需要 root 权限。"
-                    info "正在使用 sudo 重新执行..."
+                    info "正在使用 sudo 安装到 ${INSTALL_DIR}..."
                 else
-                    warn "Installing to ${INSTALL_DIR} requires root."
-                    info "Re-running with sudo..."
+                    info "Installing to ${INSTALL_DIR} with sudo..."
                 fi
-                sudo cp "/tmp/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-            else
-                cp "/tmp/${BINARY}" "${INSTALL_DIR}/${BINARY}"
             fi
+            run_as_root cp "/tmp/${BINARY}" "${INSTALL_DIR}/${BINARY}"
             if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
                 info "已安装到 ${INSTALL_DIR}/${BINARY}"
                 info "运行：sys-bootstrap --help"
