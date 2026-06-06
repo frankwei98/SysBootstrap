@@ -14,8 +14,9 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
-const sshConfigPath = "/etc/ssh/sshd_config"
 const defaultSSHPort = 22122
+
+var sshConfigPath = "/etc/ssh/sshd_config"
 
 var pubKeyRegex = regexp.MustCompile(`^(ssh-(rsa|ed25519|dss)|ecdsa-sha2|sk-)`)
 
@@ -32,7 +33,10 @@ func (m *SSHModule) Dependencies() []string { return nil }
 
 func (m *SSHModule) Check(ctx context.Context, sys *system.Context) CheckResult {
 	if !sys.HasSSHD {
-		return CheckResult{Satisfied: false, Message: "sshd not found"}
+		return CheckResult{Satisfied: false, Message: "openssh-server not installed"}
+	}
+	if _, err := os.Stat(sshConfigPath); err != nil {
+		return CheckResult{Satisfied: false, Message: "sshd_config not found"}
 	}
 	return CheckResult{Satisfied: false, Message: "SSH configuration not yet applied"}
 }
@@ -43,10 +47,14 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 		port = defaultSSHPort
 	}
 
-	steps := []types.Step{
-		{Module: "ssh", Title: "Configure SSH port", Detail: fmt.Sprintf("Set port to %d", port), Risk: "high"},
-		{Module: "ssh", Title: "Validate sshd config", Detail: "Run sshd -t after changes"},
+	var steps []types.Step
+	if !sys.HasSSHD || !sys.HasSSHDService {
+		steps = append(steps, types.Step{Module: "ssh", Title: "Install OpenSSH server", Detail: "apt-get install openssh-server"})
 	}
+	steps = append(steps,
+		types.Step{Module: "ssh", Title: "Configure SSH port", Detail: fmt.Sprintf("Set port to %d", port), Risk: "high"},
+		types.Step{Module: "ssh", Title: "Validate sshd config", Detail: "Run sshd -t after changes"},
+	)
 	if cfg.SSHDisableRoot {
 		steps = append(steps, types.Step{Module: "ssh", Title: "Disable root login", Detail: "PermitRootLogin no", Risk: "high"})
 	}
@@ -71,6 +79,10 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	port := cfg.SSHPort
 	if port == 0 {
 		port = defaultSSHPort
+	}
+
+	if err := ensureOpenSSHServer(ctx, log); err != nil {
+		return err
 	}
 
 	// Backup sshd_config (preserve original permissions)
@@ -180,6 +192,37 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 		}
 	}
 
+	return nil
+}
+
+func ensureOpenSSHServer(ctx context.Context, log *logging.Logger) error {
+	if system.CommandExists("sshd") {
+		if _, err := os.Stat(sshConfigPath); err == nil {
+			return nil
+		}
+	}
+
+	log.Info("OpenSSH server not found, installing openssh-server...")
+	if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil {
+		return fmt.Errorf("apt-get update before openssh-server install failed: %w", err)
+	} else if res.ExitCode != 0 {
+		return fmt.Errorf("apt-get update before openssh-server install failed (exit %d): %s", res.ExitCode, res.Stderr)
+	}
+
+	if res, err := system.RunWithContext(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "openssh-server"); err != nil {
+		return fmt.Errorf("openssh-server installation failed: %w", err)
+	} else if res.ExitCode != 0 {
+		return fmt.Errorf("openssh-server installation failed (exit %d): %s", res.ExitCode, res.Stderr)
+	}
+
+	if !system.CommandExists("sshd") {
+		return fmt.Errorf("openssh-server installation completed but sshd is still not available on PATH")
+	}
+	if _, err := os.Stat(sshConfigPath); err != nil {
+		return fmt.Errorf("openssh-server installation completed but sshd_config is still missing: %w", err)
+	}
+
+	log.Success("openssh-server installed")
 	return nil
 }
 

@@ -2,6 +2,7 @@ package modules
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -47,6 +48,38 @@ func TestSSHPlanNoUFW(t *testing.T) {
 		if s.Title == "Allow SSH port in UFW" || s.Title == "UFW firewall warning" {
 			t.Errorf("unexpected UFW step when UFW not present: %s", s.Title)
 		}
+	}
+}
+
+func TestSSHPlanInstallsOpenSSHServerWhenMissing(t *testing.T) {
+	m := NewSSHModule()
+	sys := &system.Context{HasSSHD: false, HasSSHDService: false}
+	cfg := &types.Config{SSHPort: 22122}
+
+	steps, err := m.Plan(context.Background(), sys, cfg)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	if len(steps) == 0 || steps[0].Title != "Install OpenSSH server" {
+		t.Fatalf("first step = %#v, want Install OpenSSH server", steps)
+	}
+}
+
+func TestSSHCheckMissingConfig(t *testing.T) {
+	orig := sshConfigPath
+	sshConfigPath = filepath.Join(t.TempDir(), "missing_sshd_config")
+	t.Cleanup(func() {
+		sshConfigPath = orig
+	})
+
+	m := NewSSHModule()
+	result := m.Check(context.Background(), &system.Context{HasSSHD: true})
+	if result.Satisfied {
+		t.Fatal("expected missing sshd_config to be unsatisfied")
+	}
+	if result.Message != "sshd_config not found" {
+		t.Fatalf("message = %q, want sshd_config not found", result.Message)
 	}
 }
 
@@ -124,7 +157,7 @@ func TestSSHPlanUFWInactive(t *testing.T) {
 
 func TestSSHPlanDefaultPort(t *testing.T) {
 	m := NewSSHModule()
-	sys := &system.Context{}
+	sys := &system.Context{HasSSHD: true, HasSSHDService: true}
 	cfg := &types.Config{SSHPort: 0} // zero means default
 
 	steps, err := m.Plan(context.Background(), sys, cfg)

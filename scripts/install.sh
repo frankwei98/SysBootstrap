@@ -17,6 +17,9 @@ REGION="overseas"
 VERSION=""
 LANG_CHOICE="en"
 APT_MIRROR=""
+DOWNLOAD_DIR=""
+DOWNLOAD_PATH=""
+CHECKSUM_PATH=""
 
 # Colors
 RED='\033[0;31m'
@@ -57,6 +60,13 @@ run_with_tty() {
         exec < /dev/tty
     fi
     exec "$@"
+}
+
+init_download_paths() {
+    local tmp_base="${TMPDIR:-/tmp}"
+    DOWNLOAD_DIR=$(mktemp -d "${tmp_base%/}/${BINARY}.XXXXXX") || die "Failed to create temporary download directory."
+    DOWNLOAD_PATH="${DOWNLOAD_DIR}/${BINARY}"
+    CHECKSUM_PATH="${DOWNLOAD_DIR}/${BINARY}.sha256"
 }
 
 can_use_sudo() {
@@ -275,14 +285,14 @@ resolve_version() {
 
 download_from_url() {
     local url="$1"
-    local tmp_file="/tmp/${BINARY}.download"
+    local tmp_file="${DOWNLOAD_PATH}.download"
 
     rm -f "$tmp_file"
     info "Downloading from: $url"
     curl -fsSL "$url" -o "$tmp_file" || return 1
     [[ -s "$tmp_file" ]] || return 1
     chmod +x "$tmp_file"
-    mv "$tmp_file" "/tmp/${BINARY}"
+    mv "$tmp_file" "$DOWNLOAD_PATH"
 }
 
 sha256_command() {
@@ -320,27 +330,26 @@ confirm_unverified_continue() {
 verify_download() {
     local platform="$1"
     local checksum_url expected_hash actual_hash
-    local tmp_checksum="/tmp/${BINARY}.sha256"
 
-    actual_hash=$(file_sha256 "/tmp/${BINARY}") || {
+    actual_hash=$(file_sha256 "$DOWNLOAD_PATH") || {
         warn "No SHA256 tool available (sha256sum/shasum). Skipping verification."
         return 0
     }
 
     checksum_url="https://github.com/${REPO}/releases/download/${VERSION}/${BINARY}_${platform}.sha256"
-    rm -f "$tmp_checksum"
-    if ! curl -fsSL "$checksum_url" -o "$tmp_checksum"; then
+    rm -f "$CHECKSUM_PATH"
+    if ! curl -fsSL "$checksum_url" -o "$CHECKSUM_PATH"; then
         if confirm_unverified_continue "$actual_hash"; then
             return 0
         fi
         die "Aborted because the downloaded file could not be verified."
     fi
 
-    expected_hash=$(awk '{print $1}' "$tmp_checksum")
+    expected_hash=$(awk '{print $1}' "$CHECKSUM_PATH")
     [[ -n "${expected_hash:-}" ]] || die "Checksum file is empty or malformed: ${checksum_url}"
 
     if [[ "$actual_hash" != "$expected_hash" ]]; then
-        error "Checksum mismatch for /tmp/${BINARY}"
+        error "Checksum mismatch for ${DOWNLOAD_PATH}"
         error "Expected: ${expected_hash}"
         error "Actual:   ${actual_hash}"
         die "Refusing to continue with an untrusted binary."
@@ -442,9 +451,9 @@ install_or_run() {
                 export "${env_args[@]}"
             fi
             if [[ $EUID -eq 0 ]]; then
-                run_with_tty "/tmp/${BINARY}"
+                run_with_tty "$DOWNLOAD_PATH"
             else
-                run_with_tty sudo env "${env_args[@]}" "/tmp/${BINARY}"
+                run_with_tty sudo env "${env_args[@]}" "$DOWNLOAD_PATH"
             fi
             ;;
         2)
@@ -462,7 +471,7 @@ install_or_run() {
                     info "Installing to ${INSTALL_DIR} with sudo..."
                 fi
             fi
-            run_as_root cp "/tmp/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+            run_as_root cp "$DOWNLOAD_PATH" "${INSTALL_DIR}/${BINARY}"
 
             # Persist settings to system config
             local config_dir="/etc/sys-bootstrap"
@@ -504,6 +513,7 @@ apt_mirror=default"
 main() {
     choose_language
     check_deps
+    init_download_paths
     choose_region
     ask_apt_mirror
 
