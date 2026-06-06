@@ -348,6 +348,165 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 	return nil
 }
 
+// uninstallFlags holds parsed uninstall command flags.
+type uninstallFlags struct {
+	DryRun bool
+	All    bool
+	Yes    bool
+}
+
+// parseUninstallFlags parses uninstall command args into flags.
+func parseUninstallFlags(args []string) uninstallFlags {
+	var f uninstallFlags
+	for _, a := range args {
+		switch a {
+		case "--dry-run":
+			f.DryRun = true
+		case "--all":
+			f.All = true
+		case "--yes":
+			f.Yes = true
+		}
+	}
+	return f
+}
+
+// validateUninstallFlags checks flag combinations. interactive indicates whether
+// stdin is a TTY; dryRun is exempt from the --all --yes requirement.
+func validateUninstallFlags(f uninstallFlags, interactive bool) error {
+	if !f.DryRun && !interactive && !(f.All && f.Yes) {
+		return fmt.Errorf("%s", i18n.T("uninstall_all_no_yes"))
+	}
+	return nil
+}
+
+// UninstallCmd handles the `uninstall` command.
+func UninstallCmd(args []string) error {
+	flags := parseUninstallFlags(args)
+
+	if err := validateUninstallFlags(flags, isInteractiveTerminal()); err != nil {
+		return err
+	}
+
+	// Resolve current user info
+	info, err := app.ResolveUserInfo()
+	if err != nil {
+		return fmt.Errorf("cannot determine user: %w", err)
+	}
+
+	// Display user info
+	app.PrintUserInfo(info)
+	fmt.Println()
+
+	// Scan for uninstallable items
+	allItems := app.ScanUninstallItems(info.HomeDir)
+	items := app.FilterInstalledItems(allItems)
+
+	if len(items) == 0 {
+		fmt.Println(i18n.T("uninstall_no_items"))
+		return nil
+	}
+
+	// Build plan
+	plan := app.BuildUninstallPlan(items, info.HomeDir)
+
+	if flags.DryRun {
+		fmt.Println(i18n.T("uninstall_dry_run_header"))
+		fmt.Println()
+		app.PrintUninstallPlan(plan)
+		fmt.Println()
+		// Show what rc cleanup would do (non-quiet logger for visibility)
+		itemIDs := make([]string, len(items))
+		for i, item := range items {
+			itemIDs[i] = item.ID
+		}
+		log, err := logging.New(false)
+		if err != nil {
+			return fmt.Errorf("logger init failed: %w", err)
+		}
+		defer log.Close()
+		app.CleanShellRC(plan.RCFiles, itemIDs, true, log)
+		return nil
+	}
+
+	// Determine which items to uninstall
+	var selectedIDs []string
+	if flags.All {
+		// --all: use all detected items
+		for _, item := range items {
+			selectedIDs = append(selectedIDs, item.ID)
+		}
+	} else if isInteractiveTerminal() {
+		// Interactive: show multi-select form
+		var formItems []ui.UninstallItemOption
+		for _, item := range items {
+			label := item.Name
+			if item.Description != "" {
+				label += " — " + item.Description
+			}
+			if item.PkgManager != "" {
+				label += " (" + item.PkgManager + ")"
+			}
+			formItems = append(formItems, ui.UninstallItemOption{ID: item.ID, Label: label})
+		}
+		selectedIDs, err = ui.UninstallSelectForm(formItems)
+		if err != nil {
+			return err
+		}
+		if len(selectedIDs) == 0 {
+			fmt.Println(i18n.T("uninstall_no_items"))
+			return nil
+		}
+	} else {
+		return fmt.Errorf("%s", i18n.T("uninstall_all_no_yes"))
+	}
+
+	// Filter plan to selected items only
+	selectedSet := make(map[string]bool)
+	for _, id := range selectedIDs {
+		selectedSet[id] = true
+	}
+	var selectedItems []app.UninstallItem
+	for _, item := range items {
+		if selectedSet[item.ID] {
+			selectedItems = append(selectedItems, item)
+		}
+	}
+	plan = app.BuildUninstallPlan(selectedItems, info.HomeDir)
+
+	// Show plan and confirm (interactive only, unless --yes)
+	if isInteractiveTerminal() && !flags.Yes {
+		planText := app.FormatUninstallPlan(plan)
+		fmt.Println(i18n.T("uninstall_plan_title"))
+		fmt.Print(planText)
+		fmt.Println()
+
+		confirmed, err := ui.ConfirmUninstall(planText)
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			fmt.Println(i18n.T("runner_cancelled"))
+			return nil
+		}
+	}
+
+	// Initialize logger
+	log, err := logging.New(false)
+	if err != nil {
+		return fmt.Errorf("logger init failed: %w", err)
+	}
+	defer log.Close()
+
+	// Execute uninstall
+	if err := app.ExecuteUninstall(plan, info.HomeDir, false, log); err != nil {
+		return err
+	}
+
+	log.Success(i18n.T("uninstall_done"))
+	return nil
+}
+
 func isInteractiveTerminal() bool {
 	info, err := os.Stdin.Stat()
 	return err == nil && (info.Mode()&os.ModeCharDevice) != 0

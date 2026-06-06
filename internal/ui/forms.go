@@ -269,6 +269,56 @@ func ConfirmRun(planText string) (bool, error) {
 	return confirm, nil
 }
 
+// UninstallItemOption represents a selectable uninstall item for the form.
+type UninstallItemOption struct {
+	ID    string
+	Label string
+}
+
+// UninstallSelectForm shows a multi-select for uninstallable items.
+// items is a slice of (id, label) pairs pre-formatted by the caller.
+func UninstallSelectForm(items []UninstallItemOption) ([]string, error) {
+	var options []huh.Option[string]
+	for _, item := range items {
+		options = append(options, huh.NewOption(item.Label, item.ID))
+	}
+
+	var selected []string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title(i18n.T("uninstall_select_items")).
+				Description(i18n.T("uninstall_select_desc")).
+				Options(options...).
+				Value(&selected),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return nil, err
+	}
+	return selected, nil
+}
+
+// ConfirmUninstall shows the uninstall plan and asks for confirmation.
+func ConfirmUninstall(planText string) (bool, error) {
+	var confirm bool
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewNote().
+				Title(i18n.T("uninstall_plan_title")).
+				Description(planText),
+			huh.NewConfirm().
+				Title(i18n.T("uninstall_confirm")).
+				Description(i18n.T("uninstall_confirm_desc")).
+				Value(&confirm),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return false, err
+	}
+	return confirm, nil
+}
+
 // AIConfigForm collects AI module configuration.
 func AIConfigForm(cfg *types.Config) error {
 	selected := []string{"claude-code", "codex"}

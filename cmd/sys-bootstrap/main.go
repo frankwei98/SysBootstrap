@@ -91,6 +91,12 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "uninstall":
+		if err := cli.UninstallCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "version":
 		cli.VersionCmd()
 
@@ -133,6 +139,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, i18n.T("usage_plan_json"))
 	fmt.Fprintf(os.Stderr, i18n.T("usage_doctor"))
 	fmt.Fprintf(os.Stderr, i18n.T("usage_module"))
+	fmt.Fprintf(os.Stderr, i18n.T("usage_uninstall"))
 	fmt.Fprintf(os.Stderr, i18n.T("usage_version"))
 	fmt.Fprintf(os.Stderr, i18n.T("usage_help"))
 }

@@ -28,6 +28,9 @@ sys-bootstrap plan         # Show execution plan (text)
 sys-bootstrap plan --json  # Show execution plan (JSON)
 sys-bootstrap doctor       # Check system compatibility
 sys-bootstrap module <id>  # Run a single module
+sys-bootstrap uninstall    # Uninstall user-level software (interactive)
+sys-bootstrap uninstall --dry-run  # Show what would be removed, without changes
+sys-bootstrap uninstall --all --yes  # Non-interactive uninstall of all detected items
 sys-bootstrap version      # Show version info
 ```
 
