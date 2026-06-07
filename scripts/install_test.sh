@@ -93,6 +93,7 @@ source_real_script
 info() { :; }
 warn() { :; }
 error() { :; }
+has_tty() { return 0; }
 
 prompt_read() {
     local __var_name="$1"

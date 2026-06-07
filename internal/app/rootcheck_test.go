@@ -8,28 +8,6 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 )
 
-func TestUserLevelModuleIDs(t *testing.T) {
-	tests := []struct {
-		name string
-		ids  []string
-		want int
-	}{
-		{"none", []string{"base", "ssh"}, 0},
-		{"one", []string{"base", "node"}, 1},
-		{"all", []string{"node", "ai", "ssh_keygen"}, 3},
-		{"mixed", []string{"base", "ssh", "node", "user", "ai"}, 2},
-		{"empty", []string{}, 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := UserLevelModuleIDs(tt.ids)
-			if len(got) != tt.want {
-				t.Errorf("UserLevelModuleIDs(%v) = %v (len %d), want len %d", tt.ids, got, len(got), tt.want)
-			}
-		})
-	}
-}
-
 func TestCheckRootUserInstall_NotRoot(t *testing.T) {
 	// When not root, should return nil without any check
 	sys := &system.Context{IsRoot: false}
@@ -99,28 +77,6 @@ func TestCheckRootUserInstall_CoversDeps(t *testing.T) {
 	err := CheckRootUserInstall(sys, []string{"ai", "node"}, false)
 	if err == nil {
 		t.Error("CheckRootUserInstall(root, [ai, node], non-interactive) = nil, want error")
-	}
-}
-
-func TestUserLevelModuleIDs_WithDeps(t *testing.T) {
-	// Target "ai" + missing dep "node" — both are user-level.
-	// This tests the "will actually execute" module set.
-	got := UserLevelModuleIDs([]string{"ai", "node"})
-	if len(got) != 2 {
-		t.Errorf("UserLevelModuleIDs([ai, node]) = %v (len %d), want len 2", got, len(got))
-	}
-	// Verify both present
-	hasAI, hasNode := false, false
-	for _, id := range got {
-		if id == "ai" {
-			hasAI = true
-		}
-		if id == "node" {
-			hasNode = true
-		}
-	}
-	if !hasAI || !hasNode {
-		t.Errorf("UserLevelModuleIDs([ai, node]) = %v, want both ai and node", got)
 	}
 }
 

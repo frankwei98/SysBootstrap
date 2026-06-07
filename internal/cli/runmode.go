@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/frankwei98/sys-bootstrap/internal/app"
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/modules"
 )
@@ -63,17 +62,9 @@ func checkFullModeRoot(registry *modules.Registry, ordered []string, isRoot bool
 	return nil
 }
 
-// filterUserLevelModules returns only the IDs from the registry that are
-// user-level modules (as defined by app.IsUserLevelModule).
-func filterUserLevelModules(registry *modules.Registry) []string {
-	var result []string
-	for _, m := range registry.All() {
-		if m.DefaultEnabled() {
-			continue
-		}
-		if app.IsUserLevelModule(m.ID()) {
-			result = append(result, m.ID())
-		}
+func checkRootRequirementsForMode(mode RunMode, registry *modules.Registry, ordered []string, isRoot bool) error {
+	if mode != RunModeFull {
+		return nil
 	}
-	return result
+	return checkFullModeRoot(registry, ordered, isRoot)
 }
