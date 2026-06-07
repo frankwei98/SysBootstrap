@@ -49,6 +49,7 @@ CAPTURED_RELOAD_CMD=""
 PROMPT_VALUES=()
 PROMPT_INDEX=0
 CAN_USE_SUDO_STUB=0
+CURRENT_EUID_STUB=0
 
 reset_state() {
     CAPTURED_CMD=""
@@ -66,10 +67,10 @@ reset_state() {
     # shellcheck disable=SC2034
     INSTALL_DIR="/usr/local/bin"
     CAN_USE_SUDO_STUB=1
+    CURRENT_EUID_STUB=0
     unset SYS_BOOTSTRAP_LANG 2>/dev/null || true
     unset SYS_BOOTSTRAP_APT_MIRROR 2>/dev/null || true
     unset SYS_BOOTSTRAP_RUN_MODE 2>/dev/null || true
-    unset SYS_BOOTSTRAP_TEST_EUID 2>/dev/null || true
 }
 
 run_expect_fail() {
@@ -110,6 +111,10 @@ reload_current_shell() {
 
 can_use_sudo() {
     return "$CAN_USE_SUDO_STUB"
+}
+
+current_euid() {
+    echo "$CURRENT_EUID_STUB"
 }
 
 run_as_root() {
@@ -154,7 +159,7 @@ test_temp_full_mode_nonroot_uses_sudo() {
     TEST_NAME="temp run full mode non-root: uses sudo env"
     reset_state
     PROMPT_VALUES=("1" "2" "n")
-    SYS_BOOTSTRAP_TEST_EUID=1000
+    CURRENT_EUID_STUB=1000
     CAN_USE_SUDO_STUB=0
     install_or_run >/dev/null
     assert_contains "$CAPTURED_CMD" "sudo"
@@ -166,7 +171,7 @@ test_temp_full_mode_root_no_sudo() {
     TEST_NAME="temp run full mode root: no sudo"
     reset_state
     PROMPT_VALUES=("1" "2" "n")
-    SYS_BOOTSTRAP_TEST_EUID=0
+    CURRENT_EUID_STUB=0
     install_or_run >/dev/null
     assert_not_contains "$CAPTURED_CMD" "sudo"
     assert_contains "$CAPTURED_CMD" "/tmp/fake/sys-bootstrap"
@@ -176,7 +181,7 @@ test_temp_full_mode_no_sudo_available_dies() {
     TEST_NAME="temp run full mode: dies when sudo unavailable"
     reset_state
     PROMPT_VALUES=("1" "2")
-    SYS_BOOTSTRAP_TEST_EUID=1000
+    CURRENT_EUID_STUB=1000
     CAN_USE_SUDO_STUB=1
     if run_expect_fail install_or_run >/dev/null; then
         FAIL=$((FAIL + 1))
@@ -190,7 +195,7 @@ test_install_requires_root() {
     TEST_NAME="install to /usr/local/bin: fails without root"
     reset_state
     PROMPT_VALUES=("2")
-    SYS_BOOTSTRAP_TEST_EUID=1000
+    CURRENT_EUID_STUB=1000
     CAN_USE_SUDO_STUB=1
     if run_expect_fail install_or_run >/dev/null; then
         FAIL=$((FAIL + 1))
@@ -226,8 +231,7 @@ test_env_vars_full_mode_combined() {
     # shellcheck disable=SC2034
     APT_MIRROR="cernet"
     PROMPT_VALUES=("1" "2" "n")
-    # shellcheck disable=SC2034
-    SYS_BOOTSTRAP_TEST_EUID=1000
+    CURRENT_EUID_STUB=1000
     CAN_USE_SUDO_STUB=0
     install_or_run >/dev/null
     assert_contains "$CAPTURED_CMD" "sudo"
@@ -253,6 +257,29 @@ test_temp_run_reload_shell_default_yes() {
     assert_contains "$CAPTURED_RELOAD_CMD" " -l"
 }
 
+test_shell_reload_command_is_manual_friendly() {
+    TEST_NAME="shell_reload_command: manual command omits /dev/tty redirect"
+    reset_state
+    local cmd
+    cmd="$(shell_reload_command)"
+    assert_contains "$cmd" "exec "
+    assert_contains "$cmd" " -l"
+    assert_not_contains "$cmd" "/dev/tty"
+}
+
+test_no_test_euid_in_production() {
+    TEST_NAME="production install.sh has no SYS_BOOTSTRAP_TEST_EUID"
+    reset_state
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if grep -q "SYS_BOOTSTRAP_TEST_EUID" "${script_dir}/install.sh"; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL: $TEST_NAME - SYS_BOOTSTRAP_TEST_EUID found in production install.sh"
+    else
+        PASS=$((PASS + 1))
+    fi
+}
+
 echo "Running install.sh tests..."
 echo ""
 
@@ -269,6 +296,8 @@ test_env_vars_apt_mirror
 test_env_vars_full_mode_combined
 test_temp_run_reload_shell_declined
 test_temp_run_reload_shell_default_yes
+test_shell_reload_command_is_manual_friendly
+test_no_test_euid_in_production
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

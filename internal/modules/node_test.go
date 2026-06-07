@@ -246,3 +246,112 @@ func TestAIModuleDependencyResolutionWithBase(t *testing.T) {
 		}
 	}
 }
+
+func TestAIModuleCheckSatisfiedWithoutPnpm(t *testing.T) {
+	home := t.TempDir()
+	setupAICheckStubs(t, map[string]bool{"node": true}, map[string]bool{"claude": true, "codex": true})
+	writeFakeNvmScript(t, home)
+
+	m := NewAIModule()
+	result := m.Check(context.Background(), &system.Context{
+		CurrentUser: &user.User{Username: "testuser", HomeDir: home},
+	})
+	if !result.Satisfied {
+		t.Fatalf("AI tools installed without pnpm should be satisfied, got: %+v", result)
+	}
+}
+
+func TestAIModuleCheckRequiresPnpmShellPathWhenPnpmExists(t *testing.T) {
+	home := t.TempDir()
+	setupAICheckStubs(t, map[string]bool{"node": true, "pnpm": true}, map[string]bool{"claude": true, "codex": true})
+	writeFakeNvmScript(t, home)
+
+	m := NewAIModule()
+	result := m.Check(context.Background(), &system.Context{
+		CurrentUser: &user.User{Username: "testuser", HomeDir: home},
+	})
+	if result.Satisfied {
+		t.Fatalf("AI tools with pnpm but missing startup files should be unsatisfied")
+	}
+	if !strings.Contains(result.Message, "pnpm global bin is missing") {
+		t.Fatalf("unexpected message: %q", result.Message)
+	}
+}
+
+func setupAICheckStubs(t *testing.T, commands map[string]bool, tools map[string]bool) {
+	t.Helper()
+
+	oldCommandExists := nvmCommandExistsForAICheck
+	oldToolWorks := aiToolWorksForCheck
+	nvmCommandExistsForAICheck = func(_ *system.Context, name string) bool {
+		return commands[name]
+	}
+	aiToolWorksForCheck = func(_ *system.Context, name string) bool {
+		return tools[name]
+	}
+	t.Cleanup(func() {
+		nvmCommandExistsForAICheck = oldCommandExists
+		aiToolWorksForCheck = oldToolWorks
+	})
+}
+
+func writeFakeNvmScript(t *testing.T, home string) {
+	t.Helper()
+
+	nvmDir := filepath.Join(home, ".nvm")
+	if err := os.MkdirAll(nvmDir, 0o755); err != nil {
+		t.Fatalf("mkdir nvm dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nvmDir, "nvm.sh"), []byte("# fake nvm\n"), 0o644); err != nil {
+		t.Fatalf("write nvm.sh: %v", err)
+	}
+	t.Setenv("NVM_DIR", nvmDir)
+}
+
+func TestShellQuoteSpecialChars(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"simple", "/home/user", "'/home/user'"},
+		{"with space", "/home/my user", "'/home/my user'"},
+		{"with single quote", "/home/user's dir", "'/home/user'\\''s dir'"},
+		{"with dollar", "/home/$USER", "'/home/$USER'"},
+		{"with backtick", "/home/`whoami`", "'/home/`whoami`'"},
+		{"with parens", "/home/$(id)", "'/home/$(id)'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellQuote(tt.input)
+			if got != tt.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEnsurePnpmUserDirsRejectsSymlink(t *testing.T) {
+	home := t.TempDir()
+
+	// Create a symlink at ~/.local pointing somewhere else
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(home, ".local")); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+
+	sys := &system.Context{
+		CurrentUser: &user.User{
+			Username: "testuser",
+			HomeDir:  home,
+		},
+	}
+
+	err := ensurePnpmUserDirs(sys)
+	if err == nil {
+		t.Fatal("expected error when ~/.local is a symlink, got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error should mention symlink, got: %v", err)
+	}
+}

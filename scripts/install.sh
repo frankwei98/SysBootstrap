@@ -38,10 +38,6 @@ has_tty() {
 }
 
 current_euid() {
-    if [[ -n "${SYS_BOOTSTRAP_TEST_EUID:-}" ]]; then
-        echo "$SYS_BOOTSTRAP_TEST_EUID"
-        return
-    fi
     echo "$EUID"
 }
 
@@ -85,7 +81,11 @@ reload_current_shell() {
     if [[ -z "$shell_path" || ! -x "$shell_path" ]]; then
         shell_path="/bin/bash"
     fi
-    exec "$shell_path" -l
+    if has_tty; then
+        exec "$shell_path" -l < /dev/tty
+    else
+        exec "$shell_path" -l
+    fi
 }
 
 maybe_reload_shell_after_temp_run() {
@@ -392,7 +392,12 @@ verify_download() {
     local checksum_url expected_hash actual_hash
 
     actual_hash=$(file_sha256 "$DOWNLOAD_PATH") || {
-        warn "No SHA256 tool available (sha256sum/shasum). Skipping verification."
+        warn "No SHA256 tool available (sha256sum/shasum). Cannot verify download integrity."
+        warn "Downloaded file: ${DOWNLOAD_PATH}"
+        echo ""
+        local choice
+        prompt_read choice "Continue without verification? [y/N]: "
+        [[ "$choice" =~ ^[Yy]$ ]] || die "Aborted: download could not be verified without a SHA256 tool."
         return 0
     }
 

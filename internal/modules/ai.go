@@ -16,6 +16,11 @@ type AIModule struct{}
 
 func NewAIModule() *AIModule { return &AIModule{} }
 
+var (
+	aiToolWorksForCheck        = aiToolWorks
+	nvmCommandExistsForAICheck = system.NvmCommandExistsForContext
+)
+
 func (m *AIModule) ID() string             { return "ai" }
 func (m *AIModule) Name() string           { return "AI CLI Tools" }
 func (m *AIModule) Description() string    { return "Claude Code and Codex" }
@@ -27,14 +32,15 @@ func (m *AIModule) Check(ctx context.Context, sys *system.Context) CheckResult {
 	if _, err := os.Stat(filepath.Join(system.NvmDirForContext(sys), "nvm.sh")); err != nil {
 		return CheckResult{Satisfied: false, Message: "Node.js not installed (run node module first)"}
 	}
-	if !system.NvmCommandExistsForContext(sys, "node") {
+	if !nvmCommandExistsForAICheck(sys, "node") {
 		return CheckResult{Satisfied: false, Message: "Node.js not installed (run node module first)"}
 	}
 
-	hasClaude := aiToolWorks(sys, "claude")
-	hasCodex := aiToolWorks(sys, "codex")
+	hasClaude := aiToolWorksForCheck(sys, "claude")
+	hasCodex := aiToolWorksForCheck(sys, "codex")
 	if hasClaude && hasCodex {
-		if !pnpmShellPathConfigured(sys) {
+		// Only require pnpm shell path if pnpm is actually installed
+		if nvmCommandExistsForAICheck(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
 			return CheckResult{Satisfied: false, Message: "AI tools installed, but pnpm global bin is missing from shell startup files"}
 		}
 		return CheckResult{Satisfied: true, Message: "Claude Code and Codex installed"}
@@ -49,10 +55,10 @@ func (m *AIModule) Check(ctx context.Context, sys *system.Context) CheckResult {
 func (m *AIModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
 	var steps []types.Step
 	if cfg.InstallClaudeCode {
-		steps = append(steps, types.Step{Module: "ai", Title: "Install Claude Code", Detail: "@anthropic-ai/claude-code via pnpm"})
+		steps = append(steps, types.Step{Module: "ai", Title: "Install Claude Code", Detail: "@anthropic-ai/claude-code — pnpm when available, otherwise npm"})
 	}
 	if cfg.InstallCodex {
-		steps = append(steps, types.Step{Module: "ai", Title: "Install Codex", Detail: "@openai/codex via pnpm"})
+		steps = append(steps, types.Step{Module: "ai", Title: "Install Codex", Detail: "@openai/codex — pnpm when available, otherwise npm"})
 	}
 	if len(steps) == 0 {
 		steps = append(steps, types.Step{Module: "ai", Title: "Install AI tools", Detail: "Claude Code and Codex (default)"})
@@ -205,7 +211,7 @@ func ensurePnpmShellPath(sys *system.Context) error {
 	}
 
 	script := fmt.Sprintf(`set -e
-export HOME=%q
+export HOME=%s
 marker="# SYS_BOOTSTRAP_PNPM_HOME"
 for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
   touch "$rc"
@@ -217,7 +223,7 @@ export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
 export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
 EOF
   fi
-done`, home)
+done`, shellQuote(home))
 	res, err := system.RunAsUserWithInput(sys, "", "bash", "-c", script)
 	if err != nil {
 		return fmt.Errorf("failed to update shell startup files for pnpm: %w", err)
@@ -244,6 +250,19 @@ func ensurePnpmUserDirs(sys *system.Context) error {
 	home := system.TargetHomeDir(sys)
 	if home == "" {
 		return fmt.Errorf("cannot determine target home directory for pnpm")
+	}
+
+	// Reject symlinks in parent directories to prevent path traversal
+	for _, dir := range []string{
+		filepath.Join(home, ".local"),
+		filepath.Join(home, ".local", "share"),
+		filepath.Join(home, ".config"),
+	} {
+		if info, err := os.Lstat(dir); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to modify %s: it is a symlink (potential path traversal)", dir)
+			}
+		}
 	}
 
 	dirs := []string{

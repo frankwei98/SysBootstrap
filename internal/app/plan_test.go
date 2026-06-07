@@ -52,7 +52,7 @@ func TestPlanJSONStructure(t *testing.T) {
 	r.Register(&stubModule{
 		id: "ai", name: "AI CLI Tools", deps: []string{"node"},
 		satisfied: false, checkMsg: "AI tools not yet installed",
-		steps: []types.Step{{Module: "ai", Title: "Install Claude Code", Detail: "via pnpm", Risk: "medium"}},
+		steps: []types.Step{{Module: "ai", Title: "Install Claude Code", Detail: "@anthropic-ai/claude-code — pnpm when available, otherwise npm", Risk: "medium"}},
 	})
 
 	ctx := context.Background()
