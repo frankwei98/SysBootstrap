@@ -45,7 +45,7 @@ func CheckRootUserInstall(sys *system.Context, moduleIDs []string, interactive b
 	// Filter to only user-level modules in the selection
 	var userMods []string
 	for _, id := range moduleIDs {
-		if userLevelModules[id] {
+		if IsUserLevelModule(id) {
 			userMods = append(userMods, id)
 		}
 	}
@@ -97,15 +97,4 @@ func CheckRootUserInstall(sys *system.Context, moduleIDs []string, interactive b
 	}
 
 	return nil
-}
-
-// UserLevelModuleIDs returns the subset of ids that are user-level modules.
-func UserLevelModuleIDs(ids []string) []string {
-	var result []string
-	for _, id := range ids {
-		if userLevelModules[id] {
-			result = append(result, id)
-		}
-	}
-	return result
 }

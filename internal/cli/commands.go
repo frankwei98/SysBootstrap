@@ -117,8 +117,8 @@ func RunCmd(registry *modules.Registry) error {
 		return err
 	}
 
-	// In full mode, fail early if root-required modules are present without root
-	if err := checkFullModeRoot(registry, ordered, sys.IsRoot); err != nil {
+	// In full mode, fail early if root-required modules are present without root.
+	if err := checkRootRequirementsForMode(mode, registry, ordered, sys.IsRoot); err != nil {
 		return err
 	}
 

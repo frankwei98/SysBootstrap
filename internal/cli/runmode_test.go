@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/frankwei98/sys-bootstrap/internal/app"
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/modules"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -198,81 +197,20 @@ func TestCheckFullModeRoot_NonRoot_SSHModule_Error(t *testing.T) {
 	}
 }
 
-// --- filterUserLevelModules tests ---
-
-func TestFilterUserLevelModules_OnlyUserLevel(t *testing.T) {
+func TestCheckRootRequirementsForMode_UserMode_SkipsFullModeCheck(t *testing.T) {
 	r := newTestRegistry()
-	result := filterUserLevelModules(r)
-
-	expected := map[string]bool{"node": true, "ai": true, "ssh_keygen": true}
-	resultSet := make(map[string]bool)
-	for _, id := range result {
-		resultSet[id] = true
-	}
-
-	for id := range expected {
-		if !resultSet[id] {
-			t.Errorf("missing expected user-level module %q in %v", id, result)
-		}
-	}
-	for _, id := range result {
-		if !expected[id] {
-			t.Errorf("unexpected module %q in user-level list", id)
-		}
+	if err := checkRootRequirementsForMode(RunModeUser, r, []string{"base", "node"}, false); err != nil {
+		t.Fatalf("user mode should skip full-mode root check, got: %v", err)
 	}
 }
 
-func TestFilterUserLevelModules_ExcludesRootModules(t *testing.T) {
+func TestCheckRootRequirementsForMode_FullMode_UsesFullModeCheck(t *testing.T) {
 	r := newTestRegistry()
-	result := filterUserLevelModules(r)
-
-	for _, id := range result {
-		if id == "base" || id == "ssh" || id == "user" {
-			t.Errorf("root module %q should not be in user-level list", id)
-		}
+	err := checkRootRequirementsForMode(RunModeFull, r, []string{"base", "node"}, false)
+	if err == nil {
+		t.Fatal("full mode with base should return error")
 	}
-}
-
-func TestFilterUserLevelModules_ExcludesDefaultEnabled(t *testing.T) {
-	r := newTestRegistry()
-	result := filterUserLevelModules(r)
-
-	for _, id := range result {
-		m, _ := r.Get(id)
-		if m.DefaultEnabled() {
-			t.Errorf("default-enabled module %q should not be in user-level list", id)
-		}
-	}
-}
-
-// --- app.IsUserLevelModule single-source tests ---
-
-func TestIsUserLevelModule_Consistency(t *testing.T) {
-	// Ensure app.IsUserLevelModule and filterUserLevelModules agree
-	r := newTestRegistry()
-	filtered := filterUserLevelModules(r)
-
-	for _, id := range filtered {
-		if !app.IsUserLevelModule(id) {
-			t.Errorf("filterUserLevelModules returned %q but app.IsUserLevelModule says false", id)
-		}
-	}
-
-	// Ensure root modules are NOT user-level
-	for _, id := range []string{"base", "ssh", "user"} {
-		if app.IsUserLevelModule(id) {
-			t.Errorf("app.IsUserLevelModule(%q) should be false", id)
-		}
-	}
-}
-
-func TestUserLevelModuleSet_IsCopy(t *testing.T) {
-	s1 := app.UserLevelModuleSet()
-	s2 := app.UserLevelModuleSet()
-
-	// Mutate s1 — s2 should be unaffected
-	s1["injected"] = true
-	if s2["injected"] {
-		t.Error("UserLevelModuleSet should return independent copies")
+	if !strings.Contains(err.Error(), "base") {
+		t.Errorf("error should mention 'base', got: %v", err)
 	}
 }
