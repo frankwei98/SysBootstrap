@@ -150,7 +150,9 @@ It combines:
 In practice that means:
 
 - the SSH module preview still assumes the default target port `22122` unless you later override it in the interactive flow
+- the SSH module now recognizes already-satisfied port/service state instead of always appearing as pending
 - `fail2ban` follows the currently configured system SSH port when no explicit SSH target port has been chosen
+- if SSH changes the port on a machine that already has a fail2ban `sshd` jail, sys-bootstrap syncs that jail to the new port
 - the standalone interactive `timezone` module defaults to the detected current timezone, while `plan` still previews the product default target of `Etc/UTC`
 
 Text output is for humans. JSON output is for tooling.
