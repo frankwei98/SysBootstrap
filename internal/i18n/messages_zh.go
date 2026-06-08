@@ -38,6 +38,8 @@ var zhCNMessages = map[string]string{
 	"doctor_sshd_no":              "未找到",
 	"doctor_sshd_svc_yes":         "是",
 	"doctor_sshd_svc_no":          "systemd 单元未找到",
+	"doctor_support_tier":         "支持级别",
+	"doctor_support_tier_value":   "检测结果",
 
 	// runner
 	"runner_module_needs_root": "模块 %s 需要 root 权限，请使用 sudo 重新运行",
@@ -102,8 +104,12 @@ var zhCNMessages = map[string]string{
 	"form_ai_tools_desc":          "选择要安装的工具",
 
 	// plan
-	"plan_title":   "执行计划",
-	"plan_pending": "%d 个模块待执行，%d 个已满足",
+	"plan_title":        "执行计划",
+	"plan_pending":      "%d 个模块待执行，%d 个已满足",
+	"plan_support_tier": "支持级别",
+	"plan_checks":       "环境检查",
+	"plan_dependencies": "依赖：",
+	"plan_check_result": "检查结果：",
 
 	// APT mirror
 	"apt_mirror_form_title":  "是否切换 APT 镜像到 CERNET？",

@@ -53,10 +53,10 @@ func (m *SSHKeygenModule) Run(ctx context.Context, sys *system.Context, cfg *typ
 
 	if sys != nil && sys.InvokingUser != nil {
 		if res, err := system.RunAsUserWithInput(sys, "", "mkdir", "-p", sshDir); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("failed to create .ssh directory: %s", res.Stderr)
+			return system.FormatCommandError("failed to create .ssh directory", res, err)
 		}
 		if res, err := system.RunAsUserWithInput(sys, "", "chmod", "700", sshDir); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("failed to set .ssh permissions: %s", res.Stderr)
+			return system.FormatCommandError("failed to set .ssh permissions", res, err)
 		}
 	} else {
 		os.MkdirAll(sshDir, 0o700)
@@ -97,7 +97,7 @@ func (m *SSHKeygenModule) Run(ctx context.Context, sys *system.Context, cfg *typ
 		res, err = system.RunAsUserWithInput(sys, "", "ssh-keygen", args...)
 	}
 	if err != nil || res.ExitCode != 0 {
-		return fmt.Errorf("ssh-keygen failed: %s", res.Stderr)
+		return system.FormatCommandError("ssh-keygen failed", res, err)
 	}
 
 	if sys != nil && sys.InvokingUser != nil {

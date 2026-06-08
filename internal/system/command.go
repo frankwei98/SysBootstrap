@@ -18,6 +18,51 @@ type Result struct {
 	ExitCode int
 }
 
+// FormatCommandError builds a compact, user-facing command failure summary.
+// It prefers stderr, then stdout, and always includes the exit code when known.
+func FormatCommandError(action string, res *Result, err error) error {
+	if err != nil && res == nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+
+	var parts []string
+	if res != nil && res.ExitCode != 0 {
+		parts = append(parts, fmt.Sprintf("exit %d", res.ExitCode))
+	}
+	if summary := summarizeCommandOutput(res); summary != "" {
+		parts = append(parts, summary)
+	}
+	if err != nil {
+		parts = append(parts, err.Error())
+	}
+
+	if len(parts) == 0 {
+		return fmt.Errorf("%s failed", action)
+	}
+	return fmt.Errorf("%s: %s", action, strings.Join(parts, " — "))
+}
+
+func summarizeCommandOutput(res *Result) string {
+	if res == nil {
+		return ""
+	}
+	summary := strings.TrimSpace(res.Stderr)
+	if summary == "" {
+		summary = strings.TrimSpace(res.Stdout)
+	}
+	if summary == "" {
+		return ""
+	}
+	return truncateForError(summary, 300)
+}
+
+func truncateForError(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return strings.TrimSpace(s[:maxLen]) + "...(truncated)"
+}
+
 // Run executes a command and captures its output.
 func Run(name string, args ...string) (*Result, error) {
 	return RunWithContext(context.Background(), name, args...)

@@ -163,7 +163,7 @@ func RunCmd(registry *modules.Registry) error {
 				return err
 			}
 		case "ssh_keygen":
-			if err := ui.SSHKeygenForm(cfg); err != nil {
+			if err := ui.SSHKeygenForm(cfg, sys); err != nil {
 				return err
 			}
 		}
@@ -247,11 +247,10 @@ func DoctorCmd() (*DoctorResult, error) {
 
 	// Determine if this is a primary-supported distro or an apt-compatible one
 	osDetail := fmt.Sprintf("%s %s", sys.OSID, sys.OSVersion)
-	primarySupported := (sys.OSID == "debian" && sys.OSVersionMajor >= 11) ||
-		(sys.OSID == "ubuntu" && sys.OSVersionMajor >= 22)
-	if !primarySupported && sys.HasApt {
+	if sys.SupportTier() == system.SupportTierAptCompatible {
 		osDetail += i18n.T("doctor_os_detail_apt_compat")
 	}
+	fmt.Printf("%s %s: %s\n", i18n.T("doctor_support_tier"), i18n.T("doctor_support_tier_value"), sys.SupportTier())
 
 	checks := []struct {
 		name   string
@@ -263,7 +262,7 @@ func DoctorCmd() (*DoctorResult, error) {
 		{"OS Version", sys.OSVersion != "", sys.OSVersion, true},
 		{"Supported OS", sys.IsSupportedOS(), osDetail, false},
 		{"Architecture", true, sys.Arch, false},
-		{"Root", sys.IsRoot, boolStr(sys.IsRoot, i18n.T("doctor_root_yes"), i18n.T("doctor_root_no")), false},
+		{"Root", true, boolStr(sys.IsRoot, i18n.T("doctor_root_yes"), i18n.T("doctor_root_no")), false},
 		{"systemd", sys.HasSystemd, boolStr(sys.HasSystemd, i18n.T("doctor_systemd_yes"), i18n.T("doctor_systemd_no")), false},
 		{"apt-get", sys.HasApt, boolStr(sys.HasApt, i18n.T("doctor_apt_yes"), i18n.T("doctor_apt_no")), true},
 		{"bash", sys.HasBash, boolStr(sys.HasBash, i18n.T("doctor_bash_yes"), i18n.T("doctor_bash_no")), false},
@@ -397,7 +396,7 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 		if !isInteractiveTerminal() {
 			return fmt.Errorf(i18n.T("module_needs_tty"), m.Name())
 		}
-		if err := ui.SSHKeygenForm(cfg); err != nil {
+		if err := ui.SSHKeygenForm(cfg, sys); err != nil {
 			return err
 		}
 	}

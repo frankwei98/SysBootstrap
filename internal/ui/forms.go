@@ -238,7 +238,7 @@ func UserConfigForm(cfg *types.Config) error {
 }
 
 // SSHKeygenForm collects ssh_keygen module configuration.
-func SSHKeygenForm(cfg *types.Config) error {
+func SSHKeygenForm(cfg *types.Config, sys *system.Context) error {
 	keyType := "ed25519"
 	comment := ""
 
@@ -246,14 +246,6 @@ func SSHKeygenForm(cfg *types.Config) error {
 	placeholder := cfg.NewUsername + "@" + hostname
 	if placeholder == "@" {
 		placeholder = "user@host"
-	}
-
-	// Check if key already exists
-	home, _ := os.UserHomeDir()
-	keyFile := filepath.Join(home, ".ssh", "id_"+keyType)
-	keyExists := false
-	if _, err := os.Stat(keyFile); err == nil {
-		keyExists = true
 	}
 
 	form := huh.NewForm(
@@ -279,7 +271,9 @@ func SSHKeygenForm(cfg *types.Config) error {
 	cfg.KeygenType = keyType
 	cfg.KeygenComment = comment
 
-	// Ask about overwrite if key exists
+	keyFile, keyExists := selectedSSHKeyPath(sys, keyType)
+
+	// Ask about overwrite if the selected key path already exists
 	if keyExists {
 		if err := huh.NewForm(
 			huh.NewGroup(
@@ -294,6 +288,18 @@ func SSHKeygenForm(cfg *types.Config) error {
 	}
 
 	return nil
+}
+
+func selectedSSHKeyPath(sys *system.Context, keyType string) (string, bool) {
+	home := system.TargetHomeDir(sys)
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	keyFile := filepath.Join(home, ".ssh", "id_"+keyType)
+	if _, err := os.Stat(keyFile); err == nil {
+		return keyFile, true
+	}
+	return keyFile, false
 }
 
 // ConfirmRun shows the execution plan and asks for confirmation.

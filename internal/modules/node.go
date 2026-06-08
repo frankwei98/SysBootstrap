@@ -97,7 +97,7 @@ func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 		defer os.Remove(tmpPath)
 
 		if res, err := system.Run("curl", "-fsSL", "-o", tmpPath, downloadURL); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("failed to download nvm install script")
+			return system.FormatCommandError("failed to download nvm install script", res, err)
 		}
 		if err := verifyFileSHA256(tmpPath, nvmInstallSHA256); err != nil {
 			return fmt.Errorf("nvm install script verification failed: %w", err)
@@ -107,7 +107,7 @@ func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 		}
 		cmd := fmt.Sprintf("bash %s", shellQuote(tmpPath))
 		if res, err := system.RunAsUserWithInput(sys, "", "bash", "-c", cmd); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("nvm installation failed")
+			return system.FormatCommandError("nvm installation failed", res, err)
 		}
 		log.Success("nvm installed")
 	}
@@ -126,7 +126,7 @@ func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 		log.Info("Installing Node.js LTS...")
 		script := "nvm install --lts && nvm use --lts && nvm alias default lts/*"
 		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("Node.js installation failed")
+			return system.FormatCommandError("Node.js installation failed", res, err)
 		}
 		log.Success("Node.js LTS installed")
 	}
@@ -139,7 +139,7 @@ func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 		script := `corepack enable
 corepack prepare pnpm@latest --activate`
 		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("pnpm installation failed")
+			return system.FormatCommandError("pnpm installation failed", res, err)
 		}
 		if !system.NvmCommandExistsForContext(sys, "pnpm") {
 			return fmt.Errorf("pnpm installation completed but pnpm is still not available on PATH")

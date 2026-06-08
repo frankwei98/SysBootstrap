@@ -1,124 +1,180 @@
 # sys-bootstrap
 
-**从一台全新的 Linux 虚拟机到 AI Vibecoding，一条命令搞定。**
+**从一台全新的 Linux VM 到远端 vibecoding 搭子，一条命令搞定。**
 
-A single Go binary that turns a fresh Linux VM into a ready-to-vibe AI coding environment — Node.js, Claude Code, Codex, and everything in between.
+`sys-bootstrap` is a single Go binary for turning a fresh Debian/Ubuntu-style VM into a practical remote AI coding box: base packages, SSH hardening, Node.js, Claude Code, Codex, user creation, and SSH key generation in one interactive flow.
+
+It is designed for real remote vibecoding work, not just package installation. In practice that usually means working from a normal sudo-capable user account instead of a root-only session. Some "full access" or autonomous coding workflows behave better that way, and `sys-bootstrap` can help you get there quickly.
 
 ## Quick Start
 
 ```bash
-# One-liner — download, verify, and go
 curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/scripts/install.sh | bash
 ```
 
-中国用户可以使用：（jsdelivr有缓存，可能不是最新的脚本）
+China mainland mirror:
 
 ```bash
 curl -fsSL https://cdn.jsdelivr.net/gh/frankwei98/SysBootstrap@main/scripts/install.sh | bash
 ```
 
-Run the installer, pick **User-level tools**, select the modules you want, and you're coding with AI in minutes.
+The installer will ask for:
+
+- language
+- download region
+- run mode
+- APT mirror preference
+- temporary run or install to `/usr/local/bin`
+
+## Two Paths
+
+### User Mode
+
+For an existing VM user who just wants AI tooling:
+
+```bash
+sys-bootstrap run
+# Choose run mode: user
+# Select: node, ai, ssh_keygen
+```
+
+This mode is aimed at the fast path: install Node.js, pnpm, bun, Claude Code, Codex, and optionally generate SSH keys, all without touching system packages.
+
+### Full Mode
+
+For setting up a fresh VM end to end:
+
+```bash
+sys-bootstrap run
+# Choose run mode: full
+# base is always included
+# Select any extra modules you need
+```
+
+Full mode runs `base` first, then optionally `ssh`, `node`, `ai`, `user`, and `ssh_keygen`. If you select `ai`, `node` is added automatically.
 
 ## What It Sets Up
 
-| Module         | What You Get                                                                                             | Root |
-| -------------- | -------------------------------------------------------------------------------------------------------- | ---- |
-| **base**       | `git`, `curl`, `zsh`, `neovim`, `zellij`, system update                                                  | Yes  |
-| **node**       | nvm → Node.js LTS → pnpm + bun                                                                           | No   |
-| **ai**         | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) + [Codex](https://github.com/openai/codex) | No   |
-| **ssh**        | SSH hardening, custom port, key auth                                                                     | Yes  |
-| **user**       | add user with/without sudo, import authorized SSH pubkey from GitHub / paste your pubkey                 | Yes  |
-| **ssh_keygen** | ed25519 / RSA keypair generation for current user                                                        | No   |
+| Module | What You Get | Root |
+| --- | --- | --- |
+| **base** | `git`, `curl`, `zsh`, `neovim`, `zellij`, apt update/upgrade | Yes |
+| **node** | nvm, Node.js LTS, pnpm, bun | No |
+| **ai** | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://github.com/openai/codex) | No |
+| **ssh** | SSH hardening, custom port, authorized keys, optional auth tightening | Yes |
+| **user** | create a normal user, optional sudo, passwordless sudo, GitHub/pasted SSH keys | Yes |
+| **ssh_keygen** | ed25519 / RSA keypair generation for the current target user | No |
 
-**Typical vibecoding setup:** `node` + `ai` (no root needed) — done in under 5 minutes.
+## Why This Exists
 
-### The Fast Path: User-Level Install
+A new VM should become a usable coding machine in minutes, not after an afternoon of copying install guides for nvm, Node.js, pnpm, bun, Claude Code, Codex, SSH, shell setup, and user permissions.
 
-If you just want AI coding tools on a VM where you already have a user account:
+`sys-bootstrap` wraps that into one interactive CLI:
 
-```bash
-sys-bootstrap run
-# Select: Node.js Environment + AI CLI Tools
-# That's it.
-```
+1. System prep
+2. User/account shaping
+3. Node.js tooling
+4. AI CLI setup
+5. Safe re-runs if you need to come back later
 
-This installs nvm, Node.js LTS, pnpm, bun, Claude Code, and Codex — all in your home directory, no root required.
-
-### Full VM Provisioning
-
-If you're setting up a fresh VM from scratch:
-
-```bash
-sys-bootstrap run
-# Run mode: Full initialization
-# Select everything you need
-```
-
-This handles system packages, SSH hardening, user creation, and the full Node.js + AI toolchain in one pass. The tool resolves module dependencies automatically (`ai` pulls in `node`, `base` is always first in full mode).
+For remote vibecoding, a regular sudoer account is often the sweet spot. It is safer than living in `root`, but still practical for tools that need broad machine access. `sys-bootstrap` reflects that workflow directly.
 
 ## Commands
 
 ```bash
-sys-bootstrap              # Doctor check → interactive menu
-sys-bootstrap run          # Pick modules, configure, execute
-sys-bootstrap plan         # Preview what would happen
-sys-bootstrap plan --json  # Machine-readable plan
-sys-bootstrap doctor       # Check if your system is compatible
-sys-bootstrap module <id>  # Run a single module (e.g. `sys-bootstrap module ai`)
-sys-bootstrap uninstall    # Clean up user-level tools
-sys-bootstrap config       # Language / APT mirror settings
-sys-bootstrap version      # Version info
+sys-bootstrap                      # doctor -> main menu (provisioning / settings / exit)
+sys-bootstrap run                  # interactive provisioning flow
+sys-bootstrap plan                 # preview module capabilities for this machine
+sys-bootstrap plan --json          # machine-readable preview
+sys-bootstrap doctor               # compatibility check
+sys-bootstrap module <id>          # run a single module
+sys-bootstrap uninstall            # remove user-level tools and shell wiring
+sys-bootstrap config               # interactive language / APT mirror settings
+sys-bootstrap config language en
+sys-bootstrap config language zh-CN
+sys-bootstrap config apt-mirror default
+sys-bootstrap config apt-mirror cernet
+sys-bootstrap version              # version, commit, build date, Go version, platform
 ```
-
-## Supported Systems
-
-- **Debian 11+** / **Ubuntu 22+** (primary, tested)
-- Linux Mint, Pop!\_OS, and other apt-based Debian/Ubuntu derivatives (compatible, untested)
-- Architecture: `linux/amd64`, `linux/arm64`
-
-## Why This Exists
-
-Spinning up a new VM for AI-assisted coding should take minutes, not an afternoon of Googling "how to install nvm", "Node.js version manager", "pnpm global bin not found", and "Claude Code installation guide".
-
-sys-bootstrap automates the whole chain:
-
-1. **System prep** — base packages, shell setup, SSH hardening
-2. **Node.js stack** — nvm → Node LTS → pnpm + bun, with shell PATH configured correctly
-3. **AI tools** — Claude Code and Codex via pnpm global install, verified and ready
-
-Every step is **idempotent** — run it again safely if something fails midway. The tool checks what's already installed and skips it.
 
 ## How It Works
 
-```
+```text
 You run the installer
-  → Downloads the binary (SHA256 verified)
-  → You pick user-level or full mode
-  → You select modules via interactive TUI
-  → sys-bootstrap generates an execution plan
-  → You confirm → it runs
-  → Reload shell → start vibecoding
+  -> It checks OS / arch and installs minimal download dependencies if needed
+  -> It asks for language, region, run mode, and APT mirror
+  -> It downloads the matching release binary
+  -> It verifies SHA256 when available, or asks before continuing without it
+  -> You choose temporary run or install to /usr/local/bin
+  -> sys-bootstrap runs doctor
+  -> You enter provisioning or settings
+  -> sys-bootstrap builds a plan
+  -> You confirm and it executes
 ```
 
-The interactive UI is powered by [charmbracelet/huh](https://github.com/charmbracelet/huh). The binary is a single static Go executable with no runtime dependencies (other than `apt-get` for system-level modules).
+The interactive UI is powered by [charmbracelet/huh](https://github.com/charmbracelet/huh). The binary is a single Go executable with no long-running service and no separate runtime package to manage.
+
+## Plan, Doctor, Config
+
+### `doctor`
+
+Checks:
+
+- OS and version
+- whether the distro is supported or apt-compatible
+- architecture
+- root state
+- systemd
+- `apt-get`
+- `bash`
+- `curl`
+- basic network resolution
+- `sshd`
+- `ssh` / `sshd` service availability
+
+Fatal incompatibilities return a non-zero exit code. Warnings still return `0`.
+
+### `plan`
+
+`plan` is a capability preview, not a byte-for-byte dry run of one exact future execution.
+
+It combines:
+
+- current machine state
+- module checks
+- saved language / APT mirror settings
+- default module behavior
+
+Text output is for humans. JSON output is for tooling.
+
+### `config`
+
+The current persisted settings are intentionally small:
+
+- CLI language
+- APT mirror preference
+
+That keeps the tool simple while still making repeat usage less annoying.
 
 ## Safety
 
-- **SSH changes**: backup → modify → validate with `sshd -t` → rollback on failure
-- **Checksums**: nvm script and bun binaries verified against pinned SHA256 hashes
-- **Idempotent**: every module checks current state before acting
-- **Uninstall**: clean removal of user-level tools with shell rc file cleanup
+- SSH changes follow backup -> edit -> `sshd -t` -> rollback on failure
+- nvm installer and bun release assets are checksum-verified in the module flow
+- modules are designed to be re-runnable
+- logs are written to `~/.local/state/sys-bootstrap/logs`
+- `uninstall` removes user-level tools and cleans shell rc entries
 
-## Building from Source
+## Supported Systems
+
+- **Debian 11+** and **Ubuntu 22+**: primary supported targets
+- Linux Mint, Pop!_OS, and other apt-based Debian/Ubuntu derivatives: compatible path
+- Architecture: `linux/amd64`, `linux/arm64`
+
+## Building From Source
 
 ```bash
-# Build
 go build -o sys-bootstrap ./cmd/sys-bootstrap/
-
-# Test
 go test ./...
 
-# Build with version injection
 go build -ldflags="-s -w \
   -X github.com/frankwei98/sys-bootstrap/internal/app.Version=dev \
   -X github.com/frankwei98/sys-bootstrap/internal/app.Commit=$(git rev-parse --short HEAD) \
@@ -128,7 +184,7 @@ go build -ldflags="-s -w \
 
 ## Legacy
 
-This project was originally called **OneLineSetup** and used Bash + [Charmbracelet Gum](https://github.com/charmbracelet/gum). The Go rewrite compiles to a single static binary with no runtime dependencies. The original Bash version is preserved in git history.
+This project started as **OneLineSetup**, a Bash-based setup script with Gum for interaction. The current Go version is the maintained product path. The old Bash approach remains part of the project's history, not the recommended entrypoint.
 
 ## License
 

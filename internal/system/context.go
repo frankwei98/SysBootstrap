@@ -33,6 +33,14 @@ type Context struct {
 	HasSSHDService bool
 }
 
+type SupportTier string
+
+const (
+	SupportTierPrimary       SupportTier = "primary"
+	SupportTierAptCompatible SupportTier = "apt-compatible"
+	SupportTierUnsupported   SupportTier = "unsupported"
+)
+
 var sbinSearchPaths = []string{"/usr/local/sbin", "/usr/sbin", "/sbin"}
 
 // NewContext creates a system context by detecting the current environment.
@@ -127,14 +135,35 @@ func (ctx *Context) detectOS() error {
 // IsSupportedOS returns true if the OS is a known apt-based distro
 // (Debian 11+, Ubuntu 22+) or has apt-get available (other apt derivatives).
 func (ctx *Context) IsSupportedOS() bool {
+	if ctx.IsPrimarySupportedOS() {
+		return true
+	}
+	return ctx.HasApt
+}
+
+// IsPrimarySupportedOS returns true only for distros that are explicitly
+// treated as the primary supported targets.
+func (ctx *Context) IsPrimarySupportedOS() bool {
 	switch ctx.OSID {
 	case "debian":
 		return ctx.OSVersionMajor >= 11
 	case "ubuntu":
 		return ctx.OSVersionMajor >= 22
 	default:
-		// Accept any distro that has apt-get (Linux Mint, Pop!_OS, etc.)
-		return ctx.HasApt
+		return false
+	}
+}
+
+// SupportTier reports whether the current system is a primary supported
+// target, only apt-compatible, or unsupported.
+func (ctx *Context) SupportTier() SupportTier {
+	switch {
+	case ctx.IsPrimarySupportedOS():
+		return SupportTierPrimary
+	case ctx.HasApt:
+		return SupportTierAptCompatible
+	default:
+		return SupportTierUnsupported
 	}
 }
 

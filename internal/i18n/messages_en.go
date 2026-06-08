@@ -38,6 +38,8 @@ var enMessages = map[string]string{
 	"doctor_sshd_no":              "not found",
 	"doctor_sshd_svc_yes":         "yes",
 	"doctor_sshd_svc_no":          "systemd unit not found",
+	"doctor_support_tier":         "Support tier",
+	"doctor_support_tier_value":   "detected",
 
 	// runner
 	"runner_module_needs_root": "module %s requires root, please re-run with sudo",
@@ -102,8 +104,12 @@ var enMessages = map[string]string{
 	"form_ai_tools_desc":          "Select tools to install",
 
 	// plan
-	"plan_title":   "Execution Plan",
-	"plan_pending": "%d module(s) to execute, %d already satisfied",
+	"plan_title":        "Execution Plan",
+	"plan_pending":      "%d module(s) to execute, %d already satisfied",
+	"plan_support_tier": "Support tier",
+	"plan_checks":       "Environment checks",
+	"plan_dependencies": "Dependencies:",
+	"plan_check_result": "Check:",
 
 	// APT mirror
 	"apt_mirror_form_title":  "Switch APT mirror to CERNET?",

@@ -14,17 +14,28 @@ import (
 
 // PlanResult is the output of plan generation.
 type PlanResult struct {
-	Modules []ModulePlan `json:"modules"`
-	Summary string       `json:"summary"`
+	SupportTier string       `json:"support_tier,omitempty"`
+	Checks      []PlanCheck  `json:"checks,omitempty"`
+	Modules     []ModulePlan `json:"modules"`
+	Summary     string       `json:"summary"`
 }
 
 // ModulePlan describes what a single module will do.
 type ModulePlan struct {
-	ID      string       `json:"id"`
-	Name    string       `json:"name"`
-	Steps   []types.Step `json:"steps"`
-	Status  string       `json:"status"`
-	Warning string       `json:"warning,omitempty"`
+	ID           string       `json:"id"`
+	Name         string       `json:"name"`
+	Dependencies []string     `json:"dependencies,omitempty"`
+	Steps        []types.Step `json:"steps"`
+	Status       string       `json:"status"`
+	CheckMessage string       `json:"check_message,omitempty"`
+	Warning      string       `json:"warning,omitempty"`
+}
+
+// PlanCheck captures a high-level environment check that affects plan output.
+type PlanCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
 }
 
 // GeneratePlan creates a plan for the given module IDs.
@@ -35,6 +46,8 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 	}
 
 	plan := &PlanResult{}
+	plan.SupportTier = string(sys.SupportTier())
+	plan.Checks = buildPlanChecks(sys)
 	for _, id := range ordered {
 		m, err := registry.Get(id)
 		if err != nil {
@@ -42,11 +55,13 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 		}
 
 		mp := ModulePlan{
-			ID:   m.ID(),
-			Name: m.Name(),
+			ID:           m.ID(),
+			Name:         m.Name(),
+			Dependencies: append([]string{}, m.Dependencies()...),
 		}
 
 		check := m.Check(ctx, sys)
+		mp.CheckMessage = check.Message
 		if check.Satisfied {
 			mp.Status = "satisfied"
 			mp.Warning = strings.Join(check.Warnings, "; ")
@@ -84,6 +99,21 @@ func FormatPlanText(plan *PlanResult) string {
 	b.WriteString(i18n.T("plan_title") + "\n")
 	b.WriteString("==============\n\n")
 
+	if plan.SupportTier != "" {
+		fmt.Fprintf(&b, "%s: %s\n", i18n.T("plan_support_tier"), plan.SupportTier)
+	}
+	if len(plan.Checks) > 0 {
+		b.WriteString(i18n.T("plan_checks") + ":\n")
+		for _, c := range plan.Checks {
+			fmt.Fprintf(&b, "  - %s: %s", c.Name, c.Status)
+			if c.Detail != "" {
+				fmt.Fprintf(&b, " (%s)", c.Detail)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
 	for _, mp := range plan.Modules {
 		statusIcon := "●"
 		switch mp.Status {
@@ -94,6 +124,12 @@ func FormatPlanText(plan *PlanResult) string {
 		}
 
 		fmt.Fprintf(&b, "%s %s — %s\n", statusIcon, mp.Name, mp.Status)
+		if len(mp.Dependencies) > 0 {
+			fmt.Fprintf(&b, "    %s %s\n", i18n.T("plan_dependencies"), strings.Join(mp.Dependencies, ", "))
+		}
+		if mp.CheckMessage != "" {
+			fmt.Fprintf(&b, "    %s %s\n", i18n.T("plan_check_result"), mp.CheckMessage)
+		}
 		for _, step := range mp.Steps {
 			riskTag := ""
 			if step.Risk != "" {
@@ -121,4 +157,41 @@ func FormatPlanJSON(plan *PlanResult) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func buildPlanChecks(sys *system.Context) []PlanCheck {
+	if sys == nil {
+		return nil
+	}
+
+	status := func(ok bool) string {
+		if ok {
+			return "ok"
+		}
+		return "warning"
+	}
+
+	checks := []PlanCheck{
+		{Name: "os", Status: string(sys.SupportTier()), Detail: fmt.Sprintf("%s %s", sys.OSID, sys.OSVersion)},
+		{Name: "arch", Status: "ok", Detail: sys.Arch},
+		{Name: "apt-get", Status: status(sys.HasApt), Detail: boolDetail(sys.HasApt, "available", "missing")},
+		{Name: "network", Status: status(sys.HasNetwork), Detail: boolDetail(sys.HasNetwork, "dns ok", "dns failed")},
+	}
+
+	if sys.HasSystemd || sys.HasSSHDService {
+		checks = append(checks, PlanCheck{
+			Name:   "ssh service",
+			Status: status(sys.HasSSHDService),
+			Detail: boolDetail(sys.HasSSHDService, "available", "not found"),
+		})
+	}
+
+	return checks
+}
+
+func boolDetail(ok bool, yes, no string) string {
+	if ok {
+		return yes
+	}
+	return no
 }

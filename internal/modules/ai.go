@@ -103,7 +103,7 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 ` + script
 		}
 		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("Claude Code installation failed: %s", res.Stderr)
+			return system.FormatCommandError("Claude Code installation failed", res, err)
 		}
 		if err := verifyClaudeCode(sys, pm, log); err != nil {
 			return err
@@ -120,7 +120,7 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 ` + script
 		}
 		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("Codex installation failed: %s", res.Stderr)
+			return system.FormatCommandError("Codex installation failed", res, err)
 		}
 		if err := verifyAITool(sys, "codex"); err != nil {
 			return fmt.Errorf("Codex installation verification failed: %w", err)
@@ -163,7 +163,7 @@ func verifyClaudeCode(sys *system.Context, pm string, log *logging.Logger) error
 	}
 
 	if res, err := system.RunInNvmShellForContext(sys, claudeCodePostinstallScript()); err != nil || res.ExitCode != 0 {
-		return fmt.Errorf("Claude Code postinstall repair failed: %s", res.Stderr)
+		return system.FormatCommandError("Claude Code postinstall repair failed", res, err)
 	}
 	if err := verifyAITool(sys, "claude"); err != nil {
 		return fmt.Errorf("Claude Code installation verification failed after postinstall repair: %w", err)

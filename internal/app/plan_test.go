@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/modules"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -68,6 +70,12 @@ func TestPlanJSONStructure(t *testing.T) {
 	if plan.Summary == "" {
 		t.Error("expected non-empty summary")
 	}
+	if plan.SupportTier == "" {
+		t.Error("expected support tier to be populated")
+	}
+	if len(plan.Checks) == 0 {
+		t.Error("expected environment checks to be populated")
+	}
 
 	if len(plan.Modules) != 3 {
 		t.Fatalf("expected 3 modules (base, node, ai), got %d", len(plan.Modules))
@@ -84,6 +92,12 @@ func TestPlanJSONStructure(t *testing.T) {
 	// Verify base is satisfied
 	if plan.Modules[0].Status != "satisfied" {
 		t.Errorf("base status = %q, want satisfied", plan.Modules[0].Status)
+	}
+	if plan.Modules[2].Dependencies == nil || len(plan.Modules[2].Dependencies) != 1 || plan.Modules[2].Dependencies[0] != "node" {
+		t.Errorf("ai dependencies = %v, want [node]", plan.Modules[2].Dependencies)
+	}
+	if plan.Modules[2].CheckMessage == "" {
+		t.Error("expected ai check message to be populated")
 	}
 
 	// Verify node and ai are pending
@@ -118,6 +132,12 @@ func TestPlanJSONStructure(t *testing.T) {
 	if _, ok := parsed["summary"]; !ok {
 		t.Error("JSON missing 'summary' field")
 	}
+	if _, ok := parsed["support_tier"]; !ok {
+		t.Error("JSON missing 'support_tier' field")
+	}
+	if _, ok := parsed["checks"]; !ok {
+		t.Error("JSON missing 'checks' field")
+	}
 
 	// Verify module entries have required fields
 	modulesArr := parsed["modules"].([]interface{})
@@ -130,6 +150,8 @@ func TestPlanJSONStructure(t *testing.T) {
 }
 
 func TestPlanTextFormat(t *testing.T) {
+	i18n.SetLang(i18n.LangEN)
+
 	r := modules.NewRegistry()
 	r.Register(&stubModule{
 		id: "base", name: "Base", satisfied: true,
@@ -146,4 +168,16 @@ func TestPlanTextFormat(t *testing.T) {
 	if text == "" {
 		t.Error("expected non-empty plan text")
 	}
+	if !containsAll(text, []string{"Environment checks", "Support tier"}) {
+		t.Errorf("plan text missing new sections:\n%s", text)
+	}
+}
+
+func containsAll(s string, subs []string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }

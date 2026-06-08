@@ -80,3 +80,35 @@ func TestParseUFWActive(t *testing.T) {
 		})
 	}
 }
+
+func TestSupportTier(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  Context
+		want SupportTier
+	}{
+		{
+			name: "primary debian",
+			ctx:  Context{OSID: "debian", OSVersionMajor: 12, HasApt: true},
+			want: SupportTierPrimary,
+		},
+		{
+			name: "apt compatible",
+			ctx:  Context{OSID: "linuxmint", OSVersionMajor: 22, HasApt: true},
+			want: SupportTierAptCompatible,
+		},
+		{
+			name: "unsupported",
+			ctx:  Context{OSID: "arch", HasApt: false},
+			want: SupportTierUnsupported,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.ctx.SupportTier(); got != tt.want {
+				t.Fatalf("SupportTier() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

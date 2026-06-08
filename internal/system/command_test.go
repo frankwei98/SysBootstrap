@@ -1,6 +1,7 @@
 package system
 
 import (
+	"errors"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -90,5 +91,30 @@ func TestNvmDirForContextIgnoresRootNvmDirForInvokingUser(t *testing.T) {
 	want := filepath.Join("/home/frank", ".nvm")
 	if got := NvmDirForContext(sys); got != want {
 		t.Errorf("NvmDirForContext() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatCommandError(t *testing.T) {
+	err := FormatCommandError("download failed", &Result{
+		Stderr:   "curl: failed to connect",
+		ExitCode: 7,
+	}, nil)
+
+	got := err.Error()
+	if !strings.Contains(got, "download failed") {
+		t.Fatalf("missing action in error: %s", got)
+	}
+	if !strings.Contains(got, "exit 7") {
+		t.Fatalf("missing exit code in error: %s", got)
+	}
+	if !strings.Contains(got, "curl: failed to connect") {
+		t.Fatalf("missing stderr summary in error: %s", got)
+	}
+}
+
+func TestFormatCommandErrorFallsBackToWrappedError(t *testing.T) {
+	err := FormatCommandError("command failed", nil, errors.New("exec: not found"))
+	if !strings.Contains(err.Error(), "exec: not found") {
+		t.Fatalf("expected wrapped error, got: %v", err)
 	}
 }
