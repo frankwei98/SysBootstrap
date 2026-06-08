@@ -19,6 +19,7 @@ func NewAIModule() *AIModule { return &AIModule{} }
 var (
 	aiToolWorksForCheck        = aiToolWorks
 	nvmCommandExistsForAICheck = system.NvmCommandExistsForContext
+	runAIShellForContext       = system.RunInNvmShellForContextInHome
 )
 
 func (m *AIModule) ID() string             { return "ai" }
@@ -106,7 +107,7 @@ func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Conf
 pnpm config set global-bin-dir "$PNPM_HOME/bin"
 ` + script
 		}
-		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
+		if res, err := runAIShellForContext(sys, script); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError("Claude Code installation failed", res, err)
 		}
 		if err := verifyClaudeCode(sys, pm, log); err != nil {
@@ -123,7 +124,7 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 pnpm config set global-bin-dir "$PNPM_HOME/bin"
 ` + script
 		}
-		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
+		if res, err := runAIShellForContext(sys, script); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError("Codex installation failed", res, err)
 		}
 		if err := verifyAITool(sys, "codex"); err != nil {
@@ -140,7 +141,7 @@ func aiToolWorks(sys *system.Context, name string) bool {
 }
 
 func verifyAITool(sys *system.Context, name string) error {
-	res, err := system.RunInNvmShellForContext(sys, fmt.Sprintf("%s --version", name))
+	res, err := runAIShellForContext(sys, fmt.Sprintf("%s --version", name))
 	if err != nil {
 		return err
 	}
@@ -166,7 +167,7 @@ func verifyClaudeCode(sys *system.Context, pm string, log *logging.Logger) error
 		log.Warnf("Claude Code verification failed, running postinstall repair: %v", err)
 	}
 
-	if res, err := system.RunInNvmShellForContext(sys, claudeCodePostinstallScript()); err != nil || res.ExitCode != 0 {
+	if res, err := runAIShellForContext(sys, claudeCodePostinstallScript()); err != nil || res.ExitCode != 0 {
 		return system.FormatCommandError("Claude Code postinstall repair failed", res, err)
 	}
 	if err := verifyAITool(sys, "claude"); err != nil {

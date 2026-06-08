@@ -94,6 +94,23 @@ func TestNvmDirForContextIgnoresRootNvmDirForInvokingUser(t *testing.T) {
 	}
 }
 
+func TestNvmShellScriptForContextInHomeChangesDirectory(t *testing.T) {
+	sys := &Context{
+		CurrentUser: &user.User{
+			Username: "frank",
+			HomeDir:  "/home/frank",
+		},
+	}
+
+	script := NvmShellScriptForContextInHome(sys, "pnpm install -g @openai/codex")
+	if !strings.Contains(script, "cd '/home/frank'") {
+		t.Fatalf("expected script to change into target home, got:\n%s", script)
+	}
+	if !strings.Contains(script, "pnpm install -g @openai/codex") {
+		t.Fatalf("expected original command to remain in script, got:\n%s", script)
+	}
+}
+
 func TestFormatCommandError(t *testing.T) {
 	err := FormatCommandError("download failed", &Result{
 		Stderr:   "curl: failed to connect",

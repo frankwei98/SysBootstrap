@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
+	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
 func TestNodeModuleCheckNoNvm(t *testing.T) {
@@ -275,6 +277,47 @@ func TestAIModuleCheckRequiresPnpmShellPathWhenPnpmExists(t *testing.T) {
 	}
 	if !strings.Contains(result.Message, "pnpm global bin is missing") {
 		t.Fatalf("unexpected message: %q", result.Message)
+	}
+}
+
+func TestAIModuleRunUsesHomeSafeShell(t *testing.T) {
+	home := t.TempDir()
+	writeFakeNvmScript(t, home)
+
+	oldRun := runAIShellForContext
+	oldCmdExists := nvmCommandExistsForAICheck
+	oldToolWorks := aiToolWorksForCheck
+	runAIShellForContext = func(_ *system.Context, script string) (*system.Result, error) {
+		if strings.Contains(script, "install -g @openai/codex") || strings.Contains(script, "codex --version") {
+			return &system.Result{ExitCode: 0}, nil
+		}
+		return &system.Result{ExitCode: 0}, nil
+	}
+	nvmCommandExistsForAICheck = func(_ *system.Context, name string) bool {
+		return name == "node"
+	}
+	aiToolWorksForCheck = func(_ *system.Context, _ string) bool {
+		return false
+	}
+	t.Cleanup(func() {
+		runAIShellForContext = oldRun
+		nvmCommandExistsForAICheck = oldCmdExists
+		aiToolWorksForCheck = oldToolWorks
+	})
+
+	m := NewAIModule()
+	sys := &system.Context{
+		CurrentUser: &user.User{Username: "testuser", HomeDir: home},
+	}
+	cfg := &types.Config{InstallCodex: true}
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New() failed: %v", err)
+	}
+	defer log.Close()
+
+	if err := m.Run(context.Background(), sys, cfg, log); err != nil {
+		t.Fatalf("Run failed: %v", err)
 	}
 }
 

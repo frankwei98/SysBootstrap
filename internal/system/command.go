@@ -11,6 +11,10 @@ import (
 	"strings"
 )
 
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
 // Result holds the output of a command execution.
 type Result struct {
 	Stdout   string
@@ -247,6 +251,17 @@ export PATH="$PNPM_HOME:$PNPM_HOME/bin:$BUN_INSTALL/bin:$PATH"
 %s`, NvmDirForContext(sys), script)
 }
 
+// NvmShellScriptForContextInHome wraps a script with nvm paths and executes it
+// from the target user's home directory to avoid project-directory interference
+// with global package manager commands.
+func NvmShellScriptForContextInHome(sys *Context, script string) string {
+	home := TargetHomeDir(sys)
+	if home == "" {
+		return NvmShellScriptForContext(sys, script)
+	}
+	return NvmShellScriptForContext(sys, fmt.Sprintf("cd %s\n%s", shellQuote(home), script))
+}
+
 // RunInNvmShell executes a script in a bash shell with nvm sourced.
 func RunInNvmShell(script string) (*Result, error) {
 	return RunWithInput("", "bash", "-c", NvmShellScript(script))
@@ -255,6 +270,12 @@ func RunInNvmShell(script string) (*Result, error) {
 // RunInNvmShellForContext executes an nvm-aware shell as the user-level target.
 func RunInNvmShellForContext(sys *Context, script string) (*Result, error) {
 	return RunAsUserWithInput(sys, "", "bash", "-c", NvmShellScriptForContext(sys, script))
+}
+
+// RunInNvmShellForContextInHome executes an nvm-aware shell as the user-level
+// target after first changing into that user's home directory.
+func RunInNvmShellForContextInHome(sys *Context, script string) (*Result, error) {
+	return RunAsUserWithInput(sys, "", "bash", "-c", NvmShellScriptForContextInHome(sys, script))
 }
 
 // NvmCommandExists checks if a binary is available inside an nvm-aware shell.
