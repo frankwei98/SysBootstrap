@@ -222,10 +222,10 @@ EOF
 done`, shellQuote(home))
 	res, err := system.RunAsUserWithInput(sys, "", "bash", "-c", script)
 	if err != nil {
-		return fmt.Errorf("failed to update shell startup files for node: %w", err)
+		return system.FormatCommandError("failed to update shell startup files for node", res, err)
 	}
 	if res.ExitCode != 0 {
-		return fmt.Errorf("failed to update shell startup files for node: %s", res.Stderr)
+		return system.FormatCommandError("failed to update shell startup files for node", res, nil)
 	}
 	return nil
 }
@@ -349,7 +349,7 @@ func installBun(sys *system.Context, log *logging.Logger) error {
 				}
 			}
 			if res, err := system.Run("chown", "-R", owner, bunDir); err != nil || res.ExitCode != 0 {
-				return fmt.Errorf("failed to chown bun directory: %s", res.Stderr)
+				return system.FormatCommandError("failed to chown bun directory", res, err)
 			}
 		}
 	}

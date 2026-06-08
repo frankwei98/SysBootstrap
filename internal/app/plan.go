@@ -18,6 +18,14 @@ type PlanResult struct {
 	Checks      []PlanCheck  `json:"checks,omitempty"`
 	Modules     []ModulePlan `json:"modules"`
 	Summary     string       `json:"summary"`
+	Counts      PlanCounts   `json:"counts"`
+}
+
+type PlanCounts struct {
+	Pending       int `json:"pending"`
+	Satisfied     int `json:"satisfied"`
+	NotConfigured int `json:"not_configured"`
+	Error         int `json:"error"`
 }
 
 // ModulePlan describes what a single module will do.
@@ -61,13 +69,13 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 		}
 
 		check := m.Check(ctx, sys)
-		mp.CheckMessage = check.Message
+		mp.CheckMessage = strings.TrimSpace(check.Message)
 		if check.Satisfied {
 			mp.Status = "satisfied"
-			mp.Warning = strings.Join(check.Warnings, "; ")
+			mp.Warning = strings.TrimSpace(strings.Join(check.Warnings, "; "))
 		} else {
 			mp.Status = "pending"
-			mp.Warning = check.Message
+			mp.Warning = strings.TrimSpace(check.Message)
 		}
 
 		moduleCfg := cfg
@@ -75,6 +83,19 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			moduleCfg = cloneConfig(cfg)
 			if moduleCfg.SSHPort == 0 {
 				moduleCfg.SSHPort = 22122
+			}
+		}
+		if m.ID() == "user" {
+			if userCheck, err := modules.DescribeUserCheckForConfig(moduleCfg); err == nil {
+				check = userCheck
+				mp.CheckMessage = userCheck.Message
+				if userCheck.Satisfied {
+					mp.Status = "satisfied"
+					mp.Warning = strings.Join(userCheck.Warnings, "; ")
+				} else {
+					mp.Status = "pending"
+					mp.Warning = userCheck.Message
+				}
 			}
 		}
 
@@ -98,11 +119,11 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			}
 		}
 
-		if m.ID() == "user" && cfg.NewUsername == "" && len(mp.Steps) == 0 {
-			mp.Status = "not_configured"
-			mp.CheckMessage = "No username configured yet"
-			mp.Warning = ""
-		}
+			if m.ID() == "user" && cfg.NewUsername == "" && len(mp.Steps) == 0 {
+				mp.Status = "not_configured"
+				mp.CheckMessage = "No username configured yet"
+				mp.Warning = ""
+			}
 
 		plan.Modules = append(plan.Modules, mp)
 	}
@@ -110,6 +131,7 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 	pending := 0
 	satisfied := 0
 	notConfigured := 0
+	errors := 0
 	for _, mp := range plan.Modules {
 		switch mp.Status {
 		case "pending":
@@ -118,12 +140,26 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			satisfied++
 		case "not_configured":
 			notConfigured++
+		case "error":
+			errors++
 		}
+	}
+	plan.Counts = PlanCounts{
+		Pending:       pending,
+		Satisfied:     satisfied,
+		NotConfigured: notConfigured,
+		Error:         errors,
 	}
 	if notConfigured > 0 {
 		plan.Summary = fmt.Sprintf("%d module(s) to execute, %d already satisfied, %d awaiting input", pending, satisfied, notConfigured)
+		if errors > 0 {
+			plan.Summary += fmt.Sprintf(", %d plan error(s)", errors)
+		}
 	} else {
 		plan.Summary = fmt.Sprintf("%d module(s) to execute, %d already satisfied", pending, satisfied)
+		if errors > 0 {
+			plan.Summary += fmt.Sprintf(", %d plan error(s)", errors)
+		}
 	}
 
 	return plan, nil
@@ -139,7 +175,7 @@ func cloneConfig(cfg *types.Config) *types.Config {
 
 func isConfigSensitivePlanModule(id string) bool {
 	switch id {
-	case "ssh", "docker", "timezone", "fail2ban":
+	case "ssh", "user", "docker", "timezone", "fail2ban":
 		return true
 	default:
 		return false
@@ -159,7 +195,14 @@ func FormatPlanText(plan *PlanResult) string {
 	if len(plan.Checks) > 0 {
 		b.WriteString(i18n.T("plan_checks") + ":\n")
 		for _, c := range plan.Checks {
-			fmt.Fprintf(&b, "  - %s: %s", c.Name, c.Status)
+			icon := "✓"
+			switch c.Status {
+			case "warning":
+				icon = "⚠"
+			case "fatal", "error":
+				icon = "✗"
+			}
+			fmt.Fprintf(&b, "  %s %s: %s", icon, c.Name, c.Status)
 			if c.Detail != "" {
 				fmt.Fprintf(&b, " (%s)", c.Detail)
 			}
@@ -167,6 +210,14 @@ func FormatPlanText(plan *PlanResult) string {
 		}
 		b.WriteString("\n")
 	}
+	fmt.Fprintf(&b, "Overview: %d pending, %d satisfied", plan.Counts.Pending, plan.Counts.Satisfied)
+	if plan.Counts.NotConfigured > 0 {
+		fmt.Fprintf(&b, ", %d awaiting input", plan.Counts.NotConfigured)
+	}
+	if plan.Counts.Error > 0 {
+		fmt.Fprintf(&b, ", %d errors", plan.Counts.Error)
+	}
+	b.WriteString("\n\n")
 
 	for _, mp := range plan.Modules {
 		statusIcon := "●"
@@ -187,9 +238,9 @@ func FormatPlanText(plan *PlanResult) string {
 			fmt.Fprintf(&b, "    %s %s\n", i18n.T("plan_check_result"), mp.CheckMessage)
 		}
 		if mp.Status == "satisfied" {
-			if len(mp.Steps) > 0 {
-				fmt.Fprintf(&b, "    %s\n", "No actions required")
-			}
+			fmt.Fprintf(&b, "    %s\n", "No actions required")
+		} else if mp.Status == "not_configured" {
+			fmt.Fprintf(&b, "    %s\n", "Awaiting interactive input")
 		} else {
 			for _, step := range mp.Steps {
 				riskTag := ""
@@ -202,7 +253,7 @@ func FormatPlanText(plan *PlanResult) string {
 				}
 			}
 		}
-		if mp.Warning != "" {
+		if mp.Warning != "" && mp.Warning != mp.CheckMessage {
 			fmt.Fprintf(&b, "    ⚠ %s\n", mp.Warning)
 		}
 		b.WriteString("\n")
@@ -236,8 +287,8 @@ func buildPlanChecks(sys *system.Context) []PlanCheck {
 	checks := []PlanCheck{
 		{Name: "os", Status: string(sys.SupportTier()), Detail: fmt.Sprintf("%s %s", sys.OSID, sys.OSVersion)},
 		{Name: "arch", Status: "ok", Detail: sys.Arch},
-		{Name: "apt-get", Status: status(sys.HasApt), Detail: boolDetail(sys.HasApt, "available", "missing")},
-		{Name: "network", Status: status(sys.HasNetwork), Detail: boolDetail(sys.HasNetwork, "dns ok", "dns failed")},
+		{Name: "apt-get", Status: fatalStatus(sys.HasApt), Detail: boolDetail(sys.HasApt, "available", "missing")},
+		{Name: "network", Status: fatalStatus(sys.HasNetwork), Detail: boolDetail(sys.HasNetwork, "dns ok", "dns failed")},
 	}
 
 	if sys.HasSystemd || sys.HasSSHDService {
@@ -249,6 +300,13 @@ func buildPlanChecks(sys *system.Context) []PlanCheck {
 	}
 
 	return checks
+}
+
+func fatalStatus(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "fatal"
 }
 
 func boolDetail(ok bool, yes, no string) string {

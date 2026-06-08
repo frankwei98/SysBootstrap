@@ -39,13 +39,19 @@ Phase 1 覆盖当前仓库已有模块能力：
 不在当前范围内：
 
 - Bubble Tea 复杂 TUI
+
+当前明确不做：
+
 - 完整 profile/config 系统
 - 面向大批量机器的声明式部署入口
+- 独立的声明式 `apply` 工作流
 
 当前允许的最小持久配置：
 
 - CLI 语言
 - APT mirror 选择
+
+这些持久配置只保留为最小用户偏好设置，不扩展为完整 profile/config 系统。
 
 允许参考 Bash MVP 逻辑，并在 Go 版本中重写、修复幂等性和安全问题。当前不要求保留 Bash MVP 的可执行兼容入口。
 
@@ -124,6 +130,7 @@ sys-bootstrap version
 - `ai` 模块可使用默认选择执行
 - `run` 仍按交互式流程设计，不作为完整 non-interactive 入口
 - 不引入独立的声明式批量部署工作流
+- 不扩展为面向大批量机器的声明式 `apply` / 配置文件工作流
 
 ## 4. 模块行为
 
@@ -228,11 +235,13 @@ neovim
 密码处理：
 
 - 如果用户加入 sudo 且未启用 passwordless sudo，当前流程会交互执行 `passwd <user>`。
+- 对已有用户，只有在当前账号还没有可用 sudo 密码时，才会实际运行 `passwd <user>`；否则跳过并提示当前密码已可用于 sudo。
 - 如果未加入 sudo，则不自动设置密码，只提示用户手动运行 `passwd <user>`。
 
 当前要求：
 
 - 用户已存在时不重复创建，直接补充 sudo 组、sudoers 和 authorized_keys 等选择的补充操作。
+- 表单需要明确提示：已有用户只做补充更新，不会重复创建；并在确认前展示当前目标摘要。
 - 公钥格式需要校验。
 - `.ssh` 和 `authorized_keys` 权限必须正确。
 - passwordless sudo 写入 `/etc/sudoers.d/sys-bootstrap-<user>`，并在可用时通过 `visudo -cf` 校验。
@@ -354,6 +363,7 @@ sys-bootstrap plan --json
 
 输出内容：
 
+- 顶部 overview（pending / satisfied / awaiting input / error 计数）
 - 模块顺序
 - 每个模块将执行的高层步骤
 - 当前环境检查结果带来的状态：
@@ -385,6 +395,7 @@ sys-bootstrap plan --json
 
 - Debian 11+ / Ubuntu 22+ 视为 primary supported。
 - 其他 apt 系发行版可继续使用，但作为兼容路径提示。
+- 输出包含结论行，明确当前环境是否看起来可以继续。
 
 exit code：
 
@@ -398,7 +409,7 @@ exit code：
 - 默认显示模块级进度日志，不做完全静默模式。
 - 显示模块开始、完成、跳过、失败。
 - 在模块内部按需要输出关键步骤日志。
-- 失败时尽量带上 stderr 或 exit code 摘要，但当前尚未完全统一为单一错误格式。
+- 失败时优先输出紧凑的 action + exit code + stderr/stdout 摘要；纯文件 IO 或校验类错误允许继续保留直接错误信息。
 
 日志文件：
 
@@ -581,8 +592,10 @@ README 应与当前 CLI 行为一致，至少包括：
 
 - 产品定位继续保持为个人/单机远端 vibecoding bootstrap 工具。
 - 不为大批量部署设计独立配置文件驱动或声明式 apply 工作流。
+- 不扩展为完整 profile/config 系统；持久配置继续只保留语言和 APT mirror 这类最小用户偏好。
 - 用户级 AI 环境仍以交互式 `run` 为主，让用户自己确认和选择。
 - docker / timezone / fail2ban 已进入当前实现范围，交互配置、计划输出和基本幂等性已具备，但目前仍保持“实用默认版”，暂不扩展大量高级选项。
+- 可补充链接到真实环境验证记录，例如 fresh Debian 13 ARM64 VM 验收结果。
 
 ## 12. 当前验收标准
 

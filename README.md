@@ -81,6 +81,8 @@ A new VM should become a usable coding machine in minutes, not after an afternoo
 
 For remote vibecoding, a regular sudoer account is often the sweet spot. It is safer than living in `root`, but still practical for tools that need broad machine access. `sys-bootstrap` reflects that workflow directly.
 
+It is intentionally a single-machine interactive bootstrap tool. It is not planned to grow into a full profile/config management system or a declarative `apply` workflow for large-scale fleet rollout.
+
 ## Commands
 
 ```bash
@@ -136,6 +138,8 @@ Checks:
 
 Fatal incompatibilities return a non-zero exit code. Warnings still return `0`.
 
+Current output also includes a short conclusion line so you can tell at a glance whether the machine looks compatible enough to continue.
+
 ### `plan`
 
 `plan` is a capability preview, not a byte-for-byte dry run of one exact future execution.
@@ -154,6 +158,8 @@ In practice that means:
 - `fail2ban` follows the currently configured system SSH port when no explicit SSH target port has been chosen
 - if SSH changes the port on a machine that already has a fail2ban `sshd` jail, sys-bootstrap syncs that jail to the new port
 - the standalone interactive `timezone` module defaults to the detected current timezone, while `plan` still previews the product default target of `Etc/UTC`
+- plan text includes an `Overview` line with pending / satisfied / awaiting-input counts
+- the `user` module is treated as config-sensitive: existing users can preview as either already matching the requested state or needing only supplemental updates
 
 Text output is for humans. JSON output is for tooling.
 
@@ -179,6 +185,12 @@ That keeps the tool simple while still making repeat usage less annoying.
 - **Debian 11+** and **Ubuntu 22+**: primary supported targets
 - Linux Mint, Pop!_OS, and other apt-based Debian/Ubuntu derivatives: compatible path
 - Architecture: `linux/amd64`, `linux/arm64`
+
+## Validation
+
+Recent real-machine validation notes:
+
+- [Fresh ARM64 VM Validation (2026-06-08)](/home/frank/SysBootstrap/docs/validation/2026-06-08-arm64-fresh-vm.md)
 
 ## Building From Source
 

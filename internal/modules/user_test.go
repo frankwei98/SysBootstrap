@@ -2,6 +2,8 @@ package modules
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,7 +68,11 @@ func TestUserPlanNewUser(t *testing.T) {
 }
 
 func TestUserPlanExistingUser(t *testing.T) {
-	// "root" always exists in /etc/passwd
+	tmpDir := t.TempDir()
+	oldSudoersDir := sudoersDir
+	sudoersDir = tmpDir
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+
 	m := NewUserModule()
 	cfg := &types.Config{
 		NewUsername:          "root",
@@ -106,6 +112,90 @@ func TestUserPlanExistingUser(t *testing.T) {
 	}
 	if !hasPasswordlessSudo {
 		t.Error("expected 'Enable passwordless sudo' step for existing user")
+	}
+}
+
+func TestUserPlanExistingUserNoOpWhenAlreadySatisfied(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldSudoersDir := sudoersDir
+	sudoersDir = tmpDir
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+
+	m := NewUserModule()
+	cfg := &types.Config{
+		NewUsername:          "root",
+		UserShell:            "bash",
+		UserAddSudo:          false,
+		UserPasswordlessSudo: false,
+	}
+
+	steps, err := m.Plan(context.Background(), &system.Context{}, cfg)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	if len(steps) != 0 {
+		t.Fatalf("expected no steps for already-satisfied existing user, got %#v", steps)
+	}
+}
+
+func TestUserPlanExistingUserShellChangeAndDisablePasswordless(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldSudoersDir := sudoersDir
+	sudoersDir = tmpDir
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+	if err := os.WriteFile(filepath.Join(tmpDir, "sys-bootstrap-root"), []byte("root ALL=(ALL) NOPASSWD: ALL\n"), 0o440); err != nil {
+		t.Fatalf("write sudoers file: %v", err)
+	}
+
+	m := NewUserModule()
+	cfg := &types.Config{
+		NewUsername:          "root",
+		UserShell:            "zsh",
+		UserAddSudo:          true,
+		UserPasswordlessSudo: false,
+	}
+
+	steps, err := m.Plan(context.Background(), &system.Context{}, cfg)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	var hasShellUpdate bool
+	var hasDisablePasswordless bool
+	for _, s := range steps {
+		if s.Title == "Update login shell" {
+			hasShellUpdate = true
+		}
+		if s.Title == "Disable passwordless sudo" {
+			hasDisablePasswordless = true
+		}
+	}
+
+	if !hasShellUpdate {
+		t.Fatal("expected shell update step for existing user when target shell differs")
+	}
+	if !hasDisablePasswordless {
+		t.Fatal("expected passwordless sudo disable step when switching existing user away from NOPASSWD")
+	}
+}
+
+func TestEvaluateUserDesiredStateSkipsPasswordWhenExistingPasswordUsable(t *testing.T) {
+	cfg := &types.Config{
+		NewUsername:          "alice",
+		UserAddSudo:          true,
+		UserPasswordlessSudo: false,
+	}
+	state := userState{
+		Exists:            true,
+		InSudoGroup:       true,
+		PasswordKnown:     true,
+		HasUsablePassword: true,
+	}
+
+	desired := evaluateUserDesiredState(cfg, state)
+	if desired.NeedsPassword {
+		t.Fatal("expected usable existing password to avoid passwd prompt")
 	}
 }
 
@@ -173,5 +263,53 @@ func TestUserPlanGitHubKeys(t *testing.T) {
 	}
 	if !hasGitHub {
 		t.Error("expected 'Fetch SSH keys from GitHub' step")
+	}
+}
+
+func TestPasswordPlanDetailExistingUser(t *testing.T) {
+	got := passwordPlanDetail("alice", true, false)
+	if !strings.Contains(got, "confirm or rotate") {
+		t.Fatalf("detail = %q, want confirm/rotate wording", got)
+	}
+}
+
+func TestPasswordPlanDetailExistingUserWithoutUsablePassword(t *testing.T) {
+	got := passwordPlanDetail("alice", true, true)
+	if !strings.Contains(got, "does not currently have a usable password") {
+		t.Fatalf("detail = %q, want unusable-password wording", got)
+	}
+}
+
+func TestDescribeUserTargetStateExistingReadySudoUser(t *testing.T) {
+	cfg := &types.Config{
+		NewUsername:          "alice",
+		UserAddSudo:          true,
+		UserPasswordlessSudo: false,
+	}
+	state := userState{
+		Exists:            true,
+		Shell:             "/bin/bash",
+		InSudoGroup:       true,
+		PasswordKnown:     true,
+		HasUsablePassword: true,
+	}
+	desired := evaluateUserDesiredState(cfg, state)
+
+	got := describeUserTargetState(cfg, state, desired)
+	if !strings.Contains(got, "sudo password ready") {
+		t.Fatalf("state description = %q, want sudo password ready", got)
+	}
+}
+
+func TestDescribeUserCheckForConfigNoUsername(t *testing.T) {
+	check, err := DescribeUserCheckForConfig(&types.Config{})
+	if err != nil {
+		t.Fatalf("DescribeUserCheckForConfig failed: %v", err)
+	}
+	if check.Satisfied {
+		t.Fatal("expected no-username check to be unsatisfied")
+	}
+	if !strings.Contains(check.Message, "No target username configured yet") {
+		t.Fatalf("unexpected check message: %q", check.Message)
 	}
 }

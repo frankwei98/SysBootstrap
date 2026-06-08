@@ -285,15 +285,23 @@ func DoctorCmd() (*DoctorResult, error) {
 	result := &DoctorResult{}
 	for _, c := range checks {
 		icon := "✓"
+		status := "ok"
 		if !c.ok {
 			if c.fatal {
 				icon = "✗"
+				status = "fatal"
 				result.HasFatal = true
 			} else {
 				icon = "⚠"
+				status = "warning"
 			}
 		}
-		fmt.Printf("  %s %-15s %s\n", icon, c.name, c.detail)
+		fmt.Printf("  %s %-15s %-7s %s\n", icon, c.name, status, c.detail)
+	}
+	if result.HasFatal {
+		fmt.Println("Conclusion: fatal compatibility issues detected")
+	} else {
+		fmt.Println("Conclusion: environment looks compatible")
 	}
 
 	if result.HasFatal {
@@ -440,9 +448,17 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 	if err != nil {
 		return fmt.Errorf("module %s plan failed: %w", m.Name(), err)
 	}
+	if moduleID == "user" {
+		if userCheck, err := modules.DescribeUserCheckForConfig(cfg); err == nil {
+			check = userCheck
+		}
+	}
 	check = app.ApplyConfigSensitiveModuleState(moduleID, check, steps)
 	if app.ShouldSkipSatisfiedForModule(moduleID, cfg, check) {
 		log.Successf(i18n.T("runner_skipping"), m.Name())
+		if check.Message != "" {
+			log.Info(check.Message)
+		}
 		return nil
 	}
 

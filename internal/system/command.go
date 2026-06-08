@@ -3,6 +3,7 @@ package system
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,6 +27,11 @@ type Result struct {
 // It prefers stderr, then stdout, and always includes the exit code when known.
 func FormatCommandError(action string, res *Result, err error) error {
 	if err != nil && res == nil {
+		if derived := ResultFromError(err); derived != nil {
+			res = derived
+		}
+	}
+	if err != nil && res == nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
 
@@ -44,6 +50,20 @@ func FormatCommandError(action string, res *Result, err error) error {
 		return fmt.Errorf("%s failed", action)
 	}
 	return fmt.Errorf("%s: %s", action, strings.Join(parts, " — "))
+}
+
+// ResultFromError extracts a minimal command Result from an execution error.
+// It is mainly useful for interactive commands where stdout/stderr are already
+// attached to the terminal and only the exit code can still be surfaced.
+func ResultFromError(err error) *Result {
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return &Result{ExitCode: exitErr.ExitCode()}
+	}
+	return nil
 }
 
 func summarizeCommandOutput(res *Result) string {

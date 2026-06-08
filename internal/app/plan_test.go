@@ -138,6 +138,9 @@ func TestPlanJSONStructure(t *testing.T) {
 	if _, ok := parsed["checks"]; !ok {
 		t.Error("JSON missing 'checks' field")
 	}
+	if _, ok := parsed["counts"]; !ok {
+		t.Error("JSON missing 'counts' field")
+	}
 
 	// Verify module entries have required fields
 	modulesArr := parsed["modules"].([]interface{})
@@ -171,6 +174,12 @@ func TestPlanTextFormat(t *testing.T) {
 	if !containsAll(text, []string{"Environment checks", "Support tier"}) {
 		t.Errorf("plan text missing new sections:\n%s", text)
 	}
+	if !strings.Contains(text, "Overview:") {
+		t.Errorf("plan text missing overview line:\n%s", text)
+	}
+	if !strings.Contains(text, "✓ os:") {
+		t.Errorf("plan text should show check status icons:\n%s", text)
+	}
 	if !strings.Contains(text, "No actions required") {
 		t.Errorf("plan text should mark satisfied modules as requiring no actions:\n%s", text)
 	}
@@ -203,6 +212,36 @@ func TestPlanMarksUserModuleNotConfiguredWithoutUsername(t *testing.T) {
 	text := FormatPlanText(plan)
 	if !strings.Contains(text, "Create User — not_configured") {
 		t.Fatalf("plan text missing not_configured status:\n%s", text)
+	}
+	if !strings.Contains(text, "Awaiting interactive input") {
+		t.Fatalf("plan text missing awaiting input helper:\n%s", text)
+	}
+}
+
+func TestPlanMarksConfiguredUserModuleSatisfiedWhenNoStepsRemain(t *testing.T) {
+	i18n.SetLang(i18n.LangEN)
+
+	r := modules.NewRegistry()
+	r.Register(modules.NewUserModule())
+
+	plan, err := GeneratePlan(context.Background(), &system.Context{}, &types.Config{
+		NewUsername:          "root",
+		UserShell:            "bash",
+		UserAddSudo:          false,
+		UserPasswordlessSudo: false,
+	}, r, []string{"user"})
+	if err != nil {
+		t.Fatalf("GeneratePlan failed: %v", err)
+	}
+
+	if len(plan.Modules) != 1 {
+		t.Fatalf("module count = %d, want 1", len(plan.Modules))
+	}
+	if plan.Modules[0].Status != "satisfied" {
+		t.Fatalf("user status = %q, want satisfied", plan.Modules[0].Status)
+	}
+	if !strings.Contains(plan.Modules[0].CheckMessage, "user root exists") {
+		t.Fatalf("unexpected user check message: %q", plan.Modules[0].CheckMessage)
 	}
 }
 
@@ -294,6 +333,11 @@ func TestPlanPreservesSpecificCheckMessageForUnsatisfiedConfigSensitiveModule(t 
 	}
 	if plan.Modules[0].Warning != plan.Modules[0].CheckMessage {
 		t.Fatalf("warning = %q, want same as check message", plan.Modules[0].Warning)
+	}
+
+	text := FormatPlanText(plan)
+	if strings.Count(text, "fail2ban missing. service disabled. sshd jail missing") != 1 {
+		t.Fatalf("plan text should not repeat identical check and warning messages:\n%s", text)
 	}
 }
 

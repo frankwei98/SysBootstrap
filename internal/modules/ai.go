@@ -128,7 +128,7 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 			return system.FormatCommandError("Codex installation failed", res, err)
 		}
 		if err := verifyAITool(sys, "codex"); err != nil {
-			return fmt.Errorf("Codex installation verification failed: %w", err)
+			return fmt.Errorf("Codex installation verification failed: %v", err)
 		}
 		log.Success("Codex installed")
 	}
@@ -162,7 +162,7 @@ func verifyClaudeCode(sys *system.Context, pm string, log *logging.Logger) error
 	if err := verifyAITool(sys, "claude"); err == nil {
 		return nil
 	} else if pm != "pnpm" {
-		return fmt.Errorf("Claude Code installation verification failed: %w", err)
+		return fmt.Errorf("Claude Code installation verification failed: %v", err)
 	} else {
 		log.Warnf("Claude Code verification failed, running postinstall repair: %v", err)
 	}
@@ -171,7 +171,7 @@ func verifyClaudeCode(sys *system.Context, pm string, log *logging.Logger) error
 		return system.FormatCommandError("Claude Code postinstall repair failed", res, err)
 	}
 	if err := verifyAITool(sys, "claude"); err != nil {
-		return fmt.Errorf("Claude Code installation verification failed after postinstall repair: %w", err)
+		return fmt.Errorf("Claude Code installation verification failed after postinstall repair: %v", err)
 	}
 	return nil
 }
@@ -231,10 +231,10 @@ EOF
 done`, shellQuote(home))
 	res, err := system.RunAsUserWithInput(sys, "", "bash", "-c", script)
 	if err != nil {
-		return fmt.Errorf("failed to update shell startup files for pnpm: %w", err)
+		return system.FormatCommandError("failed to update shell startup files for pnpm", res, err)
 	}
 	if res.ExitCode != 0 {
-		return fmt.Errorf("failed to update shell startup files for pnpm: %s", res.Stderr)
+		return system.FormatCommandError("failed to update shell startup files for pnpm", res, nil)
 	}
 	return nil
 }
@@ -301,7 +301,7 @@ func ensurePnpmUserDirs(sys *system.Context) error {
 	}
 	for _, path := range parentDirs {
 		if res, err := system.Run("chown", owner, path); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("failed to chown pnpm directory %s: %s", path, res.Stderr)
+			return system.FormatCommandError(fmt.Sprintf("failed to chown pnpm directory %s", path), res, err)
 		}
 	}
 
@@ -311,7 +311,7 @@ func ensurePnpmUserDirs(sys *system.Context) error {
 	}
 	for _, path := range pnpmDirs {
 		if res, err := system.Run("chown", "-R", owner, path); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("failed to chown pnpm directory %s: %s", path, res.Stderr)
+			return system.FormatCommandError(fmt.Sprintf("failed to chown pnpm directory %s", path), res, err)
 		}
 	}
 	return nil

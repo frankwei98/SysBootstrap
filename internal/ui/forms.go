@@ -139,16 +139,34 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 
 // UserConfigForm collects user module configuration.
 func UserConfigForm(cfg *types.Config) error {
-	shell := "zsh"
-	passwordlessSudo := true
-
-	form := huh.NewForm(
+	usernameForm := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
 				Title(i18n.T("form_username")).
-				Description(i18n.T("form_username_desc")).
+				Description(i18n.T("form_username_desc") + "\n" + i18n.T("form_user_existing_desc")).
 				Placeholder("deploy").
 				Value(&cfg.NewUsername),
+		),
+	)
+	if err := usernameForm.Run(); err != nil {
+		return err
+	}
+
+	shell := "zsh"
+	passwordlessSudo := true
+	if state, err := modules.LookupUserState(cfg.NewUsername); err == nil && state.Exists {
+		switch state.Shell {
+		case "/bin/bash":
+			shell = "bash"
+		case "/bin/zsh":
+			shell = "zsh"
+		}
+		cfg.UserAddSudo = state.InSudoGroup
+		passwordlessSudo = state.PasswordlessSudo
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title(i18n.T("form_shell")).
 				Options(
@@ -174,7 +192,7 @@ func UserConfigForm(cfg *types.Config) error {
 			huh.NewGroup(
 				huh.NewConfirm().
 					Title(i18n.T("form_passwordless_sudo")).
-					Description(i18n.T("form_passwordless_sudo_desc")).
+					Description(i18n.T("form_passwordless_sudo_desc") + "\n" + i18n.T("form_user_password_note")).
 					Value(&passwordlessSudo),
 			),
 		)
@@ -232,6 +250,24 @@ func UserConfigForm(cfg *types.Config) error {
 			}
 			cfg.UserGitHubUser = ghUser
 		}
+	}
+
+	summary := cfg.NewUsername
+	if summary == "" {
+		summary = i18n.T("form_username_desc")
+	} else {
+		if check, err := modules.DescribeUserCheckForConfig(cfg); err == nil && check.Message != "" {
+			summary = check.Message
+		}
+	}
+	if err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewNote().
+				Title(i18n.T("form_user_state_title")).
+				Description(summary),
+		),
+	).Run(); err != nil {
+		return err
 	}
 
 	return nil

@@ -52,11 +52,16 @@ func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error
 		if planErr != nil {
 			return fmt.Errorf("module %s plan failed: %w", m.Name(), planErr)
 		}
+		if m.ID() == "user" {
+			if userCheck, err := modules.DescribeUserCheckForConfig(cfg); err == nil {
+				check = userCheck
+			}
+		}
 		check = ApplyConfigSensitiveModuleState(m.ID(), check, steps)
 		if ShouldSkipSatisfiedForModule(m.ID(), cfg, check) {
 			r.log.Successf(i18n.T("runner_skipping"), m.Name())
 			if check.Message != "" {
-				r.log.Warn(check.Message)
+				r.log.Info(check.Message)
 			}
 			continue
 		}

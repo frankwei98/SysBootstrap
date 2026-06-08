@@ -135,3 +135,17 @@ func TestFormatCommandErrorFallsBackToWrappedError(t *testing.T) {
 		t.Fatalf("expected wrapped error, got: %v", err)
 	}
 }
+
+func TestResultFromErrorExitCode(t *testing.T) {
+	res, err := Run("bash", "-lc", "exit 23")
+	if err != nil {
+		t.Fatalf("Run returned unexpected transport error: %v", err)
+	}
+	derived := ResultFromError(errors.New("not an exit error"))
+	if derived != nil {
+		t.Fatal("non-exit errors should not derive a result")
+	}
+	if res.ExitCode != 23 {
+		t.Fatalf("run result exit code = %d, want 23", res.ExitCode)
+	}
+}
