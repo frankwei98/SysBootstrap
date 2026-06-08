@@ -171,6 +171,39 @@ func TestPlanTextFormat(t *testing.T) {
 	if !containsAll(text, []string{"Environment checks", "Support tier"}) {
 		t.Errorf("plan text missing new sections:\n%s", text)
 	}
+	if !strings.Contains(text, "No actions required") {
+		t.Errorf("plan text should mark satisfied modules as requiring no actions:\n%s", text)
+	}
+}
+
+func TestPlanMarksUserModuleNotConfiguredWithoutUsername(t *testing.T) {
+	i18n.SetLang(i18n.LangEN)
+
+	r := modules.NewRegistry()
+	r.Register(modules.NewUserModule())
+
+	plan, err := GeneratePlan(context.Background(), &system.Context{}, &types.Config{}, r, []string{"user"})
+	if err != nil {
+		t.Fatalf("GeneratePlan failed: %v", err)
+	}
+
+	if len(plan.Modules) != 1 {
+		t.Fatalf("module count = %d, want 1", len(plan.Modules))
+	}
+	if plan.Modules[0].Status != "not_configured" {
+		t.Fatalf("user status = %q, want not_configured", plan.Modules[0].Status)
+	}
+	if plan.Modules[0].CheckMessage != "No username configured yet" {
+		t.Fatalf("user check message = %q", plan.Modules[0].CheckMessage)
+	}
+	if !strings.Contains(plan.Summary, "awaiting input") {
+		t.Fatalf("summary = %q, want awaiting input", plan.Summary)
+	}
+
+	text := FormatPlanText(plan)
+	if !strings.Contains(text, "Create User — not_configured") {
+		t.Fatalf("plan text missing not_configured status:\n%s", text)
+	}
 }
 
 func containsAll(s string, subs []string) bool {

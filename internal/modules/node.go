@@ -70,11 +70,23 @@ func (m *NodeModule) Check(ctx context.Context, sys *system.Context) CheckResult
 }
 
 func (m *NodeModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
-	steps := []types.Step{
-		{Module: "node", Title: "Install nvm", Detail: fmt.Sprintf("nvm %s", nvmVersion)},
-		{Module: "node", Title: "Install Node.js LTS", Detail: "via nvm install --lts"},
-		{Module: "node", Title: "Install pnpm", Detail: "via official installer"},
-		{Module: "node", Title: "Install bun", Detail: "via official installer"},
+	var steps []types.Step
+	nvmScript := filepath.Join(system.NvmDirForContext(sys), "nvm.sh")
+
+	if _, err := os.Stat(nvmScript); err != nil {
+		steps = append(steps, types.Step{Module: "node", Title: "Install nvm", Detail: fmt.Sprintf("nvm %s", nvmVersion)})
+	}
+	if !system.NvmCommandExistsForContext(sys, "node") {
+		steps = append(steps, types.Step{Module: "node", Title: "Install Node.js LTS", Detail: "via nvm install --lts"})
+	}
+	if !system.NvmCommandExistsForContext(sys, "pnpm") {
+		steps = append(steps, types.Step{Module: "node", Title: "Install pnpm", Detail: "via corepack"})
+	}
+	if !system.NvmCommandExistsForContext(sys, "bun") {
+		steps = append(steps, types.Step{Module: "node", Title: "Install bun", Detail: "via official installer"})
+	}
+	if !nodeShellPathConfigured(sys) {
+		steps = append(steps, types.Step{Module: "node", Title: "Update shell startup", Detail: "Load nvm and bun paths from rc files"})
 	}
 	return steps, nil
 }

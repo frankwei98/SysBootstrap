@@ -33,7 +33,12 @@ func (m *UserModule) Check(ctx context.Context, sys *system.Context) CheckResult
 func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
 	var steps []types.Step
 
-	if cfg.NewUsername != "" && userExists(cfg.NewUsername) {
+	if cfg.NewUsername == "" {
+		return steps, nil
+	}
+
+	exists := userExists(cfg.NewUsername)
+	if exists {
 		steps = append(steps, types.Step{Module: "user", Title: "Supplement existing user", Detail: fmt.Sprintf("%s already exists — will apply supplemental updates only", cfg.NewUsername)})
 	} else {
 		steps = append(steps, types.Step{Module: "user", Title: "Create user", Detail: cfg.NewUsername})
@@ -53,7 +58,7 @@ func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 			steps = append(steps, types.Step{Module: "user", Title: "Write SSH public key", Detail: "authorized_keys"})
 		}
 	}
-	if !cfg.UserAddSudo {
+	if !cfg.UserAddSudo && !exists {
 		steps = append(steps, types.Step{Module: "user", Title: "Set password", Detail: "No password set automatically — run passwd " + cfg.NewUsername + " manually", Risk: "manual-step"})
 	}
 	return steps, nil

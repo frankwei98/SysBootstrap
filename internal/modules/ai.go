@@ -54,14 +54,18 @@ func (m *AIModule) Check(ctx context.Context, sys *system.Context) CheckResult {
 
 func (m *AIModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
 	var steps []types.Step
-	if cfg.InstallClaudeCode {
-		steps = append(steps, types.Step{Module: "ai", Title: "Install Claude Code", Detail: "@anthropic-ai/claude-code — pnpm when available, otherwise npm"})
+	installClaude := cfg.InstallClaudeCode || (!cfg.InstallClaudeCode && !cfg.InstallCodex)
+	installCodex := cfg.InstallCodex || (!cfg.InstallClaudeCode && !cfg.InstallCodex)
+	pmDetail := "pnpm when available, otherwise npm"
+
+	if installClaude && !aiToolWorksForCheck(sys, "claude") {
+		steps = append(steps, types.Step{Module: "ai", Title: "Install Claude Code", Detail: "@anthropic-ai/claude-code — " + pmDetail})
 	}
-	if cfg.InstallCodex {
-		steps = append(steps, types.Step{Module: "ai", Title: "Install Codex", Detail: "@openai/codex — pnpm when available, otherwise npm"})
+	if installCodex && !aiToolWorksForCheck(sys, "codex") {
+		steps = append(steps, types.Step{Module: "ai", Title: "Install Codex", Detail: "@openai/codex — " + pmDetail})
 	}
-	if len(steps) == 0 {
-		steps = append(steps, types.Step{Module: "ai", Title: "Install AI tools", Detail: "Claude Code and Codex (default)"})
+	if nvmCommandExistsForAICheck(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
+		steps = append(steps, types.Step{Module: "ai", Title: "Update shell startup", Detail: "Add PNPM_HOME to shell rc files"})
 	}
 	return steps, nil
 }

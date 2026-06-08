@@ -27,21 +27,25 @@ func (m *BaseModule) RequiresRoot() bool     { return true }
 func (m *BaseModule) Dependencies() []string { return nil }
 
 func (m *BaseModule) Check(ctx context.Context, sys *system.Context) CheckResult {
-	allInstalled := true
-	for _, pkg := range basePackages {
-		if !system.DpkgInstalled(pkg) {
-			allInstalled = false
-			break
-		}
-	}
-	if allInstalled && system.CommandExists("zellij") {
+	installedMap := detectBasePackages()
+	installed, missing := summarizeBasePackages(installedMap)
+	hasZellij := system.CommandExists("zellij")
+
+	if len(missing) == 0 && hasZellij {
 		return CheckResult{Satisfied: true, Message: "All base packages and zellij installed"}
 	}
-	return CheckResult{Satisfied: false, Message: "Base packages need installation"}
+	return CheckResult{
+		Satisfied: false,
+		Message:   buildBaseCheckMessage(installed, missing, hasZellij),
+	}
 }
 
 func (m *BaseModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
 	var steps []types.Step
+	installedMap := detectBasePackages()
+	_, missing := summarizeBasePackages(installedMap)
+	hasZellij := system.CommandExists("zellij")
+
 	if cfg.AptMirror == "cernet" {
 		steps = append(steps, types.Step{
 			Module: "base",
@@ -51,9 +55,9 @@ func (m *BaseModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 	}
 	steps = append(steps,
 		types.Step{Module: "base", Title: "Run apt update & upgrade", Detail: "Update package lists and upgrade installed packages"},
-		types.Step{Module: "base", Title: "Install base packages", Detail: fmt.Sprintf("%v", basePackages)},
 	)
-	if !system.CommandExists("zellij") {
+	steps = append(steps, buildBasePackageSteps(missing)...)
+	if !hasZellij {
 		steps = append(steps, types.Step{
 			Module: "base",
 			Title:  "Install zellij",
@@ -112,14 +116,23 @@ func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 	}
 	log.Success("System update complete")
 
-	log.Info("Installing base packages...")
-	args := make([]string, 0, len(basePackages)+2)
-	args = append(args, "install", "-y")
-	args = append(args, basePackages...)
-	if res, err := system.RunWithContext(ctx, "apt-get", args...); err != nil || res.ExitCode != 0 {
-		return system.FormatCommandError("package installation failed", res, err)
+	installedMap := detectBasePackages()
+	installed, missing := summarizeBasePackages(installedMap)
+	if len(installed) > 0 {
+		log.Infof("Already installed base packages: %s", strings.Join(installed, ", "))
 	}
-	log.Success("Base packages installed")
+	if len(missing) == 0 {
+		log.Info("All base packages already installed, skipping package installation")
+	} else {
+		log.Infof("Installing missing base packages: %s", strings.Join(missing, ", "))
+		args := make([]string, 0, len(missing)+2)
+		args = append(args, "install", "-y")
+		args = append(args, missing...)
+		if res, err := system.RunWithContext(ctx, "apt-get", args...); err != nil || res.ExitCode != 0 {
+			return system.FormatCommandError("package installation failed", res, err)
+		}
+		log.Success("Missing base packages installed")
+	}
 
 	if system.CommandExists("zellij") {
 		log.Info("zellij already installed, skipping")
@@ -132,6 +145,58 @@ func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 	}
 
 	return nil
+}
+
+func detectBasePackages() map[string]bool {
+	status := make(map[string]bool, len(basePackages))
+	for _, pkg := range basePackages {
+		status[pkg] = system.DpkgInstalled(pkg)
+	}
+	return status
+}
+
+func summarizeBasePackages(status map[string]bool) (installed []string, missing []string) {
+	for _, pkg := range basePackages {
+		if status[pkg] {
+			installed = append(installed, pkg)
+		} else {
+			missing = append(missing, pkg)
+		}
+	}
+	return installed, missing
+}
+
+func buildBaseCheckMessage(installed []string, missing []string, hasZellij bool) string {
+	var parts []string
+	if len(installed) > 0 {
+		parts = append(parts, "Installed packages: "+strings.Join(installed, ", "))
+	}
+	if len(missing) > 0 {
+		parts = append(parts, "Missing packages: "+strings.Join(missing, ", "))
+	}
+	if hasZellij {
+		parts = append(parts, "zellij installed")
+	} else {
+		parts = append(parts, "zellij missing")
+	}
+	return strings.Join(parts, ". ")
+}
+
+func buildBasePackageSteps(missing []string) []types.Step {
+	if len(missing) == 0 {
+		return nil
+	}
+
+	var steps []types.Step
+	for _, pkg := range missing {
+		steps = append(steps, types.Step{
+			Module: "base",
+			Title:  "Install base packages",
+			Detail: pkg,
+			Status: "pending",
+		})
+	}
+	return steps
 }
 
 func installZellij(ctx context.Context) error {

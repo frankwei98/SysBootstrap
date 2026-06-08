@@ -143,9 +143,8 @@ func TestUserPlanNoUsername(t *testing.T) {
 		t.Fatalf("Plan failed: %v", err)
 	}
 
-	// Should still produce steps (create user with empty name)
-	if len(steps) == 0 {
-		t.Error("expected at least one step")
+	if len(steps) != 0 {
+		t.Errorf("steps len = %d, want 0 when username is empty", len(steps))
 	}
 }
 

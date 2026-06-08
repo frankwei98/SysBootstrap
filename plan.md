@@ -40,6 +40,7 @@ Phase 1 覆盖当前仓库已有模块能力：
 - fail2ban
 - Bubble Tea 复杂 TUI
 - 完整 profile/config 系统
+- 面向大批量机器的声明式部署入口
 
 当前允许的最小持久配置：
 
@@ -118,6 +119,7 @@ sys-bootstrap version
 - 无需额外输入的模块
 - `ai` 模块可使用默认选择执行
 - `run` 仍按交互式流程设计，不作为完整 non-interactive 入口
+- 不引入独立的声明式批量部署工作流
 
 ## 4. 模块行为
 
@@ -515,7 +517,12 @@ README 应与当前 CLI 行为一致，至少包括：
 4. 完善 `ssh_keygen` 对已有密钥和覆盖确认的细节
 5. 细化 `base` 模块的包级检查和日志表现
 
-docker / timezone / fail2ban 仍只作为后续路线图，不在当前阶段引入占位模块。
+说明：
+
+- 产品定位继续保持为个人/单机远端 vibecoding bootstrap 工具。
+- 不为大批量部署设计独立配置文件驱动或声明式 apply 工作流。
+- 用户级 AI 环境仍以交互式 `run` 为主，让用户自己确认和选择。
+- docker / timezone / fail2ban 目前不进入近期实现计划，只保留为远期可选方向，不做接口预留或占位设计。
 
 ## 12. 当前验收标准
 

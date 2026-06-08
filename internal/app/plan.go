@@ -78,16 +78,33 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			mp.Steps = steps
 		}
 
+		if m.ID() == "user" && cfg.NewUsername == "" && len(mp.Steps) == 0 {
+			mp.Status = "not_configured"
+			mp.CheckMessage = "No username configured yet"
+			mp.Warning = ""
+		}
+
 		plan.Modules = append(plan.Modules, mp)
 	}
 
 	pending := 0
+	satisfied := 0
+	notConfigured := 0
 	for _, mp := range plan.Modules {
-		if mp.Status == "pending" {
+		switch mp.Status {
+		case "pending":
 			pending++
+		case "satisfied":
+			satisfied++
+		case "not_configured":
+			notConfigured++
 		}
 	}
-	plan.Summary = fmt.Sprintf("%d module(s) to execute, %d already satisfied", pending, len(plan.Modules)-pending)
+	if notConfigured > 0 {
+		plan.Summary = fmt.Sprintf("%d module(s) to execute, %d already satisfied, %d awaiting input", pending, satisfied, notConfigured)
+	} else {
+		plan.Summary = fmt.Sprintf("%d module(s) to execute, %d already satisfied", pending, satisfied)
+	}
 
 	return plan, nil
 }
@@ -119,6 +136,8 @@ func FormatPlanText(plan *PlanResult) string {
 		switch mp.Status {
 		case "satisfied":
 			statusIcon = "✓"
+		case "not_configured":
+			statusIcon = "○"
 		case "error":
 			statusIcon = "✗"
 		}
@@ -130,14 +149,20 @@ func FormatPlanText(plan *PlanResult) string {
 		if mp.CheckMessage != "" {
 			fmt.Fprintf(&b, "    %s %s\n", i18n.T("plan_check_result"), mp.CheckMessage)
 		}
-		for _, step := range mp.Steps {
-			riskTag := ""
-			if step.Risk != "" {
-				riskTag = " [" + step.Risk + "]"
+		if mp.Status == "satisfied" {
+			if len(mp.Steps) > 0 {
+				fmt.Fprintf(&b, "    %s\n", "No actions required")
 			}
-			fmt.Fprintf(&b, "    • %s%s\n", step.Title, riskTag)
-			if step.Detail != "" {
-				fmt.Fprintf(&b, "      %s\n", step.Detail)
+		} else {
+			for _, step := range mp.Steps {
+				riskTag := ""
+				if step.Risk != "" {
+					riskTag = " [" + step.Risk + "]"
+				}
+				fmt.Fprintf(&b, "    • %s%s\n", step.Title, riskTag)
+				if step.Detail != "" {
+					fmt.Fprintf(&b, "      %s\n", step.Detail)
+				}
 			}
 		}
 		if mp.Warning != "" {

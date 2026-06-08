@@ -36,6 +36,10 @@ func (m *SSHKeygenModule) Plan(ctx context.Context, sys *system.Context, cfg *ty
 	if keyType == "" {
 		keyType = "ed25519"
 	}
+	keyFile := filepath.Join(system.TargetHomeDir(sys), ".ssh", "id_"+keyType)
+	if _, err := os.Stat(keyFile); err == nil && !cfg.KeygenOverwrite {
+		return nil, nil
+	}
 	return []types.Step{
 		{Module: "ssh_keygen", Title: "Generate SSH keypair", Detail: fmt.Sprintf("Type: %s", keyType)},
 	}, nil
