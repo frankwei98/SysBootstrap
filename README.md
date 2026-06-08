@@ -2,7 +2,7 @@
 
 **从一台全新的 Linux VM 到远端 vibecoding 搭子，一条命令搞定。**
 
-`sys-bootstrap` is a single Go binary for turning a fresh Debian/Ubuntu-style VM into a practical remote AI coding box: base packages, SSH hardening, Node.js, Claude Code, Codex, user creation, and SSH key generation in one interactive flow.
+`sys-bootstrap` is a single Go binary for turning a fresh Debian/Ubuntu-style VM into a practical remote AI coding box: base packages, SSH hardening, Node.js, Claude Code, Codex, user creation, SSH key generation, Docker, timezone setup, and fail2ban in one interactive flow.
 
 It is designed for real remote vibecoding work, not just package installation. In practice that usually means working from a normal sudo-capable user account instead of a root-only session. Some "full access" or autonomous coding workflows behave better that way, and `sys-bootstrap` can help you get there quickly.
 
@@ -51,7 +51,7 @@ sys-bootstrap run
 # Select any extra modules you need
 ```
 
-Full mode runs `base` first, then optionally `ssh`, `node`, `ai`, `user`, and `ssh_keygen`. If you select `ai`, `node` is added automatically.
+Full mode runs `base` first, then optionally `ssh`, `node`, `ai`, `user`, `ssh_keygen`, `docker`, `timezone`, and `fail2ban`. If you select `ai`, `node` is added automatically.
 
 ## What It Sets Up
 
@@ -63,6 +63,9 @@ Full mode runs `base` first, then optionally `ssh`, `node`, `ai`, `user`, and `s
 | **ssh** | SSH hardening, custom port, authorized keys, optional auth tightening | Yes |
 | **user** | create a normal user, optional sudo, passwordless sudo, GitHub/pasted SSH keys | Yes |
 | **ssh_keygen** | ed25519 / RSA keypair generation for the current target user | No |
+| **docker** | Docker Engine, CLI, Compose plugin, docker group setup | Yes |
+| **timezone** | system timezone management via `timedatectl` | Yes |
+| **fail2ban** | fail2ban install plus default SSH jail protection | Yes |
 
 ## Why This Exists
 

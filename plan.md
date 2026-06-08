@@ -30,14 +30,14 @@ Phase 1 覆盖当前仓库已有模块能力：
 - `ai`
 - `user`
 - `ssh_keygen`
+- `docker`
+- `timezone`
+- `fail2ban`
 
 当前 `gum` 模块废弃，不再作为 Go 版本模块保留，因为交互层由 Huh 接管。
 
 不在当前范围内：
 
-- docker
-- timezone
-- fail2ban
 - Bubble Tea 复杂 TUI
 - 完整 profile/config 系统
 - 面向大批量机器的声明式部署入口
@@ -99,6 +99,9 @@ sys-bootstrap version
   - `ai`
   - `user`
   - `ssh_keygen`
+  - `docker`
+  - `timezone`
+  - `fail2ban`
 - 如果选择 `ai`，自动加入 `node`。
 - `ai` 默认安装 Claude Code 和 Codex。
 
@@ -245,6 +248,58 @@ neovim
 - 默认不设置 passphrase。
 - 输出私钥和公钥路径。
 - 打印公钥内容。
+
+### docker
+
+行为：
+
+- 在需要安装 Docker 包时配置 Docker 官方 apt repository
+- 安装 `docker-ce`
+- 安装 `docker-ce-cli`
+- 安装 `containerd.io`
+- 安装 `docker-buildx-plugin`
+- 安装 `docker-compose-plugin`
+- 启用并启动 `docker` service
+- 若配置或可推断目标用户，则将其加入 `docker` 组
+
+当前要求：
+
+- repository 已配置时不重复写入
+- 若系统上 Docker 与 Compose 已可用，不因缺少官方 repository 而单独改写 apt 源
+- 已安装 Docker 时不重复安装
+- 缺少 Compose plugin 时可单独补装
+- 已启用 service 时跳过 enable
+- 加入 `docker` 组后提示重新登录或执行 `newgrp docker`
+
+### timezone
+
+行为：
+
+- 通过 `timedatectl` 设置系统时区
+- 交互式表单支持保留当前时区、常见时区快捷选项和自定义 IANA 时区
+- 当前默认目标值为 `Etc/UTC`
+
+当前要求：
+
+- 若系统已是目标时区则跳过
+- 若系统缺少 `timedatectl` 则明确失败
+
+### fail2ban
+
+行为：
+
+- 安装 `fail2ban`
+- 写入 `sshd` jail 配置
+- 启用并启动 `fail2ban` service
+
+当前要求：
+
+- 不强制依赖 `ssh` 模块；若未显式配置 SSH 端口，则从现有系统 `sshd_config` 推断
+- 默认使用 `/etc/fail2ban/jail.local`
+- jail 配置跟随当前目标 SSH 端口
+- 支持 `maxretry`、`findtime`、`bantime`、`backend`、`ignoreip`
+- 执行前后校验 `fail2ban-client -d`
+- 已安装或已启用时保持幂等
 
 ## 5. Huh 交互流程
 
@@ -514,15 +569,15 @@ README 应与当前 CLI 行为一致，至少包括：
 1. 强化 `plan` / `doctor` 的信息完整性和可读性
 2. 统一模块失败摘要格式，尽量稳定输出 stderr / exit code
 3. 打磨 `user` 模块密码和补充更新流程
-4. 完善 `ssh_keygen` 对已有密钥和覆盖确认的细节
-5. 细化 `base` 模块的包级检查和日志表现
+4. 继续深化 `docker` / `timezone` / `fail2ban` 的高级策略
+5. 继续细化 `base`、`ssh_keygen` 等模块的边缘细节
 
 说明：
 
 - 产品定位继续保持为个人/单机远端 vibecoding bootstrap 工具。
 - 不为大批量部署设计独立配置文件驱动或声明式 apply 工作流。
 - 用户级 AI 环境仍以交互式 `run` 为主，让用户自己确认和选择。
-- docker / timezone / fail2ban 目前不进入近期实现计划，只保留为远期可选方向，不做接口预留或占位设计。
+- docker / timezone / fail2ban 已进入当前实现范围，交互配置、计划输出和基本幂等性已具备，但目前仍保持“实用默认版”，暂不扩展大量高级选项。
 
 ## 12. 当前验收标准
 

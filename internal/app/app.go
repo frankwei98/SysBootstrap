@@ -13,5 +13,8 @@ func NewRegistry() *modules.Registry {
 	r.Register(modules.NewAIModule())
 	r.Register(modules.NewUserModule())
 	r.Register(modules.NewSSHKeygenModule())
+	r.Register(modules.NewDockerModule())
+	r.Register(modules.NewTimezoneModule())
+	r.Register(modules.NewFail2banModule())
 	return r
 }

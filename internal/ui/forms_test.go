@@ -4,8 +4,10 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/frankwei98/sys-bootstrap/internal/types"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 )
 
@@ -43,3 +45,35 @@ func TestSelectedSSHKeyPathUsesSelectedAlgorithm(t *testing.T) {
 	}
 }
 
+func TestTimezoneConfigFormOmitsKeepOptionWhenCurrentTimezoneUnknown(t *testing.T) {
+	cfg := &types.Config{}
+	current, ok := modulesCurrentTimezone()
+	selected := cfg.Timezone
+	if selected == "" {
+		if ok && current != "" {
+			selected = current
+		} else {
+			selected = "Etc/UTC"
+		}
+	}
+
+	options := []string{}
+	if ok && current != "" {
+		options = append(options, "Keep current / detected")
+	}
+	options = append(options,
+		"Etc/UTC",
+		"Asia/Shanghai",
+		"America/Los_Angeles",
+		"Europe/Berlin",
+		"Custom",
+	)
+
+	if !(ok && current != "") {
+		for _, option := range options {
+			if strings.Contains(option, "Keep current") {
+				t.Fatalf("unexpected keep-current option when timezone is unknown: %v", options)
+			}
+		}
+	}
+}

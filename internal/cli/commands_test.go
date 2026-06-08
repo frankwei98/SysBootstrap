@@ -259,6 +259,47 @@ func TestResolveRunMode_EnvInvalid(t *testing.T) {
 	}
 }
 
+func TestResolveRunMode_NonInteractiveWithoutEnvFails(t *testing.T) {
+	os.Unsetenv("SYS_BOOTSTRAP_RUN_MODE")
+
+	_, err := resolveRunMode(false)
+	if err == nil {
+		t.Fatal("expected error when no run mode env is set and terminal is non-interactive")
+	}
+}
+
+func TestIsInteractiveTerminalFalseForPipes(t *testing.T) {
+	oldIn, oldOut, oldErr := os.Stdin, os.Stdout, os.Stderr
+	inR, _, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stdin failed: %v", err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stdout failed: %v", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stderr failed: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Stdin, os.Stdout, os.Stderr = oldIn, oldOut, oldErr
+		inR.Close()
+		outR.Close()
+		outW.Close()
+		errR.Close()
+		errW.Close()
+	})
+
+	os.Stdin = inR
+	os.Stdout = outW
+	os.Stderr = errW
+
+	if isInteractiveTerminal() {
+		t.Fatal("expected piped stdio to be treated as non-interactive")
+	}
+}
+
 func TestResolveRunMode_NonInteractive_NoEnv(t *testing.T) {
 	os.Unsetenv("SYS_BOOTSTRAP_RUN_MODE")
 

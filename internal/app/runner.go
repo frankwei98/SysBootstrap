@@ -48,6 +48,11 @@ func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error
 		r.log.Infof(i18n.T("runner_starting"), m.Name())
 
 		check := m.Check(ctx, r.sys)
+		steps, planErr := m.Plan(ctx, r.sys, cfg)
+		if planErr != nil {
+			return fmt.Errorf("module %s plan failed: %w", m.Name(), planErr)
+		}
+		check = ApplyConfigSensitiveModuleState(m.ID(), check, steps)
 		if ShouldSkipSatisfiedForModule(m.ID(), cfg, check) {
 			r.log.Successf(i18n.T("runner_skipping"), m.Name())
 			if check.Message != "" {
@@ -66,6 +71,18 @@ func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error
 
 	r.log.SetModule("")
 	return nil
+}
+
+func ApplyConfigSensitiveModuleState(moduleID string, check modules.CheckResult, steps []types.Step) modules.CheckResult {
+	if !isConfigSensitivePlanModule(moduleID) {
+		return check
+	}
+	if len(steps) > 0 {
+		check.Satisfied = false
+	} else {
+		check.Satisfied = true
+	}
+	return check
 }
 
 func ShouldSkipSatisfiedForModule(moduleID string, cfg *types.Config, check modules.CheckResult) bool {

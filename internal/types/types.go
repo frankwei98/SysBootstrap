@@ -37,6 +37,19 @@ type Config struct {
 	KeygenType      string // "ed25519" or "rsa"
 	KeygenComment   string
 	KeygenOverwrite bool
+
+	// Docker
+	DockerUser string
+
+	// Timezone
+	Timezone string
+
+	// Fail2ban
+	Fail2banMaxRetry int
+	Fail2banFindTime string
+	Fail2banBanTime  string
+	Fail2banBackend  string
+	Fail2banIgnoreIP string
 }
 
 // Step describes a single action in a plan.

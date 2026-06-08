@@ -402,3 +402,159 @@ func AIConfigForm(cfg *types.Config) error {
 	}
 	return nil
 }
+
+// DockerConfigForm collects docker module configuration.
+func DockerConfigForm(cfg *types.Config, sys *system.Context) error {
+	targetUser := cfg.DockerUser
+	if targetUser == "" {
+		targetUser = system.TargetUsername(sys)
+	}
+
+	if err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title(i18n.T("form_docker_user")).
+				Description(i18n.T("form_docker_user_desc")).
+				Placeholder(system.TargetUsername(sys)).
+				Value(&targetUser),
+		),
+	).Run(); err != nil {
+		return err
+	}
+	cfg.DockerUser = strings.TrimSpace(targetUser)
+	return nil
+}
+
+// TimezoneConfigForm collects timezone module configuration.
+func TimezoneConfigForm(cfg *types.Config, sys *system.Context) error {
+	current, ok := modulesCurrentTimezone()
+	selected := cfg.Timezone
+	if selected == "" {
+		if ok && current != "" {
+			selected = current
+		} else {
+			selected = "Etc/UTC"
+		}
+	}
+
+	custom := selected
+	options := []huh.Option[string]{}
+	if ok && current != "" {
+		options = append(options, huh.NewOption("Keep current / detected", "__keep__"))
+	}
+	options = append(options,
+		huh.NewOption("Etc/UTC", "Etc/UTC"),
+		huh.NewOption("Asia/Shanghai", "Asia/Shanghai"),
+		huh.NewOption("America/Los_Angeles", "America/Los_Angeles"),
+		huh.NewOption("Europe/Berlin", "Europe/Berlin"),
+		huh.NewOption("Custom", "__custom__"),
+	)
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(i18n.T("form_timezone")).
+				Description(i18n.T("form_timezone_desc")).
+				Options(options...).
+				Value(&selected),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return err
+	}
+
+	switch selected {
+	case "__keep__":
+		if ok && current != "" {
+			cfg.Timezone = current
+		}
+		return nil
+	case "__custom__":
+		if err := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title(i18n.T("form_timezone_custom")).
+					Description(i18n.T("form_timezone_custom_desc")).
+					Placeholder("Etc/UTC").
+					Value(&custom),
+			),
+		).Run(); err != nil {
+			return err
+		}
+		cfg.Timezone = strings.TrimSpace(custom)
+	default:
+		cfg.Timezone = selected
+	}
+	return nil
+}
+
+// Fail2banConfigForm collects fail2ban module configuration.
+func Fail2banConfigForm(cfg *types.Config) error {
+	maxRetry := fmt.Sprintf("%d", maxInt(cfg.Fail2banMaxRetry, 5))
+	findTime := defaultString(cfg.Fail2banFindTime, "10m")
+	banTime := defaultString(cfg.Fail2banBanTime, "1h")
+	backend := defaultString(cfg.Fail2banBackend, "systemd")
+	ignoreIP := strings.TrimSpace(cfg.Fail2banIgnoreIP)
+
+	if err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title(i18n.T("form_fail2ban_maxretry")).
+				Description(i18n.T("form_fail2ban_maxretry_desc")).
+				Placeholder("5").
+				Value(&maxRetry),
+			huh.NewInput().
+				Title(i18n.T("form_fail2ban_findtime")).
+				Description(i18n.T("form_fail2ban_findtime_desc")).
+				Placeholder("10m").
+				Value(&findTime),
+			huh.NewInput().
+				Title(i18n.T("form_fail2ban_bantime")).
+				Description(i18n.T("form_fail2ban_bantime_desc")).
+				Placeholder("1h").
+				Value(&banTime),
+			huh.NewInput().
+				Title(i18n.T("form_fail2ban_backend")).
+				Description(i18n.T("form_fail2ban_backend_desc")).
+				Placeholder("systemd").
+				Value(&backend),
+			huh.NewInput().
+				Title(i18n.T("form_fail2ban_ignoreip")).
+				Description(i18n.T("form_fail2ban_ignoreip_desc")).
+				Placeholder("127.0.0.1/8 ::1").
+				Value(&ignoreIP),
+		),
+	).Run(); err != nil {
+		return err
+	}
+
+	fmt.Sscanf(maxRetry, "%d", &cfg.Fail2banMaxRetry)
+	cfg.Fail2banFindTime = strings.TrimSpace(findTime)
+	cfg.Fail2banBanTime = strings.TrimSpace(banTime)
+	cfg.Fail2banBackend = strings.TrimSpace(backend)
+	cfg.Fail2banIgnoreIP = strings.TrimSpace(ignoreIP)
+	return nil
+}
+
+func modulesCurrentTimezone() (string, bool) {
+	res, err := system.Run("timedatectl", "show", "--property=Timezone", "--value")
+	if err != nil || res.ExitCode != 0 {
+		return "", false
+	}
+	value := strings.TrimSpace(res.Stdout)
+	return value, value != ""
+}
+
+func maxInt(v, fallback int) int {
+	if v > 0 {
+		return v
+	}
+	return fallback
+}
+
+func defaultString(v, fallback string) string {
+	if strings.TrimSpace(v) != "" {
+		return v
+	}
+	return fallback
+}

@@ -206,6 +206,84 @@ func TestPlanMarksUserModuleNotConfiguredWithoutUsername(t *testing.T) {
 	}
 }
 
+func TestPlanUsesStepsForConfigSensitiveModules(t *testing.T) {
+	i18n.SetLang(i18n.LangEN)
+
+	r := modules.NewRegistry()
+	r.Register(&stubModule{
+		id:        "timezone",
+		name:      "Timezone Configuration",
+		satisfied: true,
+		checkMsg:  "current timezone: Etc/UTC",
+		steps:     []types.Step{{Module: "timezone", Title: "Set system timezone", Detail: "Asia/Shanghai"}},
+	})
+
+	plan, err := GeneratePlan(context.Background(), &system.Context{}, &types.Config{Timezone: "Asia/Shanghai"}, r, []string{"timezone"})
+	if err != nil {
+		t.Fatalf("GeneratePlan failed: %v", err)
+	}
+	if len(plan.Modules) != 1 {
+		t.Fatalf("module count = %d, want 1", len(plan.Modules))
+	}
+	if plan.Modules[0].Status != "pending" {
+		t.Fatalf("timezone status = %q, want pending when plan still has actions", plan.Modules[0].Status)
+	}
+}
+
+func TestPlanMarksConfigSensitiveModuleSatisfiedWhenNoStepsRemain(t *testing.T) {
+	i18n.SetLang(i18n.LangEN)
+
+	r := modules.NewRegistry()
+	r.Register(&stubModule{
+		id:        "docker",
+		name:      "Docker Environment",
+		satisfied: false,
+		checkMsg:  "docker state partially satisfied",
+		steps:     nil,
+	})
+
+	plan, err := GeneratePlan(context.Background(), &system.Context{}, &types.Config{}, r, []string{"docker"})
+	if err != nil {
+		t.Fatalf("GeneratePlan failed: %v", err)
+	}
+	if len(plan.Modules) != 1 {
+		t.Fatalf("module count = %d, want 1", len(plan.Modules))
+	}
+	if plan.Modules[0].Status != "satisfied" {
+		t.Fatalf("docker status = %q, want satisfied when no config-sensitive steps remain", plan.Modules[0].Status)
+	}
+	if plan.Modules[0].Warning != "" {
+		t.Fatalf("docker warning = %q, want empty", plan.Modules[0].Warning)
+	}
+}
+
+func TestPlanPreservesSpecificCheckMessageForUnsatisfiedConfigSensitiveModule(t *testing.T) {
+	i18n.SetLang(i18n.LangEN)
+
+	r := modules.NewRegistry()
+	r.Register(&stubModule{
+		id:        "fail2ban",
+		name:      "Fail2ban Protection",
+		satisfied: false,
+		checkMsg:  "fail2ban missing. service disabled. sshd jail missing",
+		steps:     []types.Step{{Module: "fail2ban", Title: "Install fail2ban"}},
+	})
+
+	plan, err := GeneratePlan(context.Background(), &system.Context{}, &types.Config{}, r, []string{"fail2ban"})
+	if err != nil {
+		t.Fatalf("GeneratePlan failed: %v", err)
+	}
+	if len(plan.Modules) != 1 {
+		t.Fatalf("module count = %d, want 1", len(plan.Modules))
+	}
+	if plan.Modules[0].CheckMessage != "fail2ban missing. service disabled. sshd jail missing" {
+		t.Fatalf("check message = %q", plan.Modules[0].CheckMessage)
+	}
+	if plan.Modules[0].Warning != plan.Modules[0].CheckMessage {
+		t.Fatalf("warning = %q, want same as check message", plan.Modules[0].Warning)
+	}
+}
+
 func containsAll(s string, subs []string) bool {
 	for _, sub := range subs {
 		if !strings.Contains(s, sub) {

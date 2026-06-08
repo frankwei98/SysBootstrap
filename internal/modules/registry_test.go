@@ -154,15 +154,18 @@ func TestRegistryResolveOrderFullSelection(t *testing.T) {
 	r.Register(&mockModule{id: "ai", deps: []string{"node"}})
 	r.Register(&mockModule{id: "user"})
 	r.Register(&mockModule{id: "ssh_keygen"})
+	r.Register(&mockModule{id: "docker", deps: []string{"base"}})
+	r.Register(&mockModule{id: "timezone"})
+	r.Register(&mockModule{id: "fail2ban"})
 
 	// Select all — should preserve registration order
-	allIDs := []string{"base", "ssh", "node", "ai", "user", "ssh_keygen"}
+	allIDs := []string{"base", "ssh", "node", "ai", "user", "ssh_keygen", "docker", "timezone", "fail2ban"}
 	ordered, err := r.ResolveOrder(allIDs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ordered) != 6 {
-		t.Fatalf("expected 6 modules, got %d: %v", len(ordered), ordered)
+	if len(ordered) != 9 {
+		t.Fatalf("expected 9 modules, got %d: %v", len(ordered), ordered)
 	}
 	// node must come before ai
 	nodeIdx, aiIdx := -1, -1

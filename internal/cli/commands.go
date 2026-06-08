@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	term "github.com/charmbracelet/x/term"
 	"github.com/frankwei98/sys-bootstrap/internal/app"
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
@@ -166,6 +167,18 @@ func RunCmd(registry *modules.Registry) error {
 			if err := ui.SSHKeygenForm(cfg, sys); err != nil {
 				return err
 			}
+		case "docker":
+			if err := ui.DockerConfigForm(cfg, sys); err != nil {
+				return err
+			}
+		case "timezone":
+			if err := ui.TimezoneConfigForm(cfg, sys); err != nil {
+				return err
+			}
+		case "fail2ban":
+			if err := ui.Fail2banConfigForm(cfg); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -215,6 +228,8 @@ func PlanCmd(registry *modules.Registry, jsonOutput bool) error {
 	cfg := &types.Config{
 		SSHPort:     22122,
 		SSHAllowUFW: sys.HasUFW && sys.UFWActive, // recommended default when UFW is active
+		DockerUser:  system.TargetUsername(sys),
+		Timezone:    "Etc/UTC",
 	}
 	st := settings.Load()
 	resolveAptMirror(cfg, st, false)
@@ -399,12 +414,45 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 		if err := ui.SSHKeygenForm(cfg, sys); err != nil {
 			return err
 		}
+	case "docker":
+		if !isInteractiveTerminal() {
+			cfg.DockerUser = system.TargetUsername(sys)
+			break
+		}
+		if err := ui.DockerConfigForm(cfg, sys); err != nil {
+			return err
+		}
+	case "timezone":
+		if !isInteractiveTerminal() {
+			if cfg.Timezone == "" {
+				cfg.Timezone = "Etc/UTC"
+			}
+			break
+		}
+		if err := ui.TimezoneConfigForm(cfg, sys); err != nil {
+			return err
+		}
+	case "fail2ban":
+		if !isInteractiveTerminal() {
+			cfg.Fail2banMaxRetry = 5
+			cfg.Fail2banFindTime = "10m"
+			cfg.Fail2banBanTime = "1h"
+			break
+		}
+		if err := ui.Fail2banConfigForm(cfg); err != nil {
+			return err
+		}
 	}
 
 	log.SetModule(m.Name())
 	log.Infof(i18n.T("runner_starting"), m.Name())
 
 	check := m.Check(ctx, sys)
+	steps, err := m.Plan(ctx, sys, cfg)
+	if err != nil {
+		return fmt.Errorf("module %s plan failed: %w", m.Name(), err)
+	}
+	check = app.ApplyConfigSensitiveModuleState(moduleID, check, steps)
 	if app.ShouldSkipSatisfiedForModule(moduleID, cfg, check) {
 		log.Successf(i18n.T("runner_skipping"), m.Name())
 		return nil
@@ -598,8 +646,9 @@ func UninstallCmd(args []string) error {
 }
 
 func isInteractiveTerminal() bool {
-	info, err := os.Stdin.Stat()
-	return err == nil && (info.Mode()&os.ModeCharDevice) != 0
+	return term.IsTerminal(os.Stdin.Fd()) &&
+		term.IsTerminal(os.Stdout.Fd()) &&
+		term.IsTerminal(os.Stderr.Fd())
 }
 
 // VersionCmd handles the `version` command.

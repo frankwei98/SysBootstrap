@@ -76,6 +76,18 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			mp.Warning = err.Error()
 		} else {
 			mp.Steps = steps
+			if isConfigSensitivePlanModule(m.ID()) {
+				if len(steps) == 0 {
+					mp.Status = "satisfied"
+					mp.Warning = ""
+				} else {
+					mp.Status = "pending"
+					if check.Satisfied {
+						mp.CheckMessage = "current state differs from requested configuration"
+					}
+					mp.Warning = mp.CheckMessage
+				}
+			}
 		}
 
 		if m.ID() == "user" && cfg.NewUsername == "" && len(mp.Steps) == 0 {
@@ -107,6 +119,15 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 	}
 
 	return plan, nil
+}
+
+func isConfigSensitivePlanModule(id string) bool {
+	switch id {
+	case "docker", "timezone", "fail2ban":
+		return true
+	default:
+		return false
+	}
 }
 
 // FormatPlanText formats a plan as human-readable text.

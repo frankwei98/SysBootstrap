@@ -44,6 +44,9 @@ func newTestRegistry() *modules.Registry {
 	r.Register(&testModule{id: "ai", deps: []string{"node"}})
 	r.Register(&testModule{id: "user", needsRoot: true})
 	r.Register(&testModule{id: "ssh_keygen"})
+	r.Register(&testModule{id: "docker", needsRoot: true, deps: []string{"base"}})
+	r.Register(&testModule{id: "timezone", needsRoot: true})
+	r.Register(&testModule{id: "fail2ban", needsRoot: true})
 	return r
 }
 
