@@ -308,3 +308,40 @@ func TestResolveRunMode_NonInteractive_NoEnv(t *testing.T) {
 		t.Error("expected error when non-interactive and no env var")
 	}
 }
+
+func TestModuleDefaultConfigFail2banDoesNotSetSSHPort(t *testing.T) {
+	cfg := moduleDefaultConfig("fail2ban", nil)
+	if cfg.SSHPort != 0 {
+		t.Fatalf("SSHPort = %d, want 0 for standalone fail2ban module defaults", cfg.SSHPort)
+	}
+	if cfg.Fail2banMaxRetry != 5 || cfg.Fail2banFindTime != "10m" || cfg.Fail2banBanTime != "1h" {
+		t.Fatalf("unexpected fail2ban defaults: %#v", cfg)
+	}
+}
+
+func TestModuleDefaultConfigDockerSetsTargetUser(t *testing.T) {
+	cfg := moduleDefaultConfig("docker", nil)
+	if cfg.DockerUser == "" {
+		t.Fatal("DockerUser should default to a target username")
+	}
+	if cfg.SSHPort != 0 {
+		t.Fatalf("SSHPort = %d, want 0 for standalone docker module defaults", cfg.SSHPort)
+	}
+}
+
+func TestModuleDefaultConfigTimezonePreservesInteractiveDetection(t *testing.T) {
+	cfg := moduleDefaultConfig("timezone", nil)
+	if cfg.Timezone != "" {
+		t.Fatalf("Timezone = %q, want empty so interactive form can default to detected current timezone", cfg.Timezone)
+	}
+}
+
+func TestPreviewPlanConfigDoesNotSetSSHPort(t *testing.T) {
+	cfg := previewPlanConfig(nil)
+	if cfg.SSHPort != 0 {
+		t.Fatalf("SSHPort = %d, want 0 for plan preview defaults", cfg.SSHPort)
+	}
+	if cfg.Timezone != "Etc/UTC" {
+		t.Fatalf("Timezone = %q, want Etc/UTC", cfg.Timezone)
+	}
+}

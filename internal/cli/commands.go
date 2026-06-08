@@ -129,7 +129,7 @@ func RunCmd(registry *modules.Registry) error {
 	}
 
 	// Collect config from forms
-	cfg := &types.Config{SSHPort: 22122}
+	cfg := &types.Config{}
 
 	// APT mirror: env > settings > interactive prompt (skip in user mode)
 	if mode == RunModeFull {
@@ -225,12 +225,7 @@ func PlanCmd(registry *modules.Registry, jsonOutput bool) error {
 	// Include all module IDs in registration order
 	ids := registry.IDs()
 
-	cfg := &types.Config{
-		SSHPort:     22122,
-		SSHAllowUFW: sys.HasUFW && sys.UFWActive, // recommended default when UFW is active
-		DockerUser:  system.TargetUsername(sys),
-		Timezone:    "Etc/UTC",
-	}
+	cfg := previewPlanConfig(sys)
 	st := settings.Load()
 	resolveAptMirror(cfg, st, false)
 	plan, err := app.GeneratePlan(ctx, sys, cfg, registry, ids)
@@ -380,7 +375,7 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 	}
 
 	// Collect config
-	cfg := &types.Config{SSHPort: 22122}
+	cfg := moduleDefaultConfig(moduleID, sys)
 	st := settings.Load()
 	resolveAptMirror(cfg, st, false)
 	switch moduleID {
@@ -416,7 +411,6 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 		}
 	case "docker":
 		if !isInteractiveTerminal() {
-			cfg.DockerUser = system.TargetUsername(sys)
 			break
 		}
 		if err := ui.DockerConfigForm(cfg, sys); err != nil {
@@ -424,9 +418,6 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 		}
 	case "timezone":
 		if !isInteractiveTerminal() {
-			if cfg.Timezone == "" {
-				cfg.Timezone = "Etc/UTC"
-			}
 			break
 		}
 		if err := ui.TimezoneConfigForm(cfg, sys); err != nil {
@@ -434,9 +425,6 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 		}
 	case "fail2ban":
 		if !isInteractiveTerminal() {
-			cfg.Fail2banMaxRetry = 5
-			cfg.Fail2banFindTime = "10m"
-			cfg.Fail2banBanTime = "1h"
 			break
 		}
 		if err := ui.Fail2banConfigForm(cfg); err != nil {
@@ -484,6 +472,27 @@ func shellReloadCommand() string {
 		shellPath = "/bin/bash"
 	}
 	return fmt.Sprintf("exec %s -l", shellPath)
+}
+
+func moduleDefaultConfig(moduleID string, sys *system.Context) *types.Config {
+	cfg := &types.Config{}
+	switch moduleID {
+	case "docker":
+		cfg.DockerUser = system.TargetUsername(sys)
+	case "fail2ban":
+		cfg.Fail2banMaxRetry = 5
+		cfg.Fail2banFindTime = "10m"
+		cfg.Fail2banBanTime = "1h"
+	}
+	return cfg
+}
+
+func previewPlanConfig(sys *system.Context) *types.Config {
+	return &types.Config{
+		SSHAllowUFW: sys != nil && sys.HasUFW && sys.UFWActive,
+		DockerUser:  system.TargetUsername(sys),
+		Timezone:    "Etc/UTC",
+	}
 }
 
 // uninstallFlags holds parsed uninstall command flags.

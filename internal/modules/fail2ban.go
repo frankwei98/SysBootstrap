@@ -14,6 +14,7 @@ import (
 )
 
 var fail2banJailLocalPath = "/etc/fail2ban/jail.local"
+var sshdConfigPath = "/etc/ssh/sshd_config"
 
 type Fail2banModule struct{}
 
@@ -239,7 +240,7 @@ func effectiveSSHPort(cfg *types.Config) int {
 	if cfg != nil && cfg.SSHPort > 0 {
 		return cfg.SSHPort
 	}
-	if content, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
+	if content, err := os.ReadFile(sshdConfigPath); err == nil {
 		for _, line := range strings.Split(string(content), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") {

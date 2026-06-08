@@ -67,6 +67,23 @@ func TestEffectiveSSHPortUsesConfigValue(t *testing.T) {
 	}
 }
 
+func TestEffectiveSSHPortFallsBackToSSHDConfig(t *testing.T) {
+	origPath := sshdConfigPath
+	tmpFile := filepath.Join(t.TempDir(), "sshd_config")
+	if err := os.WriteFile(tmpFile, []byte("Port 2222\n"), 0o644); err != nil {
+		t.Fatalf("write sshd_config: %v", err)
+	}
+	sshdConfigPath = tmpFile
+	t.Cleanup(func() {
+		sshdConfigPath = origPath
+	})
+
+	port := effectiveSSHPort(&types.Config{})
+	if port != 2222 {
+		t.Fatalf("port = %d, want 2222 from sshd_config", port)
+	}
+}
+
 func TestWriteFail2banJailLocalIncludesSSHPort(t *testing.T) {
 	origPath := fail2banJailLocalPath
 	tmpFile := t.TempDir() + "/jail.local"

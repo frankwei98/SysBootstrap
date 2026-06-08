@@ -147,6 +147,12 @@ It combines:
 - saved language / APT mirror settings
 - default module behavior
 
+In practice that means:
+
+- the SSH module preview still assumes the default target port `22122` unless you later override it in the interactive flow
+- `fail2ban` follows the currently configured system SSH port when no explicit SSH target port has been chosen
+- the standalone interactive `timezone` module defaults to the detected current timezone, while `plan` still previews the product default target of `Etc/UTC`
+
 Text output is for humans. JSON output is for tooling.
 
 ### `config`

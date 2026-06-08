@@ -284,6 +284,28 @@ func TestPlanPreservesSpecificCheckMessageForUnsatisfiedConfigSensitiveModule(t 
 	}
 }
 
+func TestGeneratePlanDoesNotMutateSharedConfig(t *testing.T) {
+	i18n.SetLang(i18n.LangEN)
+
+	r := modules.NewRegistry()
+	r.Register(&stubModule{
+		id:        "ssh",
+		name:      "SSH Hardening",
+		satisfied: false,
+		checkMsg:  "SSH configuration not yet applied",
+		steps:     []types.Step{{Module: "ssh", Title: "Configure SSH port", Detail: "Set port to 22122"}},
+	})
+
+	cfg := &types.Config{}
+	_, err := GeneratePlan(context.Background(), &system.Context{}, cfg, r, []string{"ssh"})
+	if err != nil {
+		t.Fatalf("GeneratePlan failed: %v", err)
+	}
+	if cfg.SSHPort != 0 {
+		t.Fatalf("GeneratePlan mutated cfg.SSHPort to %d, want 0", cfg.SSHPort)
+	}
+}
+
 func containsAll(s string, subs []string) bool {
 	for _, sub := range subs {
 		if !strings.Contains(s, sub) {

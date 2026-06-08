@@ -70,7 +70,15 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			mp.Warning = check.Message
 		}
 
-		steps, err := m.Plan(ctx, sys, cfg)
+		moduleCfg := cfg
+		if m.ID() == "ssh" {
+			moduleCfg = cloneConfig(cfg)
+			if moduleCfg.SSHPort == 0 {
+				moduleCfg.SSHPort = 22122
+			}
+		}
+
+		steps, err := m.Plan(ctx, sys, moduleCfg)
 		if err != nil {
 			mp.Status = "error"
 			mp.Warning = err.Error()
@@ -119,6 +127,14 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 	}
 
 	return plan, nil
+}
+
+func cloneConfig(cfg *types.Config) *types.Config {
+	if cfg == nil {
+		return &types.Config{}
+	}
+	copy := *cfg
+	return &copy
 }
 
 func isConfigSensitivePlanModule(id string) bool {

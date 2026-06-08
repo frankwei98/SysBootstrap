@@ -159,6 +159,7 @@ func TestDockerRunInstallsAndConfiguresGroup(t *testing.T) {
 	origGroup := dockerGroupSatisfiedWithConfigFn
 	origRepo := dockerRepoConfiguredFn
 	origEnsureRepo := ensureDockerRepoFn
+	origRunWithContext := dockerRunWithContextFn
 	t.Cleanup(func() {
 		_ = os.Setenv("PATH", origPath)
 		dockerInstalledFn = origInstalled
@@ -167,6 +168,7 @@ func TestDockerRunInstallsAndConfiguresGroup(t *testing.T) {
 		dockerGroupSatisfiedWithConfigFn = origGroup
 		dockerRepoConfiguredFn = origRepo
 		ensureDockerRepoFn = origEnsureRepo
+		dockerRunWithContextFn = origRunWithContext
 	})
 
 	tempBin := t.TempDir()
@@ -228,6 +230,66 @@ exit 0
 		if !strings.Contains(text, want) {
 			t.Fatalf("docker run log missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestEnsureDockerRepoWritesValidSourceEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "docker.asc")
+	repoPath := filepath.Join(tmpDir, "docker.list")
+	origPaths := dockerRepoPathsFn
+	origRunWithContext := dockerRunWithContextFn
+	t.Cleanup(func() {
+		dockerRepoPathsFn = origPaths
+		dockerRunWithContextFn = origRunWithContext
+	})
+
+	dockerRepoPathsFn = func(_ *system.Context) (string, string) { return keyPath, repoPath }
+	dockerRunWithContextFn = func(_ context.Context, name string, args ...string) (*system.Result, error) {
+		switch {
+		case name == "apt-get":
+			return &system.Result{ExitCode: 0}, nil
+		case name == "env":
+			return &system.Result{ExitCode: 0}, nil
+		case name == "bash" && len(args) >= 2 && args[0] == "-lc":
+			script := args[1]
+			if err := os.MkdirAll(filepath.Dir(keyPath), 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(keyPath, []byte("dummy"), 0o644); err != nil {
+				return nil, err
+			}
+			start := strings.Index(script, "cat > ")
+			if start == -1 {
+				t.Fatalf("script missing repo heredoc:\n%s", script)
+			}
+			if strings.Contains(script, "signed-by='") || strings.Contains(script, "signed-by=\"") {
+				t.Fatalf("script should not quote signed-by value:\n%s", script)
+			}
+			repoLine := "deb [arch=arm64 signed-by=" + keyPath + "] https://download.docker.com/linux/debian trixie stable\n"
+			if err := os.WriteFile(repoPath, []byte(repoLine), 0o644); err != nil {
+				return nil, err
+			}
+			return &system.Result{ExitCode: 0}, nil
+		default:
+			t.Fatalf("unexpected command: %s %v", name, args)
+			return nil, nil
+		}
+	}
+
+	sys := &system.Context{OSID: "debian", OSCodename: "trixie", Arch: "linux/arm64"}
+	if err := ensureDockerRepo(context.Background(), sys); err != nil {
+		t.Fatalf("ensureDockerRepo failed: %v", err)
+	}
+
+	content, err := os.ReadFile(repoPath)
+	if err != nil {
+		t.Fatalf("read repo file: %v", err)
+	}
+	got := string(content)
+	want := "deb [arch=arm64 signed-by=" + keyPath + "] https://download.docker.com/linux/debian trixie stable\n"
+	if got != want {
+		t.Fatalf("repo content = %q, want %q", got, want)
 	}
 }
 

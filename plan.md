@@ -112,6 +112,7 @@ sys-bootstrap version
 - 不静默自动补依赖。
 - 对需要额外输入的模块，要求交互式终端。
 - `ai` 在 non-interactive 情况下默认安装 Claude Code 和 Codex。
+- `timezone` 独立模块在交互式执行时默认保留当前检测到的系统时区，而不是强制回到 `Etc/UTC`。
 
 当前 non-interactive 支持范围：
 
@@ -281,6 +282,7 @@ neovim
 
 当前要求：
 
+- 独立 `module timezone` 的交互默认值优先采用当前检测到的系统时区
 - 若系统已是目标时区则跳过
 - 若系统缺少 `timedatectl` 则明确失败
 
@@ -297,6 +299,7 @@ neovim
 - 不强制依赖 `ssh` 模块；若未显式配置 SSH 端口，则从现有系统 `sshd_config` 推断
 - 默认使用 `/etc/fail2ban/jail.local`
 - jail 配置跟随当前目标 SSH 端口
+- `plan` 预览中，若没有显式 SSH 目标端口，则 `fail2ban` 也按当前系统 SSH 端口推断，而不是固定跟随 `ssh` 模块默认值 `22122`
 - 支持 `maxretry`、`findtime`、`bantime`、`backend`、`ignoreip`
 - 执行前后校验 `fail2ban-client -d`
 - 已安装或已启用时保持幂等

@@ -21,6 +21,7 @@ var dockerServiceEnabledFn = dockerServiceEnabled
 var dockerGroupSatisfiedWithConfigFn = dockerGroupSatisfiedWithConfig
 var dockerRepoConfiguredFn = dockerRepoConfigured
 var ensureDockerRepoFn = ensureDockerRepo
+var dockerRunWithContextFn = system.RunWithContext
 
 func NewDockerModule() *DockerModule { return &DockerModule{} }
 
@@ -86,17 +87,17 @@ func (m *DockerModule) Run(ctx context.Context, sys *system.Context, cfg *types.
 
 	if !hasDocker {
 		log.Info("Installing Docker packages...")
-		if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+		if res, err := dockerRunWithContextFn(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError("apt-get update before Docker install failed", res, err)
 		}
-		if res, err := system.RunWithContext(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
+		if res, err := dockerRunWithContextFn(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
 			"docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError("Docker package installation failed", res, err)
 		}
 		log.Success("Docker packages installed")
 	} else if !hasCompose {
 		log.Info("Installing Docker Compose plugin...")
-		if res, err := system.RunWithContext(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "docker-compose-plugin"); err != nil || res.ExitCode != 0 {
+		if res, err := dockerRunWithContextFn(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "docker-compose-plugin"); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError("Docker Compose plugin installation failed", res, err)
 		}
 		log.Success("Docker Compose plugin installed")
@@ -207,10 +208,10 @@ func ensureDockerRepo(ctx context.Context, sys *system.Context) error {
 		return fmt.Errorf("failed to create Docker keyring directory: %w", err)
 	}
 	if !dockerRepoConfigured(sys) {
-		if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+		if res, err := dockerRunWithContextFn(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError("apt-get update before Docker repo setup failed", res, err)
 		}
-		if res, err := system.RunWithContext(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "ca-certificates", "curl"); err != nil || res.ExitCode != 0 {
+		if res, err := dockerRunWithContextFn(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "ca-certificates", "curl"); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError("failed to install Docker repo prerequisites", res, err)
 		}
 		script := fmt.Sprintf(`set -e
@@ -218,9 +219,11 @@ install -m 0755 -d %s
 curl -fsSL https://download.docker.com/linux/%s/gpg -o /tmp/sys-bootstrap-docker.gpg
 install -m 0644 /tmp/sys-bootstrap-docker.gpg %s
 rm -f /tmp/sys-bootstrap-docker.gpg
-echo "deb [arch=%s signed-by=%s] https://download.docker.com/linux/%s %s stable" > %s
-`, shellQuote(filepath.Dir(keyPath)), dockerRepoOS(sys), shellQuote(keyPath), dockerRepoArch(sys), shellQuote(keyPath), dockerRepoOS(sys), dockerRepoCodename(sys), shellQuote(repoPath))
-		if res, err := system.RunWithContext(ctx, "bash", "-lc", script); err != nil || res.ExitCode != 0 {
+cat > %s <<'EOF'
+deb [arch=%s signed-by=%s] https://download.docker.com/linux/%s %s stable
+EOF
+`, shellQuote(filepath.Dir(keyPath)), dockerRepoOS(sys), shellQuote(keyPath), shellQuote(repoPath), dockerRepoArch(sys), keyPath, dockerRepoOS(sys), dockerRepoCodename(sys))
+		if res, err := dockerRunWithContextFn(ctx, "bash", "-lc", script); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError("failed to configure Docker apt repository", res, err)
 		}
 	}
