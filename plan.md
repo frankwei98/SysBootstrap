@@ -170,6 +170,7 @@ neovim
 - 可选禁用 root login
 - 可选禁用 password login
 - 若检测到 active ufw，可询问是否放行新端口
+- 能识别当前 SSH 端口、service 状态和已写入的关键选项，已满足时不再重复计划
 
 要求：
 
@@ -178,6 +179,7 @@ neovim
 - 校验失败必须回滚。
 - 重启服务时兼容 `ssh` 和 `sshd` service 名称。
 - 完成后提示用户测试新端口连接。
+- 若系统已配置 fail2ban 的 `sshd` jail，SSH 改端口后应同步更新 jail 端口并重启 fail2ban。
 
 ### node
 

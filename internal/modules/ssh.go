@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,8 +18,17 @@ import (
 const defaultSSHPort = 22122
 
 var sshConfigPath = "/etc/ssh/sshd_config"
+var sshServiceReadyFn = sshServiceReady
+var sshUFWAllowsPortFn = sshUFWAllowsPort
 
 var pubKeyRegex = regexp.MustCompile(`^(ssh-(rsa|ed25519|dss)|ecdsa-sha2|sk-)`)
+
+type sshConfigState struct {
+	port                   int
+	portSet                bool
+	permitRootLogin        string
+	passwordAuthentication string
+}
 
 type SSHModule struct{}
 
@@ -38,7 +48,28 @@ func (m *SSHModule) Check(ctx context.Context, sys *system.Context) CheckResult 
 	if _, err := os.Stat(sshConfigPath); err != nil {
 		return CheckResult{Satisfied: false, Message: "sshd_config not found"}
 	}
-	return CheckResult{Satisfied: false, Message: "SSH configuration not yet applied"}
+
+	state, err := readSSHConfigState()
+	if err != nil {
+		return CheckResult{Satisfied: false, Message: fmt.Sprintf("failed to parse sshd_config: %v", err)}
+	}
+
+	serviceReady := sshServiceReadyFn()
+	parts := []string{
+		fmt.Sprintf("port %d", currentSSHPort(state)),
+		fmt.Sprintf("service %s", boolWord(serviceReady, "ready", "not ready")),
+	}
+	if state.permitRootLogin != "" {
+		parts = append(parts, "PermitRootLogin "+state.permitRootLogin)
+	}
+	if state.passwordAuthentication != "" {
+		parts = append(parts, "PasswordAuthentication "+state.passwordAuthentication)
+	}
+
+	return CheckResult{
+		Satisfied: currentSSHPort(state) > 0 && serviceReady,
+		Message:   strings.Join(parts, ". "),
+	}
 }
 
 func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
@@ -47,31 +78,48 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 		port = defaultSSHPort
 	}
 
+	state, err := readSSHConfigState()
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	serviceReady := sshServiceReadyFn()
+
 	var steps []types.Step
-	if !sys.HasSSHD || !sys.HasSSHDService {
+	if !sys.HasSSHD || !sys.HasSSHDService || os.IsNotExist(err) {
 		steps = append(steps, types.Step{Module: "ssh", Title: "Install OpenSSH server", Detail: "apt-get install openssh-server"})
 	}
-	steps = append(steps,
-		types.Step{Module: "ssh", Title: "Configure SSH port", Detail: fmt.Sprintf("Set port to %d", port), Risk: "high"},
-		types.Step{Module: "ssh", Title: "Validate sshd config", Detail: "Run sshd -t after changes"},
-	)
-	if cfg.SSHDisableRoot {
+
+	needsReload := false
+	if currentSSHPort(state) != port {
+		steps = append(steps, types.Step{Module: "ssh", Title: "Configure SSH port", Detail: fmt.Sprintf("Set port to %d", port), Risk: "high"})
+		needsReload = true
+	}
+	if cfg.SSHDisableRoot && !strings.EqualFold(state.permitRootLogin, "no") {
 		steps = append(steps, types.Step{Module: "ssh", Title: "Disable root login", Detail: "PermitRootLogin no", Risk: "high"})
+		needsReload = true
 	}
-	if cfg.SSHDisablePass {
+	if cfg.SSHDisablePass && !strings.EqualFold(state.passwordAuthentication, "no") {
 		steps = append(steps, types.Step{Module: "ssh", Title: "Disable password auth", Detail: "PasswordAuthentication no", Risk: "high"})
+		needsReload = true
 	}
-	if cfg.SSHAddKey && cfg.SSHPublicKey != "" {
+	if cfg.SSHAddKey && cfg.SSHPublicKey != "" && !sshAuthorizedKeyPresent(sys, cfg.SSHPublicKey) {
 		steps = append(steps, types.Step{Module: "ssh", Title: "Add SSH public key", Detail: "Write to authorized_keys"})
 	}
 	if sys.HasUFW && sys.UFWActive {
 		if cfg.SSHAllowUFW {
-			steps = append(steps, types.Step{Module: "ssh", Title: "Allow SSH port in UFW", Detail: fmt.Sprintf("ufw allow %d/tcp", port)})
+			if !sshUFWAllowsPortFn(port) {
+				steps = append(steps, types.Step{Module: "ssh", Title: "Allow SSH port in UFW", Detail: fmt.Sprintf("ufw allow %d/tcp", port)})
+			}
 		} else {
 			steps = append(steps, types.Step{Module: "ssh", Title: "UFW firewall warning", Detail: fmt.Sprintf("Port %d may need manual UFW rule", port), Risk: "manual-step"})
 		}
 	}
-	steps = append(steps, types.Step{Module: "ssh", Title: "Restart sshd", Detail: "Restart SSH service"})
+	if needsReload {
+		steps = append(steps, types.Step{Module: "ssh", Title: "Validate sshd config", Detail: "Run sshd -t after changes"})
+	}
+	if needsReload || !serviceReady {
+		steps = append(steps, types.Step{Module: "ssh", Title: "Restart sshd", Detail: "Restart SSH service"})
+	}
 	return steps, nil
 }
 
@@ -164,6 +212,10 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	}
 	log.Successf("Service %s restarted", svc)
 
+	if err := syncExistingFail2banSSHDPort(ctx, port, log); err != nil {
+		return fmt.Errorf("SSH port changed, but fail2ban sync failed: %w", err)
+	}
+
 	log.Warnf("⚠ Test new port before closing old connection: ssh -p %d user@host", port)
 
 	// Write SSH public key to authorized_keys if requested
@@ -193,6 +245,180 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	}
 
 	return nil
+}
+
+func readSSHConfigState() (sshConfigState, error) {
+	content, err := os.ReadFile(sshConfigPath)
+	if err != nil {
+		return sshConfigState{}, err
+	}
+
+	var state sshConfigState
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		key := strings.ToLower(fields[0])
+		value := strings.Join(fields[1:], " ")
+		switch key {
+		case "port":
+			port, convErr := strconv.Atoi(fields[1])
+			if convErr != nil {
+				return sshConfigState{}, fmt.Errorf("invalid Port value %q", fields[1])
+			}
+			state.port = port
+			state.portSet = true
+		case "permitrootlogin":
+			state.permitRootLogin = value
+		case "passwordauthentication":
+			state.passwordAuthentication = value
+		}
+	}
+
+	return state, nil
+}
+
+func currentSSHPort(state sshConfigState) int {
+	if state.portSet && state.port > 0 {
+		return state.port
+	}
+	return 22
+}
+
+func sshServiceReady() bool {
+	if !system.CommandExists("systemctl") {
+		return false
+	}
+	for _, svc := range []string{"sshd", "ssh"} {
+		enabledRes, err := system.Run("systemctl", "is-enabled", svc)
+		if err != nil || enabledRes.ExitCode != 0 || strings.TrimSpace(enabledRes.Stdout) != "enabled" {
+			continue
+		}
+		activeRes, err := system.Run("systemctl", "is-active", svc)
+		if err == nil && activeRes.ExitCode == 0 && strings.TrimSpace(activeRes.Stdout) == "active" {
+			return true
+		}
+	}
+	return false
+}
+
+func sshUFWAllowsPort(port int) bool {
+	if !system.CommandExists("ufw") {
+		return false
+	}
+	res, err := system.Run("ufw", "status")
+	if err != nil || res.ExitCode != 0 {
+		return false
+	}
+	needle := fmt.Sprintf("%d/tcp", port)
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if strings.Contains(line, needle) && strings.Contains(line, "ALLOW") {
+			return true
+		}
+	}
+	return false
+}
+
+func sshAuthorizedKeyPresent(sys *system.Context, key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	authorizedKeys := filepath.Join(system.TargetHomeDir(sys), ".ssh", "authorized_keys")
+	content, err := os.ReadFile(authorizedKeys)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.TrimSpace(line) == key {
+			return true
+		}
+	}
+	return false
+}
+
+func syncExistingFail2banSSHDPort(ctx context.Context, port int, log *logging.Logger) error {
+	if !system.DpkgInstalled("fail2ban") {
+		return nil
+	}
+
+	content, err := os.ReadFile(fail2banJailLocalPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read %s: %w", fail2banJailLocalPath, err)
+	}
+
+	updated, changed := rewriteFail2banSSHDPort(string(content), port)
+	if !changed {
+		return nil
+	}
+
+	log.Infof("Syncing fail2ban sshd jail to port %d...", port)
+	if err := os.WriteFile(fail2banJailLocalPath, []byte(updated), 0o644); err != nil {
+		return fmt.Errorf("failed to update %s: %w", fail2banJailLocalPath, err)
+	}
+	if err := validateFail2banConfig("fail2ban configuration validation failed after SSH port change"); err != nil {
+		return err
+	}
+	if fail2banServiceEnabled() {
+		if res, err := system.Run("systemctl", "restart", "fail2ban"); err != nil || res.ExitCode != 0 {
+			return system.FormatCommandError("failed to restart fail2ban after SSH port change", res, err)
+		}
+		if err := validateFail2banConfig("fail2ban configuration validation failed after restart"); err != nil {
+			return err
+		}
+	}
+	log.Successf("Fail2ban sshd jail synced to port %d", port)
+	return nil
+}
+
+func rewriteFail2banSSHDPort(content string, port int) (string, bool) {
+	lines := strings.Split(content, "\n")
+	var updated []string
+	inSSHD := false
+	portSet := false
+	changed := false
+
+	flushPort := func() {
+		if inSSHD && !portSet {
+			updated = append(updated, fmt.Sprintf("port = %d", port))
+			portSet = true
+			changed = true
+		}
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			flushPort()
+			inSSHD = strings.EqualFold(trimmed, "[sshd]")
+			portSet = false
+		}
+
+		if inSSHD && strings.HasPrefix(trimmed, "port") && strings.Contains(trimmed, "=") && !strings.HasPrefix(trimmed, "#") {
+			expected := fmt.Sprintf("port = %d", port)
+			if trimmed != expected {
+				updated = append(updated, expected)
+				changed = true
+			} else {
+				updated = append(updated, line)
+			}
+			portSet = true
+			continue
+		}
+
+		updated = append(updated, line)
+	}
+
+	flushPort()
+	return strings.Join(updated, "\n"), changed
 }
 
 func ensureOpenSSHServer(ctx context.Context, log *logging.Logger) error {

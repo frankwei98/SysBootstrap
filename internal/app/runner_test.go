@@ -98,3 +98,27 @@ func TestRunnerExecutesConfigSensitiveModuleWhenPlanHasSteps(t *testing.T) {
 		t.Fatal("expected config-sensitive module to run when plan still has steps")
 	}
 }
+
+func TestRunnerSkipsConfigSensitiveSSHWhenNoStepsRemain(t *testing.T) {
+	registry := modules.NewRegistry()
+	module := &runnerTestModule{
+		id:        "ssh",
+		satisfied: false,
+		steps:     nil,
+	}
+	registry.Register(module)
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New() failed: %v", err)
+	}
+	defer log.Close()
+
+	runner := NewRunner(registry, &system.Context{}, log)
+	if err := runner.Run(context.Background(), &types.Config{}, []string{"ssh"}); err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	if module.runCalled {
+		t.Fatal("expected satisfied ssh module to be skipped when no config-sensitive steps remain")
+	}
+}

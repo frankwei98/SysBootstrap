@@ -235,6 +235,13 @@ func TestPlanMarksConfigSensitiveModuleSatisfiedWhenNoStepsRemain(t *testing.T) 
 
 	r := modules.NewRegistry()
 	r.Register(&stubModule{
+		id:        "ssh",
+		name:      "SSH Hardening",
+		satisfied: false,
+		checkMsg:  "port 22122. service ready",
+		steps:     nil,
+	})
+	r.Register(&stubModule{
 		id:        "docker",
 		name:      "Docker Environment",
 		satisfied: false,
@@ -242,18 +249,24 @@ func TestPlanMarksConfigSensitiveModuleSatisfiedWhenNoStepsRemain(t *testing.T) 
 		steps:     nil,
 	})
 
-	plan, err := GeneratePlan(context.Background(), &system.Context{}, &types.Config{}, r, []string{"docker"})
+	plan, err := GeneratePlan(context.Background(), &system.Context{}, &types.Config{}, r, []string{"ssh", "docker"})
 	if err != nil {
 		t.Fatalf("GeneratePlan failed: %v", err)
 	}
-	if len(plan.Modules) != 1 {
-		t.Fatalf("module count = %d, want 1", len(plan.Modules))
+	if len(plan.Modules) != 2 {
+		t.Fatalf("module count = %d, want 2", len(plan.Modules))
 	}
 	if plan.Modules[0].Status != "satisfied" {
-		t.Fatalf("docker status = %q, want satisfied when no config-sensitive steps remain", plan.Modules[0].Status)
+		t.Fatalf("ssh status = %q, want satisfied when no config-sensitive steps remain", plan.Modules[0].Status)
 	}
 	if plan.Modules[0].Warning != "" {
-		t.Fatalf("docker warning = %q, want empty", plan.Modules[0].Warning)
+		t.Fatalf("ssh warning = %q, want empty", plan.Modules[0].Warning)
+	}
+	if plan.Modules[1].Status != "satisfied" {
+		t.Fatalf("docker status = %q, want satisfied when no config-sensitive steps remain", plan.Modules[1].Status)
+	}
+	if plan.Modules[1].Warning != "" {
+		t.Fatalf("docker warning = %q, want empty", plan.Modules[1].Warning)
 	}
 }
 

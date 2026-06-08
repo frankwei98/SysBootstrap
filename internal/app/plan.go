@@ -139,7 +139,7 @@ func cloneConfig(cfg *types.Config) *types.Config {
 
 func isConfigSensitivePlanModule(id string) bool {
 	switch id {
-	case "docker", "timezone", "fail2ban":
+	case "ssh", "docker", "timezone", "fail2ban":
 		return true
 	default:
 		return false
