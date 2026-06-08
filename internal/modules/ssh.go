@@ -137,7 +137,7 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	log.Info("Validating sshd configuration...")
 	if res, err := system.Run("sshd", "-t"); err != nil || res.ExitCode != 0 {
 		copyFileWithMode(backupFile, sshConfigPath, origMode)
-		return fmt.Errorf("sshd config validation failed, rolled back: %s", res.Stderr)
+		return system.FormatCommandError("sshd config validation failed, rolled back", res, err)
 	}
 	log.Success("sshd config validation passed")
 
@@ -146,7 +146,7 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 		if cfg.SSHAllowUFW {
 			log.Infof("Allowing port %d in UFW...", port)
 			if res, err := system.Run("ufw", "allow", fmt.Sprintf("%d/tcp", port)); err != nil || res.ExitCode != 0 {
-				return fmt.Errorf("ufw allow failed: %s", res.Stderr)
+				return system.FormatCommandError("ufw allow failed", res, err)
 			}
 			log.Successf("UFW rule added: allow %d/tcp", port)
 		} else {
@@ -160,7 +160,7 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 		svc = "ssh"
 	}
 	if res, err := system.Run("systemctl", "restart", svc); err != nil || res.ExitCode != 0 {
-		return fmt.Errorf("failed to restart %s: %v", svc, err)
+		return system.FormatCommandError(fmt.Sprintf("failed to restart %s", svc), res, err)
 	}
 	log.Successf("Service %s restarted", svc)
 
@@ -203,16 +203,12 @@ func ensureOpenSSHServer(ctx context.Context, log *logging.Logger) error {
 	}
 
 	log.Info("OpenSSH server not found, installing openssh-server...")
-	if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil {
-		return fmt.Errorf("apt-get update before openssh-server install failed: %w", err)
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("apt-get update before openssh-server install failed (exit %d): %s", res.ExitCode, res.Stderr)
+	if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+		return system.FormatCommandError("apt-get update before openssh-server install failed", res, err)
 	}
 
-	if res, err := system.RunWithContext(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "openssh-server"); err != nil {
-		return fmt.Errorf("openssh-server installation failed: %w", err)
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("openssh-server installation failed (exit %d): %s", res.ExitCode, res.Stderr)
+	if res, err := system.RunWithContext(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "openssh-server"); err != nil || res.ExitCode != 0 {
+		return system.FormatCommandError("openssh-server installation failed", res, err)
 	}
 
 	if !system.CommandExists("sshd") {

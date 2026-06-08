@@ -79,14 +79,14 @@ func (m *UserModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 	// Create user
 	log.Infof("Creating user %s (shell: %s)...", username, shell)
 	if res, err := system.Run("useradd", "-m", "-s", shell, username); err != nil || res.ExitCode != 0 {
-		return fmt.Errorf("failed to create user %s: %s", username, res.Stderr)
+		return system.FormatCommandError(fmt.Sprintf("failed to create user %s", username), res, err)
 	}
 	log.Successf("User %s created", username)
 
 	// Add to sudo group
 	if cfg.UserAddSudo {
 		if res, err := system.Run("usermod", "-aG", "sudo", username); err != nil || res.ExitCode != 0 {
-			return fmt.Errorf("failed to add %s to sudo group: %s", username, res.Stderr)
+			return system.FormatCommandError(fmt.Sprintf("failed to add %s to sudo group", username), res, err)
 		}
 		log.Successf("%s added to sudo group", username)
 		if err := m.configureSudo(username, cfg, log); err != nil {
@@ -110,7 +110,7 @@ func (m *UserModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 func (m *UserModule) supplementUser(ctx context.Context, username string, cfg *types.Config, log *logging.Logger) error {
 	if cfg.UserAddSudo {
 		if res, err := system.Run("usermod", "-aG", "sudo", username); err != nil || res.ExitCode != 0 {
-			log.Warnf("Could not add %s to sudo group (may already be a member): %s", username, res.Stderr)
+			log.Warn(system.FormatCommandError(fmt.Sprintf("could not add %s to sudo group (may already be a member)", username), res, err).Error())
 		} else {
 			log.Successf("%s added to sudo group", username)
 		}
@@ -171,12 +171,12 @@ func writePasswordlessSudo(username string) error {
 	}
 	if res, err := system.Run("chmod", "0440", tmp); err != nil || res.ExitCode != 0 {
 		os.Remove(tmp)
-		return fmt.Errorf("failed to chmod sudoers rule: %s", res.Stderr)
+		return system.FormatCommandError("failed to chmod sudoers rule", res, err)
 	}
 	if system.CommandExists("visudo") {
 		if res, err := system.Run("visudo", "-cf", tmp); err != nil || res.ExitCode != 0 {
 			os.Remove(tmp)
-			return fmt.Errorf("invalid sudoers rule for %s: %s", username, res.Stderr)
+			return system.FormatCommandError(fmt.Sprintf("invalid sudoers rule for %s", username), res, err)
 		}
 	}
 	if err := os.Rename(tmp, path); err != nil {

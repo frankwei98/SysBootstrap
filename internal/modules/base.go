@@ -88,10 +88,8 @@ func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 				}
 				log.Info("APT sources restored from backup")
 				// Re-run apt-get update with original sources
-				if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil {
-					return fmt.Errorf("apt-get update failed after restore: %w", err)
-				} else if res.ExitCode != 0 {
-					return fmt.Errorf("apt-get update failed after restore (exit %d): %s", res.ExitCode, res.Stderr)
+				if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+					return system.FormatCommandError("apt-get update failed after restore", res, err)
 				}
 			}
 			aptUpdateDone = true
@@ -102,19 +100,15 @@ func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 
 	if !aptUpdateDone {
 		log.Info("Running apt update & upgrade...")
-		if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil {
-			return fmt.Errorf("apt-get update failed: %w", err)
-		} else if res.ExitCode != 0 {
-			return fmt.Errorf("apt-get update failed (exit %d): %s", res.ExitCode, res.Stderr)
+		if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+			return system.FormatCommandError("apt-get update failed", res, err)
 		}
 	} else {
 		log.Info("Running apt upgrade...")
 	}
 
-	if res, err := system.RunWithContext(ctx, "apt-get", "upgrade", "-y"); err != nil {
-		return fmt.Errorf("apt-get upgrade failed: %w", err)
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("apt-get upgrade failed (exit %d): %s", res.ExitCode, res.Stderr)
+	if res, err := system.RunWithContext(ctx, "apt-get", "upgrade", "-y"); err != nil || res.ExitCode != 0 {
+		return system.FormatCommandError("apt-get upgrade failed", res, err)
 	}
 	log.Success("System update complete")
 
@@ -122,10 +116,8 @@ func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 	args := make([]string, 0, len(basePackages)+2)
 	args = append(args, "install", "-y")
 	args = append(args, basePackages...)
-	if res, err := system.RunWithContext(ctx, "apt-get", args...); err != nil {
-		return fmt.Errorf("package installation failed: %w", err)
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("package installation failed (exit %d): %s", res.ExitCode, res.Stderr)
+	if res, err := system.RunWithContext(ctx, "apt-get", args...); err != nil || res.ExitCode != 0 {
+		return system.FormatCommandError("package installation failed", res, err)
 	}
 	log.Success("Base packages installed")
 
@@ -158,10 +150,8 @@ tar -xzf "$tmpdir/zellij.tar.gz" -C "$tmpdir"
 install -m 0755 "$tmpdir/zellij" /usr/local/bin/zellij
 `, url)
 
-	if res, err := system.RunWithContext(ctx, "bash", "-lc", script); err != nil {
-		return fmt.Errorf("zellij installation failed: %w", err)
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("zellij installation failed (exit %d): %s", res.ExitCode, res.Stderr)
+	if res, err := system.RunWithContext(ctx, "bash", "-lc", script); err != nil || res.ExitCode != 0 {
+		return system.FormatCommandError("zellij installation failed", res, err)
 	}
 
 	if !system.CommandExists("zellij") {
