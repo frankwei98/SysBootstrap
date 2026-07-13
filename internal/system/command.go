@@ -10,6 +10,8 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 )
 
 func shellQuote(s string) string {
@@ -93,19 +95,45 @@ func Run(name string, args ...string) (*Result, error) {
 }
 
 // RunWithContext executes a command with context cancellation support.
+// The entire process group is killed on cancellation, and the context error
+// is preserved for the caller to distinguish cancellation from normal failure.
 func RunWithContext(ctx context.Context, name string, args ...string) (*Result, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start %s: %w", name, err)
+	}
+
+	// Cancellation handler: kill the entire process group
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if cmd.Process != nil {
+				// Negative PID kills the process group
+				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+		case <-done:
+		}
+	}()
+
+	err := cmd.Wait()
+	close(done)
+
 	result := &Result{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
 	}
 
 	if err != nil {
+		// Prefer context error for cancellation; original error is wrapped
+		if ctx.Err() != nil {
+			return result, fmt.Errorf("%s cancelled: %w", name, ctx.Err())
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
@@ -123,19 +151,40 @@ func RunWithInput(input string, name string, args ...string) (*Result, error) {
 
 // RunWithInputContext executes a command with stdin input and context cancellation.
 func RunWithInputContext(ctx context.Context, input string, name string, args ...string) (*Result, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdin = strings.NewReader(input)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start %s: %w", name, err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if cmd.Process != nil {
+				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+		case <-done:
+		}
+	}()
+
+	err := cmd.Wait()
+	close(done)
+
 	result := &Result{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
 	}
 
 	if err != nil {
+		if ctx.Err() != nil {
+			return result, fmt.Errorf("%s cancelled: %w", name, ctx.Err())
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
@@ -308,4 +357,61 @@ func NvmCommandExists(name string) bool {
 func NvmCommandExistsForContext(sys *Context, name string) bool {
 	res, err := RunInNvmShellForContext(sys, fmt.Sprintf("command -v %s", name))
 	return err == nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != ""
+}
+
+// RetryConfig defines bounded retry behavior for idempotent operations.
+type RetryConfig struct {
+	MaxAttempts int
+	BaseDelay   time.Duration
+	Timeout     time.Duration
+}
+
+// RunApt executes apt-get with one bounded, noninteractive policy. Acquire
+// retries are handled by apt itself; locally modified conffiles are preserved.
+func RunApt(ctx context.Context, args ...string) (*Result, error) {
+	opCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	aptArgs := []string{
+		"DEBIAN_FRONTEND=noninteractive",
+		"APT_LISTCHANGES_FRONTEND=none",
+		"apt-get",
+		"-o", "DPkg::Lock::Timeout=120",
+		"-o", "Acquire::Retries=3",
+		"-o", "Dpkg::Options::=--force-confold",
+	}
+	aptArgs = append(aptArgs, args...)
+	return RunWithContext(opCtx, "env", aptArgs...)
+}
+
+// RunWithRetry runs a command with bounded retries. Retries only for failures
+// that appear idempotent (network, transient). Cancellation and context
+// deadline errors are not retried.
+func RunWithRetry(ctx context.Context, cfg RetryConfig, name string, args ...string) (*Result, error) {
+	var lastErr error
+	for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
+		if attempt > 0 {
+			delay := time.NewTimer(cfg.BaseDelay * time.Duration(1<<uint(attempt-1)))
+			select {
+			case <-ctx.Done():
+				delay.Stop()
+				return nil, ctx.Err()
+			case <-delay.C:
+			}
+		}
+		opCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		res, err := RunWithContext(opCtx, name, args...)
+		cancel()
+		if err == nil && res.ExitCode == 0 {
+			return res, nil
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return res, err
+			}
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("%s exited with code %d", name, res.ExitCode)
+		}
+	}
+	return nil, fmt.Errorf("%s: all %d attempts failed: %w", name, cfg.MaxAttempts, lastErr)
 }

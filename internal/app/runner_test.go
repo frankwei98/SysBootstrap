@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
@@ -48,6 +49,54 @@ func TestShouldSkipSatisfiedForModule(t *testing.T) {
 	}
 	if !ShouldSkipSatisfiedForModule("timezone", &types.Config{Timezone: "Asia/Shanghai"}, check) {
 		t.Fatal("expected satisfied timezone module state to be skipped before config-sensitive plan adjustment")
+	}
+}
+
+type pendingModule struct {
+	runnerTestModule
+	returnPending bool
+}
+
+func (m *pendingModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+	m.runCalled = true
+	if m.returnPending {
+		return types.ErrSSHPendingConfirmation
+	}
+	return nil
+}
+
+func TestRunnerSSHPendingConfirmationContinues(t *testing.T) {
+	registry := modules.NewRegistry()
+	base := &pendingModule{runnerTestModule: runnerTestModule{id: "base", satisfied: false}, returnPending: false}
+	sshMod := &pendingModule{
+		runnerTestModule: runnerTestModule{
+			id:        "ssh",
+			satisfied: false,
+			steps:     []types.Step{{Module: "ssh", Title: "Prepare SSH hardening"}},
+		},
+		returnPending: true,
+	}
+	registry.Register(base)
+	registry.Register(sshMod)
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New() failed: %v", err)
+	}
+	defer log.Close()
+
+	runner := NewRunner(registry, &system.Context{}, log)
+	cfg := &types.Config{SSHPort: 22122}
+
+	// ssh returns pending but base should still run first
+	if err := runner.Run(context.Background(), cfg, []string{"base", "ssh"}); !errors.Is(err, types.ErrSSHPendingConfirmation) {
+		t.Fatalf("Run() should preserve pending sentinel, got: %v", err)
+	}
+	if !base.runCalled {
+		t.Fatal("expected base module Run() to be called")
+	}
+	if !sshMod.runCalled {
+		t.Fatal("expected ssh module Run() to be called")
 	}
 }
 

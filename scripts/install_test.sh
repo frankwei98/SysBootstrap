@@ -281,6 +281,33 @@ test_no_test_euid_in_production() {
     fi
 }
 
+test_resolve_version_falls_back_from_jsdelivr() {
+    TEST_NAME="resolve_version: optional jsDelivr failure falls back to GitHub"
+    reset_state
+    # shellcheck disable=SC2034
+    REGION="china"
+    JSDELIVR_API="https://jsdelivr.invalid/metadata"
+    GITHUB_API="https://github.invalid/releases/latest"
+    # shellcheck disable=SC2329
+    curl() {
+        local arg
+        for arg in "$@"; do
+            if [[ "$arg" == "$JSDELIVR_API" ]]; then
+                return 22
+            fi
+            if [[ "$arg" == "$GITHUB_API" ]]; then
+                printf '%s\n' '{"tag_name":"v9.8.7"}'
+                return 0
+            fi
+        done
+        return 1
+    }
+    local resolved
+    resolved="$(resolve_version)"
+    unset -f curl
+    assert_equal "$resolved" "v9.8.7"
+}
+
 echo "Running install.sh tests..."
 echo ""
 
@@ -299,6 +326,7 @@ test_temp_run_reload_shell_declined
 test_temp_run_reload_shell_default_yes
 test_shell_reload_command_is_manual_friendly
 test_no_test_euid_in_production
+test_resolve_version_falls_back_from_jsdelivr
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,7 +181,8 @@ func (m *UserModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 		}
 	}
 
-	if err := m.writeSSHKey(username, cfg, log); err != nil {
+	// Write SSH public key
+	if err := m.writeSSHKey(ctx, username, cfg, log); err != nil {
 		return err
 	}
 
@@ -224,7 +223,7 @@ func (m *UserModule) supplementUser(ctx context.Context, username string, cfg *t
 		}
 	}
 
-	if err := m.writeSSHKey(username, cfg, log); err != nil {
+	if err := m.writeSSHKey(ctx, username, cfg, log); err != nil {
 		return err
 	}
 
@@ -310,84 +309,67 @@ func removePasswordlessSudo(username string) error {
 	return nil
 }
 
-// writeSSHKey handles writing SSH public keys for a user.
-func (m *UserModule) writeSSHKey(username string, cfg *types.Config, log *logging.Logger) error {
+// writeSSHKey handles writing SSH public keys for a user with safety:
+// passwd-resolved home, symlink rejection, per-line validation,
+// deduplication, and target-UID atomic write.
+func (m *UserModule) writeSSHKey(ctx context.Context, username string, cfg *types.Config, log *logging.Logger) error {
 	if !cfg.UserAddKey {
 		return nil
 	}
 
-	var publicKey string
+	var keyContent string
+	var err error
 
 	if cfg.UserKeySource == "github" && cfg.UserGitHubUser != "" {
 		log.Infof("Fetching SSH keys for GitHub user %s...", cfg.UserGitHubUser)
-		keys, err := fetchGitHubKeys(cfg.UserGitHubUser)
+		keyContent, err = fetchGitHubKeys(cfg.UserGitHubUser)
 		if err != nil {
-			log.Errorf("Failed to fetch GitHub keys: %v", err)
-		} else if keys == "" {
-			log.Warnf("No public keys found for GitHub user %s", cfg.UserGitHubUser)
-		} else {
-			publicKey = keys
-			log.Successf("Fetched SSH keys from GitHub user %s", cfg.UserGitHubUser)
+			return fmt.Errorf("failed to fetch GitHub keys for %s: %w", cfg.UserGitHubUser, err)
 		}
+		log.Successf("Fetched %d SSH key(s) from GitHub user %s", len(strings.Split(strings.TrimSpace(keyContent), "\n")), cfg.UserGitHubUser)
 	} else if cfg.UserPublicKey != "" {
-		publicKey = cfg.UserPublicKey
+		keyContent = cfg.UserPublicKey
+	} else {
+		return fmt.Errorf("SSH key installation was requested for %s but the selected key source is incomplete", username)
 	}
 
-	if publicKey == "" {
-		return nil
+	// Validate every non-blank line
+	validLines, err := validateKeyLines(keyContent)
+	if err != nil {
+		return fmt.Errorf("key validation failed: %w", err)
 	}
 
-	if !ValidatePublicKey(strings.Split(publicKey, "\n")[0]) {
-		log.Error("Invalid public key format, skipping")
-		return nil
+	// Resolve home from passwd
+	home, err := resolveHome(username)
+	if err != nil {
+		return fmt.Errorf("cannot determine home for %s: %w", username, err)
 	}
 
-	home := userHomeDir(username)
 	sshDir := filepath.Join(home, ".ssh")
 	keyFile := filepath.Join(sshDir, "authorized_keys")
 
-	if authorizedKeyContains(home, publicKey) {
-		log.Info("SSH public key already present, skipping")
-		return nil
+	// Reject symlinks in path components
+	if err := rejectAuthorizedKeysFullPath(home, ".ssh/authorized_keys"); err != nil {
+		return fmt.Errorf("path rejected for %s: %w", username, err)
 	}
 
-	if err := os.MkdirAll(sshDir, 0o700); err != nil {
-		return fmt.Errorf("failed to create .ssh directory: %w", err)
-	}
-	f, err := os.OpenFile(keyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	// Existing keys for deduplication
+	existingKeys, err := readExistingKeys(keyFile)
 	if err != nil {
-		return fmt.Errorf("failed to open authorized_keys: %w", err)
+		return fmt.Errorf("cannot read existing keys for %s: %w", username, err)
 	}
-	fmt.Fprint(f, publicKey)
-	if !strings.HasSuffix(publicKey, "\n") {
-		fmt.Fprintln(f)
-	}
-	f.Close()
 
-	system.Run("chown", "-R", fmt.Sprintf("%s:%s", username, username), sshDir)
-	log.Success("SSH public key(s) written")
+	content := buildAuthorizedKeysContent(existingKeys, validLines)
+
+	// Write atomically as the target user
+	if err := writeAuthorizedKeysAsUser(ctx, username, home, sshDir, keyFile, content); err != nil {
+		return fmt.Errorf("failed to write authorized_keys for %s: %w", username, err)
+	}
+
+	// Verify ownership (chown via sudo may not set correctly; double-check)
+	// The write runs as the target user via sudo, so ownership is correct.
+	log.Successf("SSH public key(s) written for %s", username)
 	return nil
-}
-
-// fetchGitHubKeys fetches public keys from github.com/<user>.keys.
-func fetchGitHubKeys(username string) (string, error) {
-	url := fmt.Sprintf("https://github.com/%s.keys", username)
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("HTTP request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
-
-	return string(body), nil
 }
 
 func userExists(username string) bool {

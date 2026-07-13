@@ -183,6 +183,84 @@ func TestSSHPlanUFWInactive(t *testing.T) {
 	}
 }
 
+func newQuietLogger(t *testing.T) *logging.Logger {
+	t.Helper()
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New() failed: %v", err)
+	}
+	t.Cleanup(func() { log.Close() })
+	return log
+}
+
+func TestSSHGuardDisableRootPassWithoutKey(t *testing.T) {
+	m := NewSSHModule()
+	sys := &system.Context{}
+	cfg := &types.Config{
+		SSHDisableRoot: true,
+		SSHDisablePass: true,
+		SSHPort:        22122,
+	}
+
+	err := m.Run(context.Background(), sys, cfg, newQuietLogger(t))
+	if err == nil {
+		t.Fatal("expected error when disabling root+pass without replacement key")
+	}
+	if !strings.Contains(err.Error(), "no replacement access path") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSSHGuardDisableRootPassEmptyKeyRejected(t *testing.T) {
+	m := NewSSHModule()
+	sys := &system.Context{}
+	cfg := &types.Config{
+		SSHDisableRoot: true,
+		SSHDisablePass: true,
+		SSHAddKey:      true,
+		SSHPublicKey:   "",
+		SSHPort:        22122,
+	}
+
+	err := m.Run(context.Background(), sys, cfg, newQuietLogger(t))
+	if err == nil {
+		t.Fatal("expected error when disabling root+pass with empty key")
+	}
+	if !strings.Contains(err.Error(), "no replacement access path") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSSHGuardDisableRootOnlyWithoutKeyOK(t *testing.T) {
+	m := NewSSHModule()
+	sys := &system.Context{}
+	cfg := &types.Config{
+		SSHDisableRoot: true,
+		SSHPort:        22122,
+	}
+
+	err := m.Run(context.Background(), sys, cfg, newQuietLogger(t))
+	// Guard allows root-only disable without key (password still works)
+	if err != nil && strings.Contains(err.Error(), "no replacement access path") {
+		t.Fatal("guard should not fire when password auth remains enabled")
+	}
+}
+
+func TestSSHGuardDisablePassOnlyWithoutKeyOK(t *testing.T) {
+	m := NewSSHModule()
+	sys := &system.Context{}
+	cfg := &types.Config{
+		SSHDisablePass: true,
+		SSHPort:        22122,
+	}
+
+	err := m.Run(context.Background(), sys, cfg, newQuietLogger(t))
+	// Guard allows pass-only disable without key (root login still works)
+	if err != nil && strings.Contains(err.Error(), "no replacement access path") {
+		t.Fatal("guard should not fire when root login remains enabled")
+	}
+}
+
 func TestSSHPlanDefaultPort(t *testing.T) {
 	origPath := sshConfigPath
 	origService := sshServiceReadyFn
@@ -394,5 +472,155 @@ exit 0
 	}
 	if !strings.Contains(text, "systemctl restart fail2ban") {
 		t.Fatalf("expected fail2ban restart, got:\n%s", text)
+	}
+}
+
+// --- U2: SSH two-phase transaction tests ---
+
+func TestSSHDPreCheck_StockConfig(t *testing.T) {
+	origPath := sshConfigPath
+	sshConfigPath = "testdata/sshd_config/stock_debian.conf"
+	t.Cleanup(func() { sshConfigPath = origPath })
+
+	err := sshdPreCheck(context.Background(), &system.Context{}, newQuietLogger(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSSHDPreCheck_NoInclude(t *testing.T) {
+	origPath := sshConfigPath
+	sshConfigPath = "testdata/sshd_config/no_include.conf"
+	t.Cleanup(func() { sshConfigPath = origPath })
+
+	err := sshdPreCheck(context.Background(), &system.Context{}, newQuietLogger(t))
+	if err == nil {
+		t.Fatal("expected error for config without Include")
+	}
+}
+
+func TestFindUnmanagedPorts(t *testing.T) {
+	extra, err := findUnmanagedPorts("testdata/sshd_config/stock_debian.conf", 22122)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// stock_debian has Port 22, managed port is 22122, so Port 22 is unmanaged
+	if len(extra) != 1 || extra[0] != 22 {
+		t.Fatalf("expected [22], got %v", extra)
+	}
+}
+
+func TestWriteManagedDropIn(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDropIn := managedSSHDropIn
+	managedSSHDropIn = filepath.Join(tmpDir, "00-sys-bootstrap.conf")
+	t.Cleanup(func() { managedSSHDropIn = origDropIn })
+
+	err := writeManagedDropIn(22122, "no", "no")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(managedSSHDropIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "Port 22122") {
+		t.Errorf("missing Port 22122 in: %s", content)
+	}
+	if !strings.Contains(content, "PermitRootLogin no") {
+		t.Errorf("missing PermitRootLogin: %s", content)
+	}
+	if !strings.Contains(content, "PasswordAuthentication no") {
+		t.Errorf("missing PasswordAuthentication: %s", content)
+	}
+}
+
+func TestCaptureJournal(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDropIn := managedSSHDropIn
+	managedSSHDropIn = filepath.Join(tmpDir, "00-sys-bootstrap.conf")
+	origEffectivePorts := effectiveSSHPortsFunc
+	effectiveSSHPortsFunc = func(context.Context) ([]int, error) { return []int{22}, nil }
+	t.Cleanup(func() {
+		managedSSHDropIn = origDropIn
+		effectiveSSHPortsFunc = origEffectivePorts
+	})
+
+	os.WriteFile(managedSSHDropIn, []byte("Port 22\n"), 0o644)
+
+	j, err := captureJournal()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !j.hadDropIn {
+		t.Fatal("expected hadDropIn to be true")
+	}
+	if string(j.dropInBytes) != "Port 22\n" {
+		t.Errorf("unexpected dropInBytes: %q", string(j.dropInBytes))
+	}
+}
+
+func TestRollbackRemovesNewDropIn(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDropIn := managedSSHDropIn
+	managedSSHDropIn = filepath.Join(tmpDir, "00-sys-bootstrap.conf")
+	t.Cleanup(func() { managedSSHDropIn = origDropIn })
+
+	// Original: no drop-in existed
+	j := &sshTransactionJournal{hadDropIn: false}
+
+	// Simulate prepare by writing a new drop-in
+	os.WriteFile(managedSSHDropIn, []byte("Port 22122\n"), 0o644)
+
+	// Rollback
+	rollbackPrepare(context.Background(), j)
+
+	if _, err := os.Stat(managedSSHDropIn); !os.IsNotExist(err) {
+		t.Fatal("expected drop-in to be removed after rollback from no prior state")
+	}
+}
+
+func TestRollbackRestoresPreviousContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDropIn := managedSSHDropIn
+	managedSSHDropIn = filepath.Join(tmpDir, "00-sys-bootstrap.conf")
+	origEffectivePorts := effectiveSSHPortsFunc
+	effectiveSSHPortsFunc = func(context.Context) ([]int, error) { return []int{22}, nil }
+	t.Cleanup(func() {
+		managedSSHDropIn = origDropIn
+		effectiveSSHPortsFunc = origEffectivePorts
+	})
+
+	// Prior state: drop-in had content
+	os.WriteFile(managedSSHDropIn, []byte("Port 22\nCustomOption yes\n"), 0o644)
+	j, err := captureJournal()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Prepare overwrites
+	os.WriteFile(managedSSHDropIn, []byte("Port 22122\n"), 0o644)
+
+	// Rollback
+	rollbackPrepare(context.Background(), j)
+
+	data, _ := os.ReadFile(managedSSHDropIn)
+	if string(data) != "Port 22\nCustomOption yes\n" {
+		t.Errorf("expected original content restored, got: %q", string(data))
+	}
+}
+
+func TestReadManagedPort(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDropIn := managedSSHDropIn
+	managedSSHDropIn = filepath.Join(tmpDir, "00-sys-bootstrap.conf")
+	t.Cleanup(func() { managedSSHDropIn = origDropIn })
+
+	os.WriteFile(managedSSHDropIn, []byte("Port 22122\n"), 0o644)
+	p := readManagedPort()
+	if p != 22122 {
+		t.Errorf("expected 22122, got %d", p)
 	}
 }

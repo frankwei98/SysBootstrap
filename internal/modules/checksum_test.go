@@ -137,3 +137,48 @@ func TestBunSHA256Constants(t *testing.T) {
 		})
 	}
 }
+
+func TestZellijAssetForArch(t *testing.T) {
+	tests := []struct {
+		arch string
+		want string
+	}{
+		{"amd64", "zellij-x86_64-unknown-linux-musl.tar.gz"},
+		{"arm64", "zellij-aarch64-unknown-linux-musl.tar.gz"},
+		{"386", ""},
+		{"riscv64", ""},
+	}
+	for _, tt := range tests {
+		got := zellijAssetForArch(tt.arch)
+		if got != tt.want {
+			t.Errorf("zellijAssetForArch(%q) = %q, want %q", tt.arch, got, tt.want)
+		}
+	}
+}
+
+func TestZellijSHA256ForArch(t *testing.T) {
+	x64 := zellijSHA256ForArch("amd64")
+	arm64 := zellijSHA256ForArch("arm64")
+
+	if x64 != zellijLinuxX64SHA256 {
+		t.Errorf("unexpected x64 SHA256: %q", x64)
+	}
+	if arm64 != zellijLinuxAarch64SHA256 {
+		t.Errorf("unexpected arm64 SHA256: %q", arm64)
+	}
+	if zellijSHA256ForArch("386") != "" {
+		t.Error("expected empty for unknown arch")
+	}
+}
+
+func TestZellijManifestConstants(t *testing.T) {
+	if zellijVersion == "" {
+		t.Error("zellijVersion must not be empty")
+	}
+	if zellijLinuxX64SHA256 == "" || zellijLinuxAarch64SHA256 == "" {
+		t.Error("zellij SHA256 constants must not be empty")
+	}
+	if zellijAssetForArch("amd64") == "" || zellijAssetForArch("arm64") == "" {
+		t.Error("zellij asset names must be non-empty for amd64 and arm64")
+	}
+}

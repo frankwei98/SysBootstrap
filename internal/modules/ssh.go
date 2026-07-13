@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
@@ -30,9 +32,13 @@ type sshConfigState struct {
 	passwordAuthentication string
 }
 
-type SSHModule struct{}
+type SSHModule struct {
+	checkpoint types.CheckpointFunc
+}
 
 func NewSSHModule() *SSHModule { return &SSHModule{} }
+
+func (m *SSHModule) SetCheckpoint(f types.CheckpointFunc) { m.checkpoint = f }
 
 func (m *SSHModule) ID() string             { return "ssh" }
 func (m *SSHModule) Name() string           { return "SSH Hardening" }
@@ -129,121 +135,139 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 		port = defaultSSHPort
 	}
 
+	// Guard: requesting to disable both root login and password auth without
+	// a requested replacement key is unsafe. Fail before any mutation.
+	if cfg.SSHDisableRoot && cfg.SSHDisablePass {
+		hasKey := (cfg.SSHAddKey && cfg.SSHPublicKey != "") ||
+			(cfg.UserAddKey && (cfg.UserPublicKey != "" || cfg.UserGitHubUser != "" || cfg.UserKeySource == "github"))
+		if !hasKey {
+			return fmt.Errorf("cannot disable both root login and password authentication without providing an SSH public key — no replacement access path")
+		}
+	}
+
 	if err := ensureOpenSSHServer(ctx, log); err != nil {
 		return err
 	}
 
-	// Backup sshd_config (preserve original permissions)
-	info, err := os.Stat(sshConfigPath)
+	// Pre-check: verify the host's sshd_config is compatible with the
+	// managed drop-in approach before any mutation.
+	if err := sshdPreCheck(ctx, sys, log); err != nil {
+		return fmt.Errorf("SSH pre-check failed: %w", err)
+	}
+
+	// Capture pre-mutation state for rollback
+	journal, err := captureJournal()
 	if err != nil {
-		return fmt.Errorf("failed to stat sshd_config: %w", err)
+		return fmt.Errorf("cannot capture pre-mutation state: %w", err)
 	}
-	origMode := info.Mode()
 
-	backupFile := fmt.Sprintf("%s.bak.%s", sshConfigPath, time.Now().Format("20060102150405"))
-	if err := copyFile(sshConfigPath, backupFile); err != nil {
-		return fmt.Errorf("failed to backup sshd_config: %w", err)
+	// A requested replacement key must be installed before any SSH daemon or
+	// firewall mutation. Otherwise a key-write failure can strand a prepared
+	// port without the access path the operator was told to test.
+	if cfg.SSHAddKey {
+		if strings.TrimSpace(cfg.SSHPublicKey) == "" {
+			return fmt.Errorf("SSH key installation was requested but no public key was provided")
+		}
+		if err := m.writeAuthorizedKeys(ctx, sys, cfg, log); err != nil {
+			return err
+		}
 	}
-	log.Successf("Backed up sshd_config to %s", backupFile)
 
-	// Read current config
-	content, err := os.ReadFile(sshConfigPath)
+	// === PREPARE PHASE ===
+	// Write permissive drop-in (add new port, keep existing auth),
+	// validate, add UFW rule, reload, verify.
+	log.Info("=== SSH Prepare Phase ===")
+	if err := prepareSSHPhase(ctx, sys, cfg, log, port, journal); err != nil {
+		return joinSSHRollbackError(fmt.Errorf("SSH prepare failed: %w", err), rollbackPrepare(ctx, journal))
+	}
+	log.Success("SSH prepare phase complete — dual-path access active")
+
+	// === CONFIRMATION CHECKPOINT ===
+	// If a checkpoint function is set (interactive two-phase mode),
+	// pause and wait for operator attestation. If not set (noninteractive
+	// or single-phase mode), skip directly.
+	if m.checkpoint != nil {
+		candidates := m.computeAccessPaths(ctx, sys, cfg)
+		if (cfg.SSHDisableRoot || cfg.SSHDisablePass) && len(candidates) == 0 {
+			return joinSSHRollbackError(
+				fmt.Errorf("cannot restrict SSH authentication: no verified replacement access path is available"),
+				rollbackPrepare(ctx, journal),
+			)
+		}
+		confirmed, cperr := m.checkpoint(ctx, candidates)
+		if cperr != nil {
+			return joinSSHRollbackError(fmt.Errorf("SSH confirmation failed: %w", cperr), rollbackPrepare(ctx, journal))
+		}
+		if !confirmed {
+			return types.ErrSSHPendingConfirmation
+		}
+
+		// === FINALIZE PHASE ===
+		// Apply restrictive auth after operator confirmation.
+		log.Info("=== SSH Finalize Phase ===")
+		if err := finalizeSSHPhase(ctx, sys, cfg, log, port, journal); err != nil {
+			return joinSSHRollbackError(fmt.Errorf("SSH finalize failed: %w", err), rollbackPrepare(ctx, journal))
+		}
+		log.Success("SSH hardening complete — restrictive auth applied")
+
+		// Keep an existing fail2ban sshd jail aligned with the now-finalized
+		// listener. A synchronization failure must not roll SSH back after the
+		// operator has already verified and selected the new access path.
+		if err := syncExistingFail2banSSHDPort(ctx, port, log); err != nil {
+			return fmt.Errorf("SSH finalized, but fail2ban sync failed: %w", err)
+		}
+	} else {
+		return types.ErrSSHPendingConfirmation
+	}
+
+	return nil
+}
+
+func joinSSHRollbackError(original, rollbackErr error) error {
+	if rollbackErr == nil {
+		return original
+	}
+	return fmt.Errorf("%w; EMERGENCY: SSH rollback could not be verified: %v", original, rollbackErr)
+}
+
+// writeAuthorizedKeys handles writing the SSH public key from config to the
+// invoking user's authorized_keys using shared safety helpers.
+func (m *SSHModule) writeAuthorizedKeys(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+	username := system.TargetUsername(sys)
+	if username == "" {
+		log.Warn("No target user for authorized_keys write")
+		return nil
+	}
+
+	validLines, err := validateKeyLines(cfg.SSHPublicKey)
 	if err != nil {
-		return fmt.Errorf("failed to read sshd_config: %w", err)
+		return fmt.Errorf("key validation failed: %w", err)
 	}
 
-	// Build new config: comment out existing Port lines, append new port
-	lines := strings.Split(string(content), "\n")
-	var newLines []string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "Port ") && !strings.HasPrefix(trimmed, "#") {
-			newLines = append(newLines, "#"+line)
-		} else {
-			newLines = append(newLines, line)
-		}
-	}
-	newLines = append(newLines, fmt.Sprintf("Port %d", port))
-
-	// Disable root login if requested
-	if cfg.SSHDisableRoot {
-		newLines = appendSSHDOption(newLines, "PermitRootLogin", "no")
+	home, err := resolveHome(username)
+	if err != nil {
+		return fmt.Errorf("cannot determine home for %s: %w", username, err)
 	}
 
-	// Disable password authentication if requested
-	if cfg.SSHDisablePass {
-		newLines = appendSSHDOption(newLines, "PasswordAuthentication", "no")
+	sshDir := filepath.Join(home, ".ssh")
+	keyFile := filepath.Join(sshDir, "authorized_keys")
+
+	if err := rejectAuthorizedKeysFullPath(home, ".ssh/authorized_keys"); err != nil {
+		return fmt.Errorf("path rejected for %s: %w", username, err)
 	}
 
-	if err := os.WriteFile(sshConfigPath, []byte(strings.Join(newLines, "\n")), origMode); err != nil {
-		copyFileWithMode(backupFile, sshConfigPath, origMode)
-		return fmt.Errorf("failed to write sshd_config: %w", err)
-	}
-	log.Successf("SSH port set to %d", port)
-
-	// Validate with sshd -t
-	log.Info("Validating sshd configuration...")
-	if res, err := system.Run("sshd", "-t"); err != nil || res.ExitCode != 0 {
-		copyFileWithMode(backupFile, sshConfigPath, origMode)
-		return system.FormatCommandError("sshd config validation failed, rolled back", res, err)
-	}
-	log.Success("sshd config validation passed")
-
-	// UFW handling
-	if sys.HasUFW && sys.UFWActive {
-		if cfg.SSHAllowUFW {
-			log.Infof("Allowing port %d in UFW...", port)
-			if res, err := system.Run("ufw", "allow", fmt.Sprintf("%d/tcp", port)); err != nil || res.ExitCode != 0 {
-				return system.FormatCommandError("ufw allow failed", res, err)
-			}
-			log.Successf("UFW rule added: allow %d/tcp", port)
-		} else {
-			log.Warnf("UFW firewall is active — please manually verify port %d is allowed", port)
-		}
+	existingKeys, err := readExistingKeys(keyFile)
+	if err != nil {
+		return fmt.Errorf("cannot read existing keys for %s: %w", username, err)
 	}
 
-	// Restart sshd (detect service name)
-	svc := "sshd"
-	if res, _ := system.Run("systemctl", "list-unit-files"); res != nil && strings.Contains(res.Stdout, "ssh.service") {
-		svc = "ssh"
-	}
-	if res, err := system.Run("systemctl", "restart", svc); err != nil || res.ExitCode != 0 {
-		return system.FormatCommandError(fmt.Sprintf("failed to restart %s", svc), res, err)
-	}
-	log.Successf("Service %s restarted", svc)
+	content := buildAuthorizedKeysContent(existingKeys, validLines)
 
-	if err := syncExistingFail2banSSHDPort(ctx, port, log); err != nil {
-		return fmt.Errorf("SSH port changed, but fail2ban sync failed: %w", err)
+	if err := writeAuthorizedKeysAsUser(ctx, username, home, sshDir, keyFile, content); err != nil {
+		return fmt.Errorf("failed to write authorized_keys for %s: %w", username, err)
 	}
 
-	log.Warnf("⚠ Test new port before closing old connection: ssh -p %d user@host", port)
-
-	// Write SSH public key to authorized_keys if requested
-	if cfg.SSHAddKey && cfg.SSHPublicKey != "" {
-		if !ValidatePublicKey(cfg.SSHPublicKey) {
-			log.Error("Invalid public key format, skipping authorized_keys write")
-		} else {
-			home := system.TargetHomeDir(sys)
-			sshDir := filepath.Join(home, ".ssh")
-			keyFile := filepath.Join(sshDir, "authorized_keys")
-
-			if err := os.MkdirAll(sshDir, 0o700); err != nil {
-				return fmt.Errorf("failed to create .ssh directory: %w", err)
-			}
-			f, err := os.OpenFile(keyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-			if err != nil {
-				return fmt.Errorf("failed to open authorized_keys: %w", err)
-			}
-			key := strings.TrimSpace(cfg.SSHPublicKey)
-			fmt.Fprintln(f, key)
-			f.Close()
-			if sys != nil && sys.InvokingUser != nil {
-				system.Run("chown", "-R", fmt.Sprintf("%s:%s", sys.InvokingUser.Username, sys.InvokingUser.Username), sshDir)
-			}
-			log.Success("SSH public key written to authorized_keys")
-		}
-	}
-
+	log.Success("SSH public key written to authorized_keys")
 	return nil
 }
 
@@ -429,11 +453,11 @@ func ensureOpenSSHServer(ctx context.Context, log *logging.Logger) error {
 	}
 
 	log.Info("OpenSSH server not found, installing openssh-server...")
-	if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+	if res, err := system.RunApt(ctx, "update", "-y"); err != nil || res == nil || res.ExitCode != 0 {
 		return system.FormatCommandError("apt-get update before openssh-server install failed", res, err)
 	}
 
-	if res, err := system.RunWithContext(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "openssh-server"); err != nil || res.ExitCode != 0 {
+	if res, err := system.RunApt(ctx, "install", "-y", "openssh-server"); err != nil || res == nil || res.ExitCode != 0 {
 		return system.FormatCommandError("openssh-server installation failed", res, err)
 	}
 
@@ -448,41 +472,136 @@ func ensureOpenSSHServer(ctx context.Context, log *logging.Logger) error {
 	return nil
 }
 
-// appendSSHDOption adds or replaces an sshd_config directive.
-func appendSSHDOption(lines []string, key, value string) []string {
-	prefix := key + " "
-	found := false
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, prefix) && !strings.HasPrefix(trimmed, "#") {
-			lines[i] = key + " " + value
-			found = true
-		}
-	}
-	if !found {
-		lines = append(lines, key+" "+value)
-	}
-	return lines
-}
-
 // ValidatePublicKey checks if a string looks like a valid SSH public key.
 func ValidatePublicKey(key string) bool {
 	key = strings.TrimSpace(key)
 	return pubKeyRegex.MatchString(key)
 }
 
-func copyFile(src, dst string) error {
-	in, err := os.ReadFile(src)
-	if err != nil {
-		return err
+// computeAccessPaths builds the list of replacement access paths from
+// filesystem state and user configuration.
+func (m *SSHModule) computeAccessPaths(ctx context.Context, sys *system.Context, cfg *types.Config) []types.AccessPath {
+	var candidates []types.AccessPath
+	port := cfg.SSHPort
+	if port == 0 {
+		port = defaultSSHPort
 	}
-	return os.WriteFile(dst, in, 0o644)
+
+	seen := make(map[string]bool)
+	if username := system.TargetUsername(sys); username != "" {
+		if candidate, err := verifiedAccessPath(ctx, username, port); err == nil {
+			candidates = append(candidates, candidate)
+			seen[username] = true
+		}
+	}
+
+	if cfg.NewUsername != "" && !seen[cfg.NewUsername] {
+		if candidate, err := verifiedAccessPath(ctx, cfg.NewUsername, port); err == nil {
+			candidates = append(candidates, candidate)
+		}
+	}
+
+	return candidates
 }
 
-func copyFileWithMode(src, dst string, mode os.FileMode) error {
-	in, err := os.ReadFile(src)
+func verifiedAccessPath(ctx context.Context, username string, port int) (types.AccessPath, error) {
+	u, err := lookupUser(username)
 	if err != nil {
-		return err
+		return types.AccessPath{}, err
 	}
-	return os.WriteFile(dst, in, mode)
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return types.AccessPath{}, fmt.Errorf("invalid UID for %s: %w", username, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return types.AccessPath{}, fmt.Errorf("invalid GID for %s: %w", username, err)
+	}
+	if err := rejectAuthorizedKeysFullPath(u.HomeDir, ".ssh/authorized_keys"); err != nil {
+		return types.AccessPath{}, err
+	}
+	keyFile := filepath.Join(u.HomeDir, ".ssh", "authorized_keys")
+	info, err := os.Lstat(keyFile)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
+		return types.AccessPath{}, fmt.Errorf("authorized_keys for %s is missing or has unsafe type/mode", username)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != uid {
+		return types.AccessPath{}, fmt.Errorf("authorized_keys for %s is not owned by UID %d", username, uid)
+	}
+	data, err := os.ReadFile(keyFile)
+	if err != nil {
+		return types.AccessPath{}, err
+	}
+	keys, err := validateKeyLines(string(data))
+	if err != nil {
+		return types.AccessPath{}, err
+	}
+	if err := verifyPubkeyAuthentication(ctx, username); err != nil {
+		return types.AccessPath{}, err
+	}
+	if err := verifyEffectivePorts(ctx, []int{port}); err != nil {
+		return types.AccessPath{}, err
+	}
+	fingerprint, err := canonicalKeyFingerprint(ctx, keys[0])
+	if err != nil {
+		return types.AccessPath{}, err
+	}
+	return types.AccessPath{Username: username, UID: uid, GID: gid, HomeDir: u.HomeDir, KeyFingerprint: fingerprint, PreparedPort: port}, nil
+}
+
+func verifyPubkeyAuthentication(ctx context.Context, username string) error {
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	res, err := system.RunWithContext(opCtx, "sshd", "-T", "-C", "user="+username+",host=localhost,addr=127.0.0.1")
+	if err != nil || res == nil || res.ExitCode != 0 {
+		return fmt.Errorf("cannot verify effective SSH policy for %s: %v (%s)", username, err, resultStderr(res))
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if strings.EqualFold(strings.TrimSpace(line), "pubkeyauthentication yes") {
+			return nil
+		}
+	}
+	return fmt.Errorf("effective SSH policy does not enable public-key authentication for %s", username)
+}
+
+func canonicalKeyFingerprint(ctx context.Context, key string) (string, error) {
+	opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	res, err := system.RunWithInputContext(opCtx, key+"\n", "ssh-keygen", "-lf", "-")
+	if err != nil || res == nil || res.ExitCode != 0 {
+		return "", fmt.Errorf("cannot compute SSH key fingerprint: %v (%s)", err, resultStderr(res))
+	}
+	fields := strings.Fields(res.Stdout)
+	if len(fields) < 2 {
+		return "", fmt.Errorf("ssh-keygen returned an invalid fingerprint")
+	}
+	return fields[1], nil
+}
+
+// extractFingerprint takes authorized_keys content and returns the fingerprint
+// of the first valid key, or "<unknown>" if parsing fails.
+func extractFingerprint(content string) string {
+	lines := strings.SplitN(content, "\n", 2)
+	if len(lines) == 0 || lines[0] == "" {
+		return "<unknown>"
+	}
+	if !ValidatePublicKey(lines[0]) {
+		return "<unknown>"
+	}
+	// Return a shortened representation of the key
+	parts := strings.Fields(lines[0])
+	if len(parts) >= 2 {
+		key := parts[1]
+		if len(key) > 40 {
+			key = key[:40] + "..."
+		}
+		return parts[0] + " " + key
+	}
+	return "<unknown>"
+}
+
+// lookupUser wraps os/user.Lookup for mockability in tests.
+var lookupUser = func(username string) (*user.User, error) {
+	return user.Lookup(username)
 }
