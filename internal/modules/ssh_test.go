@@ -624,3 +624,16 @@ func TestReadManagedPort(t *testing.T) {
 		t.Errorf("expected 22122, got %d", p)
 	}
 }
+
+func TestParseSSHListeningPorts(t *testing.T) {
+	output := `LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=190,fd=6))
+LISTEN 0 128 [::]:22444 [::]:* users:(("sshd",pid=190,fd=7))
+LISTEN 0 4096 127.0.0.1:8080 0.0.0.0:* users:(("other",pid=1,fd=1))`
+	ports := parseSSHListeningPorts(output)
+	if !ports[22] || !ports[22444] {
+		t.Fatalf("expected SSH ports 22 and 22444, got %v", ports)
+	}
+	if ports[8080] {
+		t.Fatal("non-SSH listener must not satisfy SSH listener verification")
+	}
+}
