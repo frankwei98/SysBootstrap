@@ -3,6 +3,8 @@ package modules
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
@@ -84,15 +86,15 @@ func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 
 			// Verify with apt-get update
 			log.Info("Verifying APT sources with apt-get update...")
-			res, updateErr := system.RunWithContext(ctx, "apt-get", "update", "-y")
-			if updateErr != nil || res.ExitCode != 0 {
+			res, updateErr := system.RunApt(ctx, "update", "-y")
+			if updateErr != nil || res == nil || res.ExitCode != 0 {
 				log.Warn("apt-get update failed after mirror switch, restoring backup...")
 				if restoreErr := restoreFunc(); restoreErr != nil {
 					return fmt.Errorf("APT mirror switch failed and restore also failed: update error: %v (restore error: %v)", updateErr, restoreErr)
 				}
 				log.Info("APT sources restored from backup")
-				// Re-run apt-get update with original sources
-				if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+				// Re-run apt-get update with original sources.
+				if res, err := system.RunApt(ctx, "update", "-y"); err != nil || res == nil || res.ExitCode != 0 {
 					return system.FormatCommandError("apt-get update failed after restore", res, err)
 				}
 			}
@@ -104,14 +106,14 @@ func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 
 	if !aptUpdateDone {
 		log.Info("Running apt update & upgrade...")
-		if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+		if res, err := system.RunApt(ctx, "update", "-y"); err != nil || res == nil || res.ExitCode != 0 {
 			return system.FormatCommandError("apt-get update failed", res, err)
 		}
 	} else {
 		log.Info("Running apt upgrade...")
 	}
 
-	if res, err := system.RunWithContext(ctx, "apt-get", "upgrade", "-y"); err != nil || res.ExitCode != 0 {
+	if res, err := system.RunApt(ctx, "upgrade", "-y"); err != nil || res == nil || res.ExitCode != 0 {
 		return system.FormatCommandError("apt-get upgrade failed", res, err)
 	}
 	log.Success("System update complete")
@@ -128,7 +130,7 @@ func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 		args := make([]string, 0, len(missing)+2)
 		args = append(args, "install", "-y")
 		args = append(args, missing...)
-		if res, err := system.RunWithContext(ctx, "apt-get", args...); err != nil || res.ExitCode != 0 {
+		if res, err := system.RunApt(ctx, args...); err != nil || res == nil || res.ExitCode != 0 {
 			return system.FormatCommandError("package installation failed", res, err)
 		}
 		log.Success("Missing base packages installed")
@@ -200,23 +202,59 @@ func buildBasePackageSteps(missing []string) []types.Step {
 }
 
 func installZellij(ctx context.Context) error {
-	arch := "x86_64"
-	if strings.Contains(system.RunQuietOutput("uname", "-m"), "aarch64") || strings.Contains(system.RunQuietOutput("uname", "-m"), "arm64") {
-		arch = "aarch64"
+	// Determine architecture from runtime
+	runtimeArch := system.RunQuietOutput("uname", "-m")
+	goarch := "amd64"
+	switch {
+	case strings.Contains(runtimeArch, "aarch64"), strings.Contains(runtimeArch, "arm64"):
+		goarch = "arm64"
 	}
 
-	url := fmt.Sprintf("https://github.com/zellij-org/zellij/releases/latest/download/zellij-%s-unknown-linux-musl.tar.gz", arch)
-	script := fmt.Sprintf(`
-set -euo pipefail
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
-curl -fsSL %q -o "$tmpdir/zellij.tar.gz"
-tar -xzf "$tmpdir/zellij.tar.gz" -C "$tmpdir"
-install -m 0755 "$tmpdir/zellij" /usr/local/bin/zellij
-`, url)
+	assetName := zellijAssetForArch(goarch)
+	expectedSHA256 := zellijSHA256ForArch(goarch)
+	if assetName == "" || expectedSHA256 == "" {
+		return fmt.Errorf("unsupported architecture for zellij: %s", runtimeArch)
+	}
 
-	if res, err := system.RunWithContext(ctx, "bash", "-lc", script); err != nil || res.ExitCode != 0 {
-		return system.FormatCommandError("zellij installation failed", res, err)
+	url := fmt.Sprintf("https://github.com/zellij-org/zellij/releases/download/%s/%s", zellijVersion, assetName)
+
+	tmpdir, err := os.MkdirTemp("", "zellij-*")
+	if err != nil {
+		return fmt.Errorf("cannot create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tmpdir)
+
+	archivePath := filepath.Join(tmpdir, "zellij.tar.gz")
+
+	// Download with bounded curl
+	curlArgs := []string{"-fsSL", "--connect-timeout", "10", "--max-time", "60", "--retry", "2",
+		"-o", archivePath, url}
+	if res, err := system.RunWithContext(ctx, "curl", curlArgs...); err != nil || res.ExitCode != 0 {
+		detail := ""
+		if res != nil {
+			detail = res.Stderr
+		}
+		return fmt.Errorf("zellij download failed: %s", detail)
+	}
+
+	// Verify SHA256 before extraction
+	if err := verifyFileSHA256(archivePath, expectedSHA256); err != nil {
+		return fmt.Errorf("zellij checksum verification failed: %w", err)
+	}
+
+	// Extract and install
+	extractDir := filepath.Join(tmpdir, "extract")
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		return fmt.Errorf("cannot create extract directory: %w", err)
+	}
+
+	script := fmt.Sprintf(`set -euo pipefail
+tar -xzf %s -C %s
+install -m 0755 %s/zellij /usr/local/bin/zellij
+`, shellQuote(archivePath), shellQuote(extractDir), shellQuote(extractDir))
+
+	if res, err := system.RunWithContext(ctx, "bash", "-c", script); err != nil || res == nil || res.ExitCode != 0 {
+		return system.FormatCommandError("zellij extraction failed", res, err)
 	}
 
 	if !system.CommandExists("zellij") {

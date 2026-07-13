@@ -1,5 +1,32 @@
 package types
 
+import (
+	"context"
+	"errors"
+)
+
+// ErrSSHPendingConfirmation is returned by the SSH module when the prepare
+// phase completed but finalization requires the operator to test the new
+// login from another terminal and re-run (or explicitly confirm).
+var ErrSSHPendingConfirmation = errors.New("SSH hardening prepared — pending operator confirmation: test the new login from another terminal, then confirm")
+
+// AccessPath describes one verified login path that can serve as a
+// replacement during SSH hardening.
+type AccessPath struct {
+	Username       string
+	UID            int
+	GID            int
+	HomeDir        string
+	KeyFingerprint string
+	PreparedPort   int
+}
+
+// CheckpointFunc is called during SSH preparation to wait for the operator
+// to test the new login from another terminal and confirm finalization.
+// Returning (false, nil) leaves the dual-path prepared state in place;
+// (false, err) signals a terminal failure.
+type CheckpointFunc func(ctx context.Context, candidates []AccessPath) (confirmed bool, err error)
+
 // Config holds user selections for a run.
 type Config struct {
 	// APT mirror override (not serialized to plan --json)

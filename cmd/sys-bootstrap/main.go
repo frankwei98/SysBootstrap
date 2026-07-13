@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/charmbracelet/huh"
 	"github.com/frankwei98/sys-bootstrap/internal/app"
@@ -13,6 +16,9 @@ import (
 )
 
 func main() {
+	// Create a signal-aware root context for all operations.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 	// Load persistent settings first
 	cfg := settings.Load()
 
@@ -27,7 +33,7 @@ func main() {
 
 	if len(args) == 0 {
 		// Default: doctor → menu (provisioning / settings / exit)
-		if err := mainMenu(registry); err != nil {
+		if err := mainMenu(ctx, registry); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -36,14 +42,14 @@ func main() {
 
 	switch args[0] {
 	case "run":
-		if err := cli.RunCmd(registry); err != nil {
+		if err := cli.RunCmd(ctx, registry); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
 	case "plan":
 		jsonOutput := len(args) > 1 && args[1] == "--json"
-		if err := cli.PlanCmd(registry, jsonOutput); err != nil {
+		if err := cli.PlanCmd(ctx, registry, jsonOutput); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -60,7 +66,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Available modules: %v\n", registry.IDs())
 			os.Exit(1)
 		}
-		if err := cli.ModuleCmd(registry, args[1]); err != nil {
+		if err := cli.ModuleCmd(ctx, registry, args[1]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -92,7 +98,7 @@ func main() {
 }
 
 // mainMenu runs the doctor check then shows a menu with provisioning, settings, and exit.
-func mainMenu(registry *modules.Registry) error {
+func mainMenu(ctx context.Context, registry *modules.Registry) error {
 	fmt.Println(i18n.T("app_title"))
 	fmt.Println(i18n.T("app_separator"))
 	fmt.Println()
@@ -126,7 +132,7 @@ func mainMenu(registry *modules.Registry) error {
 
 		switch choice {
 		case "provisioning":
-			return cli.RunCmd(registry)
+			return cli.RunCmd(ctx, registry)
 		case "settings":
 			if err := cli.ConfigCmd(nil); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)

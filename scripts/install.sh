@@ -316,22 +316,29 @@ check_deps() {
 }
 
 resolve_version() {
-    local version github_version raw_version
+    local version github_version github_metadata raw_version
 
     if [[ "$REGION" == "china" ]]; then
-        raw_version=$(
-            curl -fsSL "$JSDELIVR_API" \
+        if raw_version=$(
+            curl -fsSL --connect-timeout 10 --max-time 20 --retry 1 "$JSDELIVR_API" \
                 | sed -n '/"versions"/,/\]/p' \
                 | grep -o '"[^"]*"' \
                 | tail -1 \
                 | tr -d '"'
-        )
+        ); then
+            :
+        else
+            warn "jsDelivr metadata unavailable; using authoritative GitHub metadata"
+            raw_version=""
+        fi
         if [[ -n "${raw_version:-}" ]]; then
             version="v${raw_version}"
         fi
     fi
 
-    github_version=$(curl -fsSL "$GITHUB_API" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//' | sed 's/".*//')
+    github_metadata=$(curl -fsSL --connect-timeout 10 --max-time 20 --retry 1 "$GITHUB_API") \
+        || die "Could not fetch authoritative release metadata from GitHub API."
+    github_version=$(awk -F '"' '/"tag_name"[[:space:]]*:/ { for (i = 1; i <= NF; i++) if ($i == "tag_name") { print $(i + 2); exit } }' <<< "$github_metadata")
     [[ -n "${github_version:-}" ]] || die "Could not determine latest release version from GitHub API."
 
     if [[ "$REGION" == "china" && -n "${version:-}" && "$version" != "$github_version" ]]; then
@@ -349,7 +356,7 @@ download_from_url() {
 
     rm -f "$tmp_file"
     info "Downloading from: $url"
-    curl -fsSL "$url" -o "$tmp_file" || return 1
+    curl -fsSL --connect-timeout 15 --max-time 90 --retry 2 "$url" -o "$tmp_file" || return 1
     [[ -s "$tmp_file" ]] || return 1
     chmod +x "$tmp_file"
     mv "$tmp_file" "$DOWNLOAD_PATH"
@@ -375,40 +382,15 @@ file_sha256() {
     $cmd "$file" | awk '{print $1}'
 }
 
-confirm_unverified_continue() {
-    local actual_hash="$1"
-    local choice
-
-    warn "Could not fetch checksum file from GitHub release; unable to verify download."
-    warn "Downloaded file SHA256: ${actual_hash}"
-    warn "Check the expected checksum on https://github.com/${REPO}/releases/tag/${VERSION} if needed."
-    echo ""
-    prompt_read choice "Continue without verification? [y/N]: "
-    [[ "$choice" =~ ^[Yy]$ ]]
-}
-
 verify_download() {
     local platform="$1"
     local checksum_url expected_hash actual_hash
 
-    actual_hash=$(file_sha256 "$DOWNLOAD_PATH") || {
-        warn "No SHA256 tool available (sha256sum/shasum). Cannot verify download integrity."
-        warn "Downloaded file: ${DOWNLOAD_PATH}"
-        echo ""
-        local choice
-        prompt_read choice "Continue without verification? [y/N]: "
-        [[ "$choice" =~ ^[Yy]$ ]] || die "Aborted: download could not be verified without a SHA256 tool."
-        return 0
-    }
+    actual_hash=$(file_sha256 "$DOWNLOAD_PATH") || die "No SHA256 tool available (sha256sum/shasum). Cannot verify download integrity."
 
     checksum_url="https://github.com/${REPO}/releases/download/${VERSION}/${BINARY}_${platform}.sha256"
     rm -f "$CHECKSUM_PATH"
-    if ! curl -fsSL "$checksum_url" -o "$CHECKSUM_PATH"; then
-        if confirm_unverified_continue "$actual_hash"; then
-            return 0
-        fi
-        die "Aborted because the downloaded file could not be verified."
-    fi
+    curl -fsSL --connect-timeout 15 --max-time 30 "$checksum_url" -o "$CHECKSUM_PATH" || die "Failed to fetch checksum from ${checksum_url} — cannot verify download without checksum."
 
     expected_hash=$(awk '{print $1}' "$CHECKSUM_PATH")
     [[ -n "${expected_hash:-}" ]] || die "Checksum file is empty or malformed: ${checksum_url}"
@@ -443,10 +425,10 @@ download() {
             :
         else
             warn "China mirrors/proxies failed, falling back to GitHub release"
-            download_from_url "$github_url"
+            download_from_url "$github_url" || die "All download sources failed for ${BINARY}_${platform}"
         fi
     else
-        download_from_url "$github_url"
+        download_from_url "$github_url" || die "Failed to download ${BINARY}_${platform} from GitHub"
     fi
 
     verify_download "$platform"

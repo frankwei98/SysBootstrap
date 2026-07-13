@@ -146,6 +146,98 @@ func TestRegistryResolveOrderBaseAITransitive(t *testing.T) {
 	}
 }
 
+func TestResolveOrderConditionalUserBeforeSSH(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&mockModule{id: "base"})
+	r.Register(&mockModule{id: "ssh"})
+	r.Register(&mockModule{id: "node"})
+	r.Register(&mockModule{id: "ai", deps: []string{"node"}})
+	r.Register(&mockModule{id: "user"})
+	r.Register(&mockModule{id: "ssh_keygen"})
+
+	// user + ssh selected: user must order before ssh
+	ordered, err := r.ResolveOrder([]string{"ssh", "user"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	userIdx, sshIdx := -1, -1
+	for i, id := range ordered {
+		if id == "user" {
+			userIdx = i
+		}
+		if id == "ssh" {
+			sshIdx = i
+		}
+	}
+	if userIdx < 0 {
+		t.Fatal("user not in result")
+	}
+	if sshIdx < 0 {
+		t.Fatal("ssh not in result")
+	}
+	if userIdx > sshIdx {
+		t.Errorf("user (idx %d) must come before ssh (idx %d) when both selected", userIdx, sshIdx)
+	}
+}
+
+func TestResolveOrderConditionalSSHOnlyNoChange(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&mockModule{id: "base"})
+	r.Register(&mockModule{id: "ssh"})
+	r.Register(&mockModule{id: "node"})
+	r.Register(&mockModule{id: "user"})
+
+	// Only ssh selected, no user: order unchanged
+	ordered, err := r.ResolveOrder([]string{"ssh"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ordered) != 1 {
+		t.Fatalf("expected 1 module, got %d: %v", len(ordered), ordered)
+	}
+	if ordered[0] != "ssh" {
+		t.Errorf("expected ssh, got %q", ordered[0])
+	}
+}
+
+func TestResolveOrderConditionalNoUserChange(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&mockModule{id: "base"})
+	r.Register(&mockModule{id: "ssh"})
+	r.Register(&mockModule{id: "user"})
+
+	// Only user selected, no ssh: order unchanged
+	ordered, err := r.ResolveOrder([]string{"user"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ordered) != 1 {
+		t.Fatalf("expected 1 module, got %d: %v", len(ordered), ordered)
+	}
+	if ordered[0] != "user" {
+		t.Errorf("expected user, got %q", ordered[0])
+	}
+}
+
+func TestResolveOrderConditionalUnrelatedOrderUnchanged(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&mockModule{id: "base"})
+	r.Register(&mockModule{id: "node"})
+	r.Register(&mockModule{id: "ai", deps: []string{"node"}})
+
+	// no ssh or user: conditional ordering should not affect unrelated deps
+	ordered, err := r.ResolveOrder([]string{"base", "ai"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ordered) != 3 {
+		t.Fatalf("expected 3 modules, got %d: %v", len(ordered), ordered)
+	}
+	if ordered[0] != "base" || ordered[1] != "node" || ordered[2] != "ai" {
+		t.Errorf("unexpected order: %v", ordered)
+	}
+}
+
 func TestRegistryResolveOrderFullSelection(t *testing.T) {
 	r := NewRegistry()
 	r.Register(&mockModule{id: "base"})

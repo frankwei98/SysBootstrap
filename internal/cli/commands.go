@@ -73,8 +73,7 @@ type DoctorResult struct {
 }
 
 // RunCmd handles the `run` command (interactive execution).
-func RunCmd(registry *modules.Registry) error {
-	ctx := context.Background()
+func RunCmd(ctx context.Context, registry *modules.Registry) error {
 
 	sys, err := system.NewContext()
 	if err != nil {
@@ -202,6 +201,7 @@ func RunCmd(registry *modules.Registry) error {
 
 	// Execute
 	runner := app.NewRunner(registry, sys, log)
+	runner.SetSSHCheckpoint(ui.NewSSHCheckpointFunc())
 	if err := runner.Run(ctx, cfg, ordered); err != nil {
 		return err
 	}
@@ -214,8 +214,7 @@ func RunCmd(registry *modules.Registry) error {
 }
 
 // PlanCmd handles the `plan` command.
-func PlanCmd(registry *modules.Registry, jsonOutput bool) error {
-	ctx := context.Background()
+func PlanCmd(ctx context.Context, registry *modules.Registry, jsonOutput bool) error {
 
 	sys, err := system.NewContext()
 	if err != nil {
@@ -277,7 +276,7 @@ func DoctorCmd() (*DoctorResult, error) {
 		{"apt-get", sys.HasApt, boolStr(sys.HasApt, i18n.T("doctor_apt_yes"), i18n.T("doctor_apt_no")), true},
 		{"bash", sys.HasBash, boolStr(sys.HasBash, i18n.T("doctor_bash_yes"), i18n.T("doctor_bash_no")), false},
 		{"curl", sys.HasCurl, boolStr(sys.HasCurl, i18n.T("doctor_curl_yes"), i18n.T("doctor_curl_no")), false},
-		{"network", sys.HasNetwork, boolStr(sys.HasNetwork, i18n.T("doctor_network_ok"), i18n.T("doctor_network_fail")), true},
+		{"network", sys.HasNetwork, boolStr(sys.HasNetwork, i18n.T("doctor_network_ok"), i18n.T("doctor_network_fail")), false},
 		{"sshd", sys.HasSSHD, boolStr(sys.HasSSHD, i18n.T("doctor_sshd_yes"), i18n.T("doctor_sshd_no")), false},
 		{"sshd service", sys.HasSSHDService, boolStr(sys.HasSSHDService, i18n.T("doctor_sshd_svc_yes"), i18n.T("doctor_sshd_svc_no")), false},
 	}
@@ -311,8 +310,7 @@ func DoctorCmd() (*DoctorResult, error) {
 }
 
 // ModuleCmd handles `module <id>` command.
-func ModuleCmd(registry *modules.Registry, moduleID string) error {
-	ctx := context.Background()
+func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string) error {
 
 	sys, err := system.NewContext()
 	if err != nil {
@@ -462,6 +460,9 @@ func ModuleCmd(registry *modules.Registry, moduleID string) error {
 		return nil
 	}
 
+	if sm, ok := m.(*modules.SSHModule); ok {
+		sm.SetCheckpoint(ui.NewSSHCheckpointFunc())
+	}
 	if err := m.Run(ctx, sys, cfg, log); err != nil {
 		return fmt.Errorf(i18n.T("runner_failed"), m.Name(), err)
 	}

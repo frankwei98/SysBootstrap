@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
@@ -83,6 +85,13 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 				Title(i18n.T("form_ssh_port")).
 				Description(i18n.T("form_ssh_port_desc")).
 				Placeholder("22122").
+				Validate(func(s string) error {
+					var p int
+					if n, _ := fmt.Sscanf(s, "%d", &p); n != 1 || p < 1 || p > 65535 {
+						return fmt.Errorf("port must be a number between 1 and 65535")
+					}
+					return nil
+				}).
 				Value(&port),
 			huh.NewConfirm().
 				Title(i18n.T("form_disable_root")).
@@ -125,6 +134,15 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 					Title(i18n.T("form_ssh_pubkey")).
 					Description(i18n.T("form_ssh_pubkey_desc")).
 					Placeholder("ssh-ed25519 AAAA...").
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return nil // empty is allowed (no key)
+						}
+						if !modules.ValidatePublicKey(strings.Fields(s)[0]) {
+							return fmt.Errorf("invalid SSH public key format — must start with ssh-ed25519, ssh-rsa, etc.")
+						}
+						return nil
+					}).
 					Value(&key),
 			),
 		)
@@ -145,6 +163,17 @@ func UserConfigForm(cfg *types.Config) error {
 				Title(i18n.T("form_username")).
 				Description(i18n.T("form_username_desc") + "\n" + i18n.T("form_user_existing_desc")).
 				Placeholder("deploy").
+				Validate(func(s string) error {
+					if s == "" {
+						return fmt.Errorf("username cannot be empty")
+					}
+					for _, c := range s {
+						if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+							return fmt.Errorf("username may only contain letters, digits, hyphens, and underscores")
+						}
+					}
+					return nil
+				}).
 				Value(&cfg.NewUsername),
 		),
 	)
@@ -336,6 +365,60 @@ func selectedSSHKeyPath(sys *system.Context, keyType string) (string, bool) {
 		return keyFile, true
 	}
 	return keyFile, false
+}
+
+// NewSSHCheckpointFunc returns a types.CheckpointFunc that displays the
+// replacement access paths and asks the operator to test a new login from
+// another terminal before confirming finalization.
+func NewSSHCheckpointFunc() types.CheckpointFunc {
+	return func(ctx context.Context, candidates []types.AccessPath) (bool, error) {
+		fmt.Println()
+		fmt.Println("╔══════════════════════════════════════════════════════════════╗")
+		fmt.Println("║   SSH Hardening — Prepare Phase Complete                    ║")
+		fmt.Println("╚══════════════════════════════════════════════════════════════╝")
+		fmt.Println()
+		fmt.Println("Replacement access path(s) ready. Before finalizing restrictive")
+		fmt.Println("SSH policy, you must test that a NEW login works from another")
+		fmt.Println("terminal using the information below.")
+		fmt.Println()
+
+		for i, c := range candidates {
+			maybeNew := ""
+			if i == len(candidates)-1 {
+				maybeNew = " ← preferred"
+			}
+			fmt.Println("  Access path", i+1, maybeNew)
+			fmt.Println("    Account:   ", c.Username)
+			fmt.Println("    Port:      ", c.PreparedPort)
+			fmt.Println("    Key:       ", c.KeyFingerprint)
+			fmt.Printf("    Test cmd:   ssh -p %d %s@<host>\n", c.PreparedPort, c.Username)
+			fmt.Println()
+		}
+
+		fmt.Println("Verify you can log in successfully with the key shown above.")
+		fmt.Println("Finalization will disable password authentication and/or root")
+		fmt.Println("login as you requested.")
+		fmt.Println()
+
+		// Use a bounded, context-aware yes/no prompt. Timeout/cancellation keeps
+		// the prepared dual-path state and never enters finalization.
+		var confirmed bool
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title("SSH login from another terminal succeeded?").
+					Description("Only select Yes if you have successfully logged in with the new configuration from a separate terminal.").
+					Affirmative("Yes, finalize SSH hardening").
+					Negative("No, leave dual-path state").
+					Value(&confirmed),
+			),
+		)
+		if err := form.WithTimeout(15 * time.Minute).RunWithContext(ctx); err != nil {
+			// Cancellation, EOF, timeout: leave dual-path
+			return false, nil
+		}
+		return confirmed, nil
+	}
 }
 
 // ConfirmRun shows the execution plan and asks for confirmation.

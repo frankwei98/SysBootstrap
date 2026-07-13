@@ -10,6 +10,12 @@ import (
 )
 
 const (
+	zellijVersion = "v0.44.3"
+
+	// Zellij release asset SHA256 checksums (from GitHub release .sha256sum files)
+	zellijLinuxX64SHA256     = "397481870c4fc3bae646cd7613cde3a1cebdc204558a6cb9a7c603d4c852fc90"
+	zellijLinuxAarch64SHA256 = "439ed44da5df3cd70e578dc4aef5a67dc7b81eabdddec27969d84a6be380b2f0"
+
 	bunVersion = "v1.3.14"
 
 	// Bun release asset SHA256 checksums (from GitHub release SHASUMS256.txt)
@@ -20,6 +26,30 @@ const (
 	// nvm install script SHA256 (pinned version)
 	nvmInstallSHA256 = "4b7412c49960c7d31e8df72da90c1fb5b8cccb419ac99537b737028d497aba4f"
 )
+
+// zellijAssetForArch maps Go arch to the correct Zellij asset name.
+func zellijAssetForArch(goarch string) string {
+	switch goarch {
+	case "amd64":
+		return "zellij-x86_64-unknown-linux-musl.tar.gz"
+	case "arm64":
+		return "zellij-aarch64-unknown-linux-musl.tar.gz"
+	default:
+		return ""
+	}
+}
+
+// zellijSHA256ForArch returns the pinned SHA-256 checksum for the given arch.
+func zellijSHA256ForArch(goarch string) string {
+	switch goarch {
+	case "amd64":
+		return zellijLinuxX64SHA256
+	case "arm64":
+		return zellijLinuxAarch64SHA256
+	default:
+		return ""
+	}
+}
 
 // verifyFileSHA256 computes the SHA256 of a file and compares it to the expected hash.
 func verifyFileSHA256(path, expected string) error {
