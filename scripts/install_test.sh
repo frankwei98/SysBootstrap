@@ -288,7 +288,7 @@ test_resolve_version_falls_back_from_jsdelivr() {
     REGION="china"
     JSDELIVR_API="https://jsdelivr.invalid/metadata"
     GITHUB_API="https://github.invalid/releases/latest"
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2317,SC2329
     curl() {
         local arg
         for arg in "$@"; do

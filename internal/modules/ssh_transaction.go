@@ -258,14 +258,43 @@ func verifyListeningPorts(ctx context.Context, wanted []int) error {
 	if !system.CommandExists("ss") {
 		return fmt.Errorf("cannot verify SSH listeners: ss command is unavailable")
 	}
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	res, err := system.RunWithContext(opCtx, "ss", "-ltnpH")
-	if err != nil || res == nil || res.ExitCode != 0 {
-		return fmt.Errorf("cannot inspect listening TCP ports: %v (%s)", err, resultStderr(res))
+	var lastListening map[int]bool
+	for {
+		res, err := system.RunWithContext(opCtx, "ss", "-ltnpH")
+		if err != nil || res == nil || res.ExitCode != 0 {
+			return fmt.Errorf("cannot inspect listening TCP ports: %v (%s)", err, resultStderr(res))
+		}
+		lastListening = parseSSHListeningPorts(res.Stdout)
+		allListening := true
+		for _, port := range wanted {
+			if !lastListening[port] {
+				allListening = false
+				break
+			}
+		}
+		if allListening {
+			return nil
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-opCtx.Done():
+			timer.Stop()
+			var observed []int
+			for port := range lastListening {
+				observed = append(observed, port)
+			}
+			sort.Ints(observed)
+			return fmt.Errorf("SSH listeners %v did not become ready (observed SSH ports: %v): %w", wanted, observed, opCtx.Err())
+		case <-timer.C:
+		}
 	}
+}
+
+func parseSSHListeningPorts(output string) map[int]bool {
 	listening := make(map[int]bool)
-	for _, line := range strings.Split(res.Stdout, "\n") {
+	for _, line := range strings.Split(output, "\n") {
 		lowerLine := strings.ToLower(line)
 		if !strings.Contains(lowerLine, "sshd") && !strings.Contains(lowerLine, "systemd") {
 			continue
@@ -279,16 +308,11 @@ func verifyListeningPorts(ctx context.Context, wanted []int) error {
 		if idx < 0 {
 			continue
 		}
-		if port, convErr := strconv.Atoi(strings.Trim(address[idx+1:], "[]")); convErr == nil {
+		if port, err := strconv.Atoi(strings.Trim(address[idx+1:], "[]")); err == nil {
 			listening[port] = true
 		}
 	}
-	for _, port := range wanted {
-		if !listening[port] {
-			return fmt.Errorf("SSH port %d is not listening after reload", port)
-		}
-	}
-	return nil
+	return listening
 }
 
 // removeManagedDropIn removes the tool's managed config file if it exists.
