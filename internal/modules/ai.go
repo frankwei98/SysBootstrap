@@ -55,8 +55,7 @@ func (m *AIModule) Check(ctx context.Context, sys *system.Context) CheckResult {
 
 func (m *AIModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
 	var steps []types.Step
-	installClaude := cfg.InstallClaudeCode || (!cfg.InstallClaudeCode && !cfg.InstallCodex)
-	installCodex := cfg.InstallCodex || (!cfg.InstallClaudeCode && !cfg.InstallCodex)
+	installClaude, installCodex := requestedAITools(cfg)
 	pmDetail := "pnpm when available, otherwise npm"
 
 	if installClaude && !aiToolWorksForCheck(sys, "claude") {
@@ -65,13 +64,18 @@ func (m *AIModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Con
 	if installCodex && !aiToolWorksForCheck(sys, "codex") {
 		steps = append(steps, types.Step{Module: "ai", Title: "Install Codex", Detail: "@openai/codex — " + pmDetail})
 	}
-	if nvmCommandExistsForAICheck(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
+	if (installClaude || installCodex) && nvmCommandExistsForAICheck(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
 		steps = append(steps, types.Step{Module: "ai", Title: "Update shell startup", Detail: "Add PNPM_HOME to shell rc files"})
 	}
 	return steps, nil
 }
 
 func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+	installClaude, installCodex := requestedAITools(cfg)
+	if !installClaude && !installCodex {
+		log.Info("No AI CLI tools selected, skipping installation")
+		return nil
+	}
 	if _, err := os.Stat(filepath.Join(system.NvmDirForContext(sys), "nvm.sh")); err != nil {
 		return fmt.Errorf("Node.js is not installed — please run the node module first")
 	}
@@ -95,9 +99,6 @@ func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Conf
 			return err
 		}
 	}
-
-	installClaude := cfg.InstallClaudeCode || (!cfg.InstallClaudeCode && !cfg.InstallCodex)
-	installCodex := cfg.InstallCodex || (!cfg.InstallClaudeCode && !cfg.InstallCodex)
 
 	if installClaude {
 		log.Info("Installing Claude Code...")
@@ -134,6 +135,16 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 	}
 
 	return nil
+}
+
+// requestedAITools preserves the historical noninteractive default (install
+// both tools when no selection was supplied) while respecting an explicit
+// empty selection from the interactive form.
+func requestedAITools(cfg *types.Config) (installClaude, installCodex bool) {
+	if cfg != nil && cfg.AISelectionSet {
+		return cfg.InstallClaudeCode, cfg.InstallCodex
+	}
+	return true, true
 }
 
 func aiToolWorks(sys *system.Context, name string) bool {

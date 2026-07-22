@@ -194,8 +194,10 @@ func nodeShellPathConfigured(sys *system.Context) bool {
 }
 
 func nodeShellFileConfigured(content string) bool {
-	return strings.Contains(content, "SYS_BOOTSTRAP_NODE_ENV") ||
-		(strings.Contains(content, "nvm.sh") && strings.Contains(content, "BUN_INSTALL"))
+	return strings.Contains(content, `export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"`) &&
+		strings.Contains(content, "nvm.sh") &&
+		strings.Contains(content, `export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"`) &&
+		strings.Contains(content, `export PATH="$BUN_INSTALL/bin:$PATH"`)
 }
 
 func ensureNodeShellPath(sys *system.Context) error {
@@ -206,10 +208,12 @@ func ensureNodeShellPath(sys *system.Context) error {
 
 	script := fmt.Sprintf(`set -e
 export HOME=%s
-marker="# SYS_BOOTSTRAP_NODE_ENV"
 for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
   touch "$rc"
-  if ! grep -qF "$marker" "$rc"; then
+  if ! grep -qF 'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"' "$rc" || \
+     ! grep -qF '"$NVM_DIR/nvm.sh"' "$rc" || \
+     ! grep -qF 'export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"' "$rc" || \
+     ! grep -qF 'export PATH="$BUN_INSTALL/bin:$PATH"' "$rc"; then
     cat >> "$rc" <<'EOF'
 
 # SYS_BOOTSTRAP_NODE_ENV

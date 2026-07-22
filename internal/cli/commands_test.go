@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -262,6 +263,9 @@ func TestResolveRunMode_EnvInvalid(t *testing.T) {
 }
 
 func TestDoctorCmdPrintsConclusion(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("doctor OS detection is exercised on Linux integration coverage")
+	}
 	oldStdout := os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {

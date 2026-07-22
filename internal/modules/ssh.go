@@ -2,11 +2,12 @@ package modules
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,13 +18,24 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
-const defaultSSHPort = 22122
+// DefaultSSHPort is the non-standard SSH port proposed by the interactive
+// hardening flow. Keeping it exported avoids subtly diverging defaults in the
+// CLI, plan, and module implementations.
+const DefaultSSHPort = 22122
 
 var sshConfigPath = "/etc/ssh/sshd_config"
 var sshServiceReadyFn = sshServiceReady
 var sshUFWAllowsPortFn = sshUFWAllowsPort
 
-var pubKeyRegex = regexp.MustCompile(`^(ssh-(rsa|ed25519|dss)|ecdsa-sha2|sk-)`)
+var supportedPublicKeyTypes = map[string]bool{
+	"ssh-ed25519":                        true,
+	"ssh-rsa":                            true,
+	"ecdsa-sha2-nistp256":                true,
+	"ecdsa-sha2-nistp384":                true,
+	"ecdsa-sha2-nistp521":                true,
+	"sk-ssh-ed25519@openssh.com":         true,
+	"sk-ecdsa-sha2-nistp256@openssh.com": true,
+}
 
 type sshConfigState struct {
 	port                   int
@@ -81,7 +93,7 @@ func (m *SSHModule) Check(ctx context.Context, sys *system.Context) CheckResult 
 func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
 	port := cfg.SSHPort
 	if port == 0 {
-		port = defaultSSHPort
+		port = DefaultSSHPort
 	}
 
 	state, err := readSSHConfigState()
@@ -132,7 +144,7 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
 	port := cfg.SSHPort
 	if port == 0 {
-		port = defaultSSHPort
+		port = DefaultSSHPort
 	}
 
 	// Guard: requesting to disable both root login and password auth without
@@ -318,13 +330,20 @@ func sshServiceReady() bool {
 	if !system.CommandExists("systemctl") {
 		return false
 	}
+
+	// On socket-activated systems, ssh.service is deliberately disabled. The
+	// active socket is the thing that makes SSH available, so checking only the
+	// service reports a healthy Ubuntu 24.04 host as broken.
+	if target := detectSSHReloadTarget(); target.socketActivated {
+		return systemdUnitActive(target.unit)
+	}
+
 	for _, svc := range []string{"sshd", "ssh"} {
 		enabledRes, err := system.Run("systemctl", "is-enabled", svc)
-		if err != nil || enabledRes.ExitCode != 0 || strings.TrimSpace(enabledRes.Stdout) != "enabled" {
+		if err != nil || enabledRes == nil || enabledRes.ExitCode != 0 || strings.TrimSpace(enabledRes.Stdout) != "enabled" {
 			continue
 		}
-		activeRes, err := system.Run("systemctl", "is-active", svc)
-		if err == nil && activeRes.ExitCode == 0 && strings.TrimSpace(activeRes.Stdout) == "active" {
+		if systemdUnitActive(svc) {
 			return true
 		}
 	}
@@ -371,12 +390,12 @@ func syncExistingFail2banSSHDPort(ctx context.Context, port int, log *logging.Lo
 		return nil
 	}
 
-	content, err := os.ReadFile(fail2banJailLocalPath)
+	content, err := os.ReadFile(fail2banManagedJailPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("failed to read %s: %w", fail2banJailLocalPath, err)
+		return fmt.Errorf("failed to read %s: %w", fail2banManagedJailPath, err)
 	}
 
 	updated, changed := rewriteFail2banSSHDPort(string(content), port)
@@ -385,8 +404,8 @@ func syncExistingFail2banSSHDPort(ctx context.Context, port int, log *logging.Lo
 	}
 
 	log.Infof("Syncing fail2ban sshd jail to port %d...", port)
-	if err := os.WriteFile(fail2banJailLocalPath, []byte(updated), 0o644); err != nil {
-		return fmt.Errorf("failed to update %s: %w", fail2banJailLocalPath, err)
+	if err := os.WriteFile(fail2banManagedJailPath, []byte(updated), 0o644); err != nil {
+		return fmt.Errorf("failed to update %s: %w", fail2banManagedJailPath, err)
 	}
 	if err := validateFail2banConfig("fail2ban configuration validation failed after SSH port change"); err != nil {
 		return err
@@ -472,10 +491,27 @@ func ensureOpenSSHServer(ctx context.Context, log *logging.Logger) error {
 	return nil
 }
 
-// ValidatePublicKey checks if a string looks like a valid SSH public key.
+// ValidatePublicKey performs a cheap structural check for a single OpenSSH
+// public-key line. validateKeyLines additionally asks ssh-keygen to parse the
+// key before any authorized_keys write, which catches malformed wire formats
+// that can otherwise look like valid base64.
 func ValidatePublicKey(key string) bool {
-	key = strings.TrimSpace(key)
-	return pubKeyRegex.MatchString(key)
+	fields := strings.Fields(strings.TrimSpace(key))
+	if len(fields) < 2 || !supportedPublicKeyTypes[fields[0]] {
+		return false
+	}
+
+	blob, err := base64.StdEncoding.DecodeString(fields[1])
+	if err != nil || len(blob) < 5 {
+		return false
+	}
+	declaredLength := binary.BigEndian.Uint32(blob[:4])
+	if declaredLength == 0 || declaredLength > uint32(len(blob)-4) {
+		return false
+	}
+	typeEnd := 4 + int(declaredLength)
+	declaredType := string(blob[4:typeEnd])
+	return declaredType == fields[0] && len(blob) > typeEnd
 }
 
 // computeAccessPaths builds the list of replacement access paths from
@@ -484,7 +520,7 @@ func (m *SSHModule) computeAccessPaths(ctx context.Context, sys *system.Context,
 	var candidates []types.AccessPath
 	port := cfg.SSHPort
 	if port == 0 {
-		port = defaultSSHPort
+		port = DefaultSSHPort
 	}
 
 	seen := make(map[string]bool)

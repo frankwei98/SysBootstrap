@@ -59,88 +59,81 @@ func (r *Registry) conditionalDeps() map[string][]string {
 }
 
 // ResolveOrder returns the given module IDs in dependency-correct order,
-// automatically including dependencies and applying conditional ordering.
+// automatically including dependencies and applying conditional ordering. It
+// uses a DFS topological sort rather than depending on registration order.
 func (r *Registry) ResolveOrder(ids []string) ([]string, error) {
 	needed := make(map[string]bool)
-	for _, id := range ids {
-		needed[id] = true
-	}
-
-	// Expand static dependencies
-	changed := true
-	for changed {
-		changed = false
-		for id := range needed {
-			m, ok := r.modules[id]
-			if !ok {
-				return nil, fmt.Errorf("unknown module: %s", id)
-			}
-			for _, dep := range m.Dependencies() {
-				if !needed[dep] {
-					needed[dep] = true
-					changed = true
-				}
-			}
-		}
-	}
-
-	// Return in registration order, filtered to needed
-	result := make([]string, 0, len(needed))
-	for _, id := range r.order {
+	var include func(string) error
+	include = func(id string) error {
 		if needed[id] {
-			result = append(result, id)
+			return nil
+		}
+		m, ok := r.modules[id]
+		if !ok {
+			return fmt.Errorf("unknown module: %s", id)
+		}
+		needed[id] = true
+		for _, dep := range m.Dependencies() {
+			if err := include(dep); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, id := range ids {
+		if err := include(id); err != nil {
+			return nil, err
 		}
 	}
 
-	// Apply conditional ordering: reorder so deps come before dependents
-	// only when both are present in the result.
-	result = applyConditionalOrdering(result, r.conditionalDeps())
-
-	return result, nil
-}
-
-// applyConditionalOrdering reorders the given slice so that for each
-// conditional edge dependent→dep, dep appears before dependent if both are
-// present. This is a stable bubble to satisfy the edge.
-func applyConditionalOrdering(ids []string, deps map[string][]string) []string {
-	result := make([]string, len(ids))
-	copy(result, ids)
-
-	for dependent, depIDs := range deps {
-		depIdx := indexOf(dependent, result)
-		if depIdx < 0 {
-			continue
+	const (
+		unvisited = iota
+		visiting
+		visited
+	)
+	state := make(map[string]int, len(needed))
+	result := make([]string, 0, len(needed))
+	conditional := r.conditionalDeps()
+	var visit func(string) error
+	visit = func(id string) error {
+		switch state[id] {
+		case visiting:
+			return fmt.Errorf("module dependency cycle detected at %s", id)
+		case visited:
+			return nil
 		}
-		for _, dep := range depIDs {
-			otherIdx := indexOf(dep, result)
-			if otherIdx < 0 {
+		m, ok := r.modules[id]
+		if !ok {
+			return fmt.Errorf("unknown module: %s", id)
+		}
+		state[id] = visiting
+		deps := append([]string{}, m.Dependencies()...)
+		for _, dep := range conditional[id] {
+			if needed[dep] {
+				deps = append(deps, dep)
+			}
+		}
+		for _, dep := range deps {
+			if !needed[dep] {
 				continue
 			}
-			if depIdx < otherIdx {
-				// dependent appears before dep — move dep earlier
-				result = moveBefore(result, otherIdx, depIdx)
-				depIdx = indexOf(dependent, result)
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		state[id] = visited
+		result = append(result, id)
+		return nil
+	}
+
+	// Iterating registration order keeps independent modules stable while the
+	// DFS guarantees every dependency edge is honored.
+	for _, id := range r.order {
+		if needed[id] {
+			if err := visit(id); err != nil {
+				return nil, err
 			}
 		}
 	}
-	return result
-}
-
-func indexOf(id string, ids []string) int {
-	for i, v := range ids {
-		if v == id {
-			return i
-		}
-	}
-	return -1
-}
-
-func moveBefore(ids []string, from, before int) []string {
-	if from <= before {
-		return ids
-	}
-	v := ids[from]
-	result := append(ids[:from], ids[from+1:]...)
-	result = append(result[:before], append([]string{v}, result[before:]...)...)
-	return result
+	return result, nil
 }

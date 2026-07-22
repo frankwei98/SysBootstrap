@@ -40,15 +40,12 @@ type Config struct {
 	SSHDisablePass bool
 	SSHAllowUFW    bool
 
-	// Node
-	InstallNVM  bool
-	InstallNode bool
-	InstallPnpm bool
-	InstallBun  bool
-
 	// AI
 	InstallClaudeCode bool
 	InstallCodex      bool
+	// AISelectionSet distinguishes an explicit interactive empty selection
+	// from an older/noninteractive config that did not contain a selection.
+	AISelectionSet bool
 
 	// User
 	NewUsername          string
@@ -59,6 +56,9 @@ type Config struct {
 	UserPublicKey        string
 	UserKeySource        string // "paste" or "github"
 	UserGitHubUser       string
+	// UserGitHubKeys holds the exact GitHub keys reviewed during the
+	// interactive setup. It is deliberately excluded from JSON plans.
+	UserGitHubKeys string `json:"-"`
 
 	// SSH Keygen
 	KeygenType      string // "ed25519" or "rsa"

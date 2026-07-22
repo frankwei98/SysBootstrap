@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -29,7 +30,10 @@ func (m *TimezoneModule) Check(ctx context.Context, sys *system.Context) CheckRe
 		return CheckResult{Satisfied: false, Message: "timedatectl not available"}
 	}
 	if ok && current != "" {
-		return CheckResult{Satisfied: current == defaultTimezone, Message: fmt.Sprintf("current timezone: %s", current)}
+		// Check reports whether the system state is readable. Plan compares the
+		// configured target, so a healthy non-UTC host is not incorrectly shown
+		// as broken in doctor output.
+		return CheckResult{Satisfied: true, Message: fmt.Sprintf("current timezone: %s", current)}
 	}
 	return CheckResult{Satisfied: false, Message: "timezone not detected"}
 }
@@ -38,6 +42,9 @@ func (m *TimezoneModule) Plan(ctx context.Context, sys *system.Context, cfg *typ
 	target := cfg.Timezone
 	if target == "" {
 		target = defaultTimezone
+	}
+	if _, err := time.LoadLocation(target); err != nil {
+		return nil, fmt.Errorf("invalid timezone %q: %w", target, err)
 	}
 	current, ok := currentTimezone()
 	if ok && current == target {
@@ -55,6 +62,9 @@ func (m *TimezoneModule) Run(ctx context.Context, sys *system.Context, cfg *type
 	target := cfg.Timezone
 	if target == "" {
 		target = defaultTimezone
+	}
+	if _, err := time.LoadLocation(target); err != nil {
+		return fmt.Errorf("invalid timezone %q: %w", target, err)
 	}
 	current, ok := currentTimezone()
 	if ok && current == target {
@@ -74,7 +84,7 @@ func currentTimezone() (string, bool) {
 		return "", false
 	}
 	res, err := system.Run("timedatectl", "show", "--property=Timezone", "--value")
-	if err != nil || res.ExitCode != 0 {
+	if err != nil || res == nil || res.ExitCode != 0 {
 		return "", false
 	}
 	tz := strings.TrimSpace(res.Stdout)

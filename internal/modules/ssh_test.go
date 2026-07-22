@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -20,9 +21,11 @@ func TestValidatePublicKey(t *testing.T) {
 		valid bool
 	}{
 		{"ed25519", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq", true},
-		{"rsa", "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC...", true},
-		{"ecdsa", "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY...", true},
-		{"sk", "sk-ssh-ed25519@openssh.com AAAA...", true},
+		{"malformed rsa payload", "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC...", false},
+		{"malformed ecdsa payload", "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY...", false},
+		{"malformed sk payload", "sk-ssh-ed25519@openssh.com AAAA...", false},
+		{"dss rejected", "ssh-dss AAAAC3NzaC1kc3MAAACB", false},
+		{"bare key type", "ssh-ed25519", false},
 		{"empty", "", false},
 		{"random text", "hello world", false},
 		{"no prefix", "AAAAAC3NzaC1lZDI1NTE5AAAA...", false},
@@ -399,17 +402,20 @@ port = 2222
 
 func TestSyncExistingFail2banSSHDPortUpdatesConfigAndRestarts(t *testing.T) {
 	origPath := os.Getenv("PATH")
-	origJailPath := fail2banJailLocalPath
+	origJailPath := fail2banManagedJailPath
 	t.Cleanup(func() {
 		_ = os.Setenv("PATH", origPath)
-		fail2banJailLocalPath = origJailPath
+		fail2banManagedJailPath = origJailPath
 	})
 
 	tempBin := t.TempDir()
 	logFile := filepath.Join(t.TempDir(), "ssh-f2b-sync.log")
-	fail2banJailLocalPath = filepath.Join(t.TempDir(), "jail.local")
-	if err := os.WriteFile(fail2banJailLocalPath, []byte("[sshd]\nenabled = true\nbackend = systemd\nport = 2222\n"), 0o644); err != nil {
-		t.Fatalf("write jail.local: %v", err)
+	fail2banManagedJailPath = filepath.Join(t.TempDir(), "jail.d", "99-sys-bootstrap.local")
+	if err := os.MkdirAll(filepath.Dir(fail2banManagedJailPath), 0o755); err != nil {
+		t.Fatalf("create managed jail directory: %v", err)
+	}
+	if err := os.WriteFile(fail2banManagedJailPath, []byte("[sshd]\nenabled = true\nbackend = systemd\nport = 2222\n"), 0o644); err != nil {
+		t.Fatalf("write managed jail: %v", err)
 	}
 
 	writeFakeCommand(t, tempBin, "dpkg", `#!/bin/sh
@@ -454,7 +460,7 @@ exit 0
 		t.Fatalf("syncExistingFail2banSSHDPort failed: %v", err)
 	}
 
-	content, err := os.ReadFile(fail2banJailLocalPath)
+	content, err := os.ReadFile(fail2banManagedJailPath)
 	if err != nil {
 		t.Fatalf("read jail.local: %v", err)
 	}
@@ -635,5 +641,68 @@ LISTEN 0 4096 127.0.0.1:8080 0.0.0.0:* users:(("other",pid=1,fd=1))`
 	}
 	if ports[8080] {
 		t.Fatal("non-SSH listener must not satisfy SSH listener verification")
+	}
+}
+
+func TestParseSSHListeningPortsRecognizesSocketButNotSystemdResolved(t *testing.T) {
+	output := `LISTEN 0 4096 0.0.0.0:22333 0.0.0.0:* users:(("systemd",pid=1,fd=51))
+LISTEN 0 4096 127.0.0.53:53 0.0.0.0:* users:(("systemd-resolved",pid=35,fd=14))`
+	ports := parseSSHListeningPorts(output)
+	if !ports[22333] {
+		t.Fatalf("socket-activated SSH port was not detected: %v", ports)
+	}
+	if ports[53] {
+		t.Fatalf("systemd-resolved listener must not satisfy SSH verification: %v", ports)
+	}
+}
+
+func TestVerifyOnlyEffectivePortsRejectsAdditionalListener(t *testing.T) {
+	orig := effectiveSSHPortsFunc
+	effectiveSSHPortsFunc = func(context.Context) ([]int, error) { return []int{22, 22333}, nil }
+	t.Cleanup(func() { effectiveSSHPortsFunc = orig })
+
+	if err := verifyOnlyEffectivePorts(context.Background(), []int{22333}); err == nil {
+		t.Fatal("expected an unmanaged effective SSH port to be rejected")
+	}
+}
+
+func TestReloadSSHSocketActivationUsesDaemonReloadAndSocketRestart(t *testing.T) {
+	origPath := os.Getenv("PATH")
+	t.Cleanup(func() { _ = os.Setenv("PATH", origPath) })
+	tempBin := t.TempDir()
+	logFile := filepath.Join(t.TempDir(), "systemctl.log")
+	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
+echo "$*" >> "$SYSBOOTSTRAP_TEST_LOG"
+exit 0
+`)
+	t.Setenv("SYSBOOTSTRAP_TEST_LOG", logFile)
+	t.Setenv("PATH", tempBin+":"+origPath)
+
+	if err := reloadSSH(sshReloadTarget{unit: "ssh.socket", socketActivated: true}); err != nil {
+		t.Fatalf("reloadSSH failed: %v", err)
+	}
+	content, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read systemctl log: %v", err)
+	}
+	if got := string(content); !strings.Contains(got, "daemon-reload") || !strings.Contains(got, "restart ssh.socket") {
+		t.Fatalf("socket activation reload sequence was incomplete:\n%s", got)
+	}
+}
+
+func TestEnsureSSHDRunDirCreatesMissingRuntimeDirectory(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/run/sshd is a Linux runtime convention")
+	}
+	orig := sshdRuntimeDir
+	sshdRuntimeDir = filepath.Join(t.TempDir(), "sshd")
+	t.Cleanup(func() { sshdRuntimeDir = orig })
+
+	if err := ensureSSHDRunDir(); err != nil {
+		t.Fatalf("ensureSSHDRunDir failed: %v", err)
+	}
+	info, err := os.Stat(sshdRuntimeDir)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("runtime directory was not created: info=%v err=%v", info, err)
 	}
 }

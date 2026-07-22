@@ -24,7 +24,8 @@ type UninstallItem struct {
 	PkgName     string   // npm package name, e.g. "@anthropic-ai/claude-code"
 }
 
-// UserInfo holds the resolved current effective user and home directory.
+// UserInfo holds the effective user plus the user-scoped home directory that
+// install and uninstall operations should target.
 type UserInfo struct {
 	Username string
 	UID      string
@@ -33,21 +34,31 @@ type UserInfo struct {
 	SudoUser string // SUDO_USER env var, if set
 }
 
-// ResolveUserInfo determines the current effective user and home directory.
-// If running as root or via sudo, the target home is still the effective user's
-// home (typically /root), not SUDO_USER's home. This is intentional per spec.
+// ResolveUserInfo determines the current effective user and target home
+// directory. A sudo-launched uninstall operates on the invoking user's home,
+// matching the install path used for user-level tools.
 func ResolveUserInfo() (*UserInfo, error) {
 	u, err := user.Current()
 	if err != nil {
 		return nil, fmt.Errorf("cannot determine current user: %w", err)
 	}
 
+	targetUser := u
+	sudoUser := os.Getenv("SUDO_USER")
+	if u.Uid == "0" && sudoUser != "" && sudoUser != "root" {
+		invokingUser, lookupErr := user.Lookup(sudoUser)
+		if lookupErr != nil {
+			return nil, fmt.Errorf("cannot determine sudo invoking user %q: %w", sudoUser, lookupErr)
+		}
+		targetUser = invokingUser
+	}
+
 	info := &UserInfo{
-		Username: u.Username,
-		UID:      u.Uid,
-		HomeDir:  u.HomeDir,
+		Username: targetUser.Username,
+		UID:      targetUser.Uid,
+		HomeDir:  targetUser.HomeDir,
 		IsRoot:   u.Uid == "0",
-		SudoUser: os.Getenv("SUDO_USER"),
+		SudoUser: sudoUser,
 	}
 
 	// Ensure home directory exists and is absolute
@@ -103,10 +114,7 @@ func ScanUninstallItems(homeDir string) []UninstallItem {
 	var items []UninstallItem
 
 	// 1. nvm / Node.js
-	nvmDir := os.Getenv("NVM_DIR")
-	if nvmDir == "" {
-		nvmDir = filepath.Join(homeDir, ".nvm")
-	}
+	nvmDir := userScopedEnvDir("NVM_DIR", homeDir, filepath.Join(homeDir, ".nvm"))
 	if dirExists(nvmDir) {
 		items = append(items, UninstallItem{
 			ID:          "nvm",
@@ -117,10 +125,7 @@ func ScanUninstallItems(homeDir string) []UninstallItem {
 	}
 
 	// 2. bun
-	bunDir := os.Getenv("BUN_INSTALL")
-	if bunDir == "" {
-		bunDir = filepath.Join(homeDir, ".bun")
-	}
+	bunDir := userScopedEnvDir("BUN_INSTALL", homeDir, filepath.Join(homeDir, ".bun"))
 	if dirExists(bunDir) {
 		items = append(items, UninstallItem{
 			ID:          "bun",
@@ -142,8 +147,8 @@ func ScanUninstallItems(homeDir string) []UninstallItem {
 	}
 
 	// 4-5. AI CLI: only include if actually installed (command exists in nvm shell)
-	pm := detectAIPkgManager()
-	if system.NvmCommandExists("claude") {
+	pm := detectAIPkgManager(homeDir)
+	if system.NvmCommandExistsForHome(homeDir, "claude") {
 		items = append(items, UninstallItem{
 			ID:          "ai-claude",
 			Name:        "Claude Code",
@@ -152,7 +157,7 @@ func ScanUninstallItems(homeDir string) []UninstallItem {
 			PkgName:     "@anthropic-ai/claude-code",
 		})
 	}
-	if system.NvmCommandExists("codex") {
+	if system.NvmCommandExistsForHome(homeDir, "codex") {
 		items = append(items, UninstallItem{
 			ID:          "ai-codex",
 			Name:        "Codex",
@@ -170,10 +175,7 @@ func pnpmUserDirs(homeDir string) []string {
 	var dirs []string
 
 	// Primary: $PNPM_HOME or ~/.local/share/pnpm
-	pnpmHome := os.Getenv("PNPM_HOME")
-	if pnpmHome == "" {
-		pnpmHome = filepath.Join(homeDir, ".local", "share", "pnpm")
-	}
+	pnpmHome := userScopedEnvDir("PNPM_HOME", homeDir, filepath.Join(homeDir, ".local", "share", "pnpm"))
 	if dirExists(pnpmHome) {
 		dirs = append(dirs, pnpmHome)
 	}
@@ -187,13 +189,33 @@ func pnpmUserDirs(homeDir string) []string {
 	return dirs
 }
 
+// userScopedEnvDir only honors an environment override when it stays inside
+// the resolved target home. sudo can preserve root's NVM_DIR/BUN_INSTALL,
+// which must never redirect a user-targeted uninstall back to /root.
+func userScopedEnvDir(envName, homeDir, fallback string) string {
+	candidate := strings.TrimSpace(os.Getenv(envName))
+	if candidate == "" {
+		return fallback
+	}
+	absCandidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return fallback
+	}
+	cleanHome := filepath.Clean(homeDir)
+	cleanCandidate := filepath.Clean(absCandidate)
+	if cleanCandidate != cleanHome && strings.HasPrefix(cleanCandidate+string(filepath.Separator), cleanHome+string(filepath.Separator)) {
+		return absCandidate
+	}
+	return fallback
+}
+
 // detectAIPkgManager returns the best available package manager for AI CLI removal.
 // Returns "pnpm" if available in nvm shell, "npm" if available, or "" if neither.
-func detectAIPkgManager() string {
-	if system.NvmCommandExists("pnpm") {
+func detectAIPkgManager(homeDir string) string {
+	if system.NvmCommandExistsForHome(homeDir, "pnpm") {
 		return "pnpm"
 	}
-	if system.NvmCommandExists("npm") {
+	if system.NvmCommandExistsForHome(homeDir, "npm") {
 		return "npm"
 	}
 	return ""
@@ -267,6 +289,7 @@ func buildPkgRemoveCmd(manager, pkg string) string {
 // mid-line occurrences (e.g. inside comments or case statements).
 var rcCleanupPatterns = map[string][]*regexp.Regexp{
 	"nvm": {
+		regexp.MustCompile(`(?i)^\s*#\s*SYS_BOOTSTRAP_NODE_ENV\s*$`),
 		regexp.MustCompile(`(?i)^\s*(export\s+)?NVM_DIR=`),
 		regexp.MustCompile(`(?i)\[ -s "\$NVM_DIR/nvm\.sh" \]`),
 		regexp.MustCompile(`(?i)source "\$NVM_DIR/nvm\.sh"`),
@@ -372,6 +395,9 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	if err := copyFile(rcFile, backupPath); err != nil {
 		return removed, fmt.Errorf("cannot backup %s: %w", rcFile, err)
 	}
+	if err := system.ChownToInvokingUser(backupPath); err != nil {
+		return removed, fmt.Errorf("cannot set backup ownership for %s: %w", backupPath, err)
+	}
 	if log != nil {
 		log.Infof(i18n.T("uninstall_rc_backup"), backupPath)
 	}
@@ -404,7 +430,7 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 			continue
 		}
 		log.Infof(i18n.T("uninstall_running_cmd"), cmd)
-		res, err := system.RunInNvmShell(cmd)
+		res, err := system.RunInNvmShellForHome(homeDir, cmd)
 		if err != nil || res.ExitCode != 0 {
 			stderr := ""
 			if res != nil {

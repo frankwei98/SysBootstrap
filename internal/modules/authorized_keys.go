@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
+	"regexp"
 	"strings"
+	"time"
 )
+
+var githubUsernameRegex = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
 
 const writeAuthKeysAsUserScript = `set -e
 dir=$1; file=$2
@@ -47,17 +51,6 @@ func resolveHome(username string) (string, error) {
 		return "", fmt.Errorf("cannot resolve user %s: %w", username, err)
 	}
 	return u.HomeDir, nil
-}
-
-// resolveUID returns the numeric UID and GID for username.
-func resolveUID(username string) (int, int, error) {
-	u, err := lookupUser(username)
-	if err != nil {
-		return 0, 0, fmt.Errorf("cannot resolve user %s: %w", username, err)
-	}
-	uid, _ := strconv.Atoi(u.Uid)
-	gid, _ := strconv.Atoi(u.Gid)
-	return uid, gid, nil
 }
 
 // rejectAuthorizedKeysPath verifies that each path component beneath home
@@ -126,24 +119,46 @@ func containsKey(keys []string, k string) bool {
 	return false
 }
 
-// validateKeyLines validates every non-blank line in content and returns
-// valid lines. Returns an error if any line fails validation or no valid lines.
-func validateKeyLines(content string) ([]string, error) {
+// validatedKeyLinesAndFingerprints validates every non-blank line in content
+// and computes its canonical SHA256 fingerprint. It returns an error if any
+// line fails validation or no valid lines are present.
+func validatedKeyLinesAndFingerprints(content string) ([]string, []string, error) {
 	var valid []string
+	var fingerprints []string
 	for _, line := range strings.Split(strings.TrimSpace(content), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		if !ValidatePublicKey(line) {
-			return nil, fmt.Errorf("invalid SSH public key: %q", line)
+			return nil, nil, fmt.Errorf("invalid SSH public key: %q", line)
+		}
+		fingerprint, err := canonicalKeyFingerprint(context.Background(), line)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid SSH public key %q: %w", line, err)
 		}
 		valid = append(valid, line)
+		fingerprints = append(fingerprints, fingerprint)
 	}
 	if len(valid) == 0 {
-		return nil, fmt.Errorf("no valid SSH public keys provided")
+		return nil, nil, fmt.Errorf("no valid SSH public keys provided")
 	}
-	return valid, nil
+	return valid, fingerprints, nil
+}
+
+// validateKeyLines validates every non-blank line in content and returns
+// valid lines. Returns an error if any line fails validation or no valid lines.
+func validateKeyLines(content string) ([]string, error) {
+	valid, _, err := validatedKeyLinesAndFingerprints(content)
+	return valid, err
+}
+
+// PublicKeyFingerprints returns the canonical SHA256 fingerprints for every
+// validated key in content. It is used to let operators review fetched keys
+// before authorizing their installation.
+func PublicKeyFingerprints(content string) ([]string, error) {
+	_, fingerprints, err := validatedKeyLinesAndFingerprints(content)
+	return fingerprints, err
 }
 
 // buildAuthorizedKeysContent merges existing keys with new valid keys,
@@ -173,13 +188,24 @@ func buildAuthorizedKeysContent(existing, newValid []string) string {
 	return b.String()
 }
 
-// fetchGitHubKeys fetches public keys from github.com/<user>.keys with
+// ValidateGitHubUsername checks GitHub's documented username shape before it
+// is interpolated into an HTTP path or presented to the operator.
+func ValidateGitHubUsername(username string) bool {
+	username = strings.TrimSpace(username)
+	return githubUsernameRegex.MatchString(username) && !strings.Contains(username, "--")
+}
+
+// FetchGitHubKeys fetches public keys from github.com/<user>.keys with
 // bounded response size, timeout, and per-line validation.
-func fetchGitHubKeys(username string) (string, error) {
-	url := fmt.Sprintf("https://github.com/%s.keys", username)
+func FetchGitHubKeys(username string) (string, error) {
+	username = strings.TrimSpace(username)
+	if !ValidateGitHubUsername(username) {
+		return "", fmt.Errorf("invalid GitHub username %q", username)
+	}
+	keysURL := fmt.Sprintf("https://github.com/%s.keys", url.PathEscape(username))
 
 	client := &http.Client{
-		Timeout: 15e9, // 15 seconds
+		Timeout: 15 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) > 3 {
 				return fmt.Errorf("too many redirects")
@@ -188,7 +214,7 @@ func fetchGitHubKeys(username string) (string, error) {
 		},
 	}
 
-	resp, err := client.Get(url)
+	resp, err := client.Get(keysURL)
 	if err != nil {
 		return "", fmt.Errorf("HTTP request failed: %w", err)
 	}
@@ -208,16 +234,8 @@ func fetchGitHubKeys(username string) (string, error) {
 		return "", fmt.Errorf("no public keys found for GitHub user %s", username)
 	}
 
-	// Validate every non-blank line
-	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if !ValidatePublicKey(line) {
-			return "", fmt.Errorf("invalid key line from GitHub for user %s: %q", username, line)
-		}
+	if _, err := validateKeyLines(string(body)); err != nil {
+		return "", fmt.Errorf("invalid key line from GitHub for user %s: %w", username, err)
 	}
 
 	return string(body), nil

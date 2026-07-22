@@ -181,6 +181,15 @@ func RunCmd(ctx context.Context, registry *modules.Registry) error {
 		}
 	}
 
+	if cfg.AISelectionSet && !cfg.InstallClaudeCode && !cfg.InstallCodex {
+		// The AI selector is explicit: an empty choice means no AI work. Remove
+		// its auto-injected Node dependency unless Node was selected on its own.
+		ordered = removeModuleID(ordered, "ai")
+		if !containsModuleID(selected, "node") {
+			ordered = removeModuleID(ordered, "node")
+		}
+	}
+
 	// Generate and show plan
 	plan, err := app.GeneratePlan(ctx, sys, cfg, registry, ordered)
 	if err != nil {
@@ -332,6 +341,22 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 		return fmt.Errorf(i18n.T("module_requires_root"), m.Name())
 	}
 
+	// Ask for the AI selection before resolving its Node dependency. An explicit
+	// empty selection must be a no-op rather than installing Node unnecessarily.
+	var cfg *types.Config
+	if moduleID == "ai" && isInteractiveTerminal() {
+		cfg = moduleDefaultConfig(moduleID, sys)
+		st := settings.Load()
+		resolveAptMirror(cfg, st, false)
+		if err := ui.AIConfigForm(cfg); err != nil {
+			return err
+		}
+		if !cfg.InstallClaudeCode && !cfg.InstallCodex {
+			log.Info("No AI CLI tools selected, nothing to do")
+			return nil
+		}
+	}
+
 	// Check dependencies first so root user install covers both the target
 	// module and any dependencies that will be auto-run.
 	deps := m.Dependencies()
@@ -375,15 +400,17 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 			return fmt.Errorf(i18n.T("module_cannot_run_without"), m.Name(), strings.Join(missing, ", "))
 		}
 		runner := app.NewRunner(registry, sys, log)
-		if err := runner.Run(ctx, &types.Config{SSHPort: 22122}, missing); err != nil {
+		if err := runner.Run(ctx, &types.Config{SSHPort: modules.DefaultSSHPort}, missing); err != nil {
 			return fmt.Errorf("dependency %s failed: %w", strings.Join(missing, ", "), err)
 		}
 	}
 
 	// Collect config
-	cfg := moduleDefaultConfig(moduleID, sys)
-	st := settings.Load()
-	resolveAptMirror(cfg, st, false)
+	if cfg == nil {
+		cfg = moduleDefaultConfig(moduleID, sys)
+		st := settings.Load()
+		resolveAptMirror(cfg, st, false)
+	}
 	switch moduleID {
 	case "ssh":
 		if !isInteractiveTerminal() {
@@ -394,12 +421,15 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 		}
 	case "ai":
 		if isInteractiveTerminal() {
-			if err := ui.AIConfigForm(cfg); err != nil {
-				return err
+			if !cfg.AISelectionSet {
+				if err := ui.AIConfigForm(cfg); err != nil {
+					return err
+				}
 			}
 		} else {
 			cfg.InstallClaudeCode = true
 			cfg.InstallCodex = true
+			cfg.AISelectionSet = true
 		}
 	case "user":
 		if !isInteractiveTerminal() {
@@ -489,6 +519,25 @@ func shellReloadCommand() string {
 		shellPath = "/bin/bash"
 	}
 	return fmt.Sprintf("exec %s -l", shellPath)
+}
+
+func containsModuleID(ids []string, target string) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
+}
+
+func removeModuleID(ids []string, target string) []string {
+	result := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != target {
+			result = append(result, id)
+		}
+	}
+	return result
 }
 
 func moduleDefaultConfig(moduleID string, sys *system.Context) *types.Config {

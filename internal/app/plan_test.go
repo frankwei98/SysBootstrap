@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -219,6 +220,9 @@ func TestPlanMarksUserModuleNotConfiguredWithoutUsername(t *testing.T) {
 }
 
 func TestPlanMarksConfiguredUserModuleSatisfiedWhenNoStepsRemain(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("real user-state inspection is Linux-specific")
+	}
 	i18n.SetLang(i18n.LangEN)
 
 	r := modules.NewRegistry()

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 var managedSSHDropIn = "/etc/ssh/sshd_config.d/00-sys-bootstrap.conf"
 var effectiveSSHPortsFunc = effectiveSSHPorts
+var sshdRuntimeDir = "/run/sshd"
 
 // sshTransactionJournal records state before the SSH module mutates anything,
 // so rollback can reverse only the tool's own changes.
@@ -27,15 +29,22 @@ type sshTransactionJournal struct {
 	dropInBytes []byte
 	dropInMode  os.FileMode
 
-	// Service state
-	serviceName string
-	oldPorts    []int
+	// SSH can be activated either by a traditional service unit or by a
+	// systemd socket. Keep the pre-mutation activation target so rollback
+	// applies the restored configuration through the same path.
+	reloadTarget sshReloadTarget
+	oldPorts     []int
 
 	// Firewall rules added by this run
 	addedUFWRules []string
 
 	// Whether prepare completed
 	prepared bool
+}
+
+type sshReloadTarget struct {
+	unit            string
+	socketActivated bool
 }
 
 // detectSSHDServiceName identifies the SSH service name (ssh or sshd)
@@ -47,6 +56,27 @@ func detectSSHDServiceName() string {
 		}
 	}
 	return "sshd"
+}
+
+// systemdUnitActive reports whether a unit is currently active. Socket
+// activation is usable while the socket is active even though ssh.service is
+// intentionally disabled on Ubuntu 22.10+.
+func systemdUnitActive(unit string) bool {
+	res, err := system.Run("systemctl", "is-active", unit)
+	return err == nil && res != nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) == "active"
+}
+
+// detectSSHReloadTarget selects the active socket unit before falling back to
+// a traditional SSH service. Ubuntu's socket generator reads sshd_config
+// snippets on modern releases, but only after daemon-reload and a socket
+// restart.
+func detectSSHReloadTarget() sshReloadTarget {
+	for _, unit := range []string{"ssh.socket", "sshd.socket"} {
+		if systemdUnitActive(unit) {
+			return sshReloadTarget{unit: unit, socketActivated: true}
+		}
+	}
+	return sshReloadTarget{unit: detectSSHDServiceName()}
 }
 
 // captureJournal records pre-mutation state for rollback.
@@ -66,7 +96,7 @@ func captureJournal() (*sshTransactionJournal, error) {
 		return nil, fmt.Errorf("cannot read existing managed SSH drop-in: %w", err)
 	}
 
-	j.serviceName = detectSSHDServiceName()
+	j.reloadTarget = detectSSHReloadTarget()
 	ports, err := effectiveSSHPortsFunc(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("cannot capture effective SSH ports: %w", err)
@@ -154,6 +184,9 @@ func writeManagedDropInPorts(ports []int, permitRootLogin, passwordAuth string) 
 }
 
 func effectiveSSHPorts(ctx context.Context) ([]int, error) {
+	if err := ensureSSHDRunDir(); err != nil {
+		return nil, err
+	}
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	res, err := system.RunWithContext(opCtx, "sshd", "-T")
@@ -210,7 +243,32 @@ func verifyEffectivePorts(ctx context.Context, wanted []int) error {
 	return nil
 }
 
+// verifyOnlyEffectivePorts ensures that the final daemon configuration has no
+// listener beyond the port(s) explicitly requested by this transaction.
+func verifyOnlyEffectivePorts(ctx context.Context, wanted []int) error {
+	ports, err := effectiveSSHPortsFunc(ctx)
+	if err != nil {
+		return err
+	}
+	wantedSet := make(map[int]bool, len(wanted))
+	for _, port := range wanted {
+		wantedSet[port] = true
+	}
+	if len(ports) != len(wantedSet) {
+		return fmt.Errorf("effective sshd ports %v are not exactly the requested ports %v", ports, wanted)
+	}
+	for _, port := range ports {
+		if !wantedSet[port] {
+			return fmt.Errorf("effective sshd configuration still exposes unmanaged port %d (effective ports: %v)", port, ports)
+		}
+	}
+	return nil
+}
+
 func effectiveSSHSettings(ctx context.Context, username string) (map[string]string, error) {
+	if err := ensureSSHDRunDir(); err != nil {
+		return nil, err
+	}
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	args := []string{"-T"}
@@ -296,7 +354,13 @@ func parseSSHListeningPorts(output string) map[int]bool {
 	listening := make(map[int]bool)
 	for _, line := range strings.Split(output, "\n") {
 		lowerLine := strings.ToLower(line)
-		if !strings.Contains(lowerLine, "sshd") && !strings.Contains(lowerLine, "systemd") {
+		// ssh.socket is owned by PID 1 and therefore appears as "systemd" in
+		// ss output. Match that exact process name, rather than any process
+		// whose name happens to contain "systemd" (for example
+		// systemd-resolved).
+		isSSHD := strings.Contains(lowerLine, `"sshd",`)
+		isSystemdSocket := strings.Contains(lowerLine, `"systemd",pid=1,`)
+		if !isSSHD && !isSystemdSocket {
 			continue
 		}
 		fields := strings.Fields(line)
@@ -330,10 +394,11 @@ func readManagedPort() int {
 		return 0
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "Port ") {
-			var p int
-			fmt.Sscanf(line, "Port %d", &p)
-			return p
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.EqualFold(fields[0], "port") {
+			if p, err := strconv.Atoi(fields[1]); err == nil && p >= 1 && p <= 65535 {
+				return p
+			}
 		}
 	}
 	return 0
@@ -341,6 +406,9 @@ func readManagedPort() int {
 
 // runSSHDValidate runs sshd -t or sshd -T to check configuration.
 func runSSHDValidate(tFlag string) error {
+	if err := ensureSSHDRunDir(); err != nil {
+		return err
+	}
 	if res, err := system.Run("sshd", tFlag); err != nil || res == nil || res.ExitCode != 0 {
 		detail := ""
 		if res != nil {
@@ -351,10 +419,42 @@ func runSSHDValidate(tFlag string) error {
 	return nil
 }
 
-// runSSHDReload reloads the SSH service.
-func runSSHDReload(svc string) error {
-	if res, err := system.Run("systemctl", "reload-or-restart", svc); err != nil || res == nil || res.ExitCode != 0 {
-		return fmt.Errorf("failed to reload %s: %v", svc, err)
+// ensureSSHDRunDir covers socket-activated Ubuntu hosts where ssh.service has
+// not run yet, so systemd has not created RuntimeDirectory=/run/sshd. sshd -t
+// and sshd -T otherwise fail before the first incoming connection.
+func ensureSSHDRunDir() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	if info, err := os.Stat(sshdRuntimeDir); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("sshd runtime path %s is not a directory", sshdRuntimeDir)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("cannot inspect sshd runtime directory %s: %w", sshdRuntimeDir, err)
+	}
+	if err := os.MkdirAll(sshdRuntimeDir, 0o755); err != nil {
+		return fmt.Errorf("cannot create sshd runtime directory %s: %w", sshdRuntimeDir, err)
+	}
+	return nil
+}
+
+// reloadSSH applies an SSH configuration through the active activation path.
+// Socket-activated Ubuntu systems need daemon-reload so the sshd socket
+// generator sees sshd_config.d changes, followed by a socket restart.
+func reloadSSH(target sshReloadTarget) error {
+	if target.socketActivated {
+		if res, err := system.Run("systemctl", "daemon-reload"); err != nil || res == nil || res.ExitCode != 0 {
+			return fmt.Errorf("failed to reload systemd units for %s: %v", target.unit, err)
+		}
+		if res, err := system.Run("systemctl", "restart", target.unit); err != nil || res == nil || res.ExitCode != 0 {
+			return fmt.Errorf("failed to restart %s: %v", target.unit, err)
+		}
+		return nil
+	}
+	if res, err := system.Run("systemctl", "reload-or-restart", target.unit); err != nil || res == nil || res.ExitCode != 0 {
+		return fmt.Errorf("failed to reload %s: %v", target.unit, err)
 	}
 	return nil
 }
@@ -415,14 +515,14 @@ func prepareSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Config
 	}
 
 	// Reload sshd
-	log.Infof("Reloading SSH service: %s...", j.serviceName)
-	if err := runSSHDReload(j.serviceName); err != nil {
+	log.Infof("Reloading SSH activation unit: %s...", j.reloadTarget.unit)
+	if err := reloadSSH(j.reloadTarget); err != nil {
 		return fmt.Errorf("SSH service reload failed: %w", err)
 	}
 	if err := verifyListeningPorts(ctx, preparePorts); err != nil {
 		return fmt.Errorf("SSH listener validation failed: %w", err)
 	}
-	log.Successf("SSH service %s reloaded", j.serviceName)
+	log.Successf("SSH activation unit %s reloaded", j.reloadTarget.unit)
 
 	j.prepared = true
 	return nil
@@ -442,21 +542,18 @@ func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Confi
 		passwordAuth = "no"
 	}
 
-	// Check for unmanaged extra ports before finalizing
-	if cfg.SSHDisableRoot || cfg.SSHDisablePass {
-		// We need to ensure no unmanaged port directives exist that would
-		// keep old ports open. The user's requested port is the only one
-		// we want active.
-		extraPorts, err := findUnmanagedPorts(sshConfigPath, port)
-		if err != nil {
-			return fmt.Errorf("cannot check for unmanaged ports: %w", err)
-		}
-		if len(extraPorts) > 0 {
-			return fmt.Errorf(
-				"cannot finalize: unmanaged extra ports found (%v). Remove them from %s and re-run finalization",
-				extraPorts, sshConfigPath,
-			)
-		}
+	// A port change is a replacement operation, even when the user leaves the
+	// authentication policy unchanged. Refuse to silently leave an explicitly
+	// configured legacy port open.
+	extraPorts, err := findUnmanagedPorts(sshConfigPath, port)
+	if err != nil {
+		return fmt.Errorf("cannot check for unmanaged ports: %w", err)
+	}
+	if len(extraPorts) > 0 {
+		return fmt.Errorf(
+			"cannot finalize: unmanaged extra ports found (%v). Remove them from %s and re-run finalization",
+			extraPorts, sshConfigPath,
+		)
 	}
 
 	// Rewrite drop-in with restrictive auth
@@ -473,20 +570,23 @@ func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Confi
 	if err := verifyEffectivePorts(ctx, []int{port}); err != nil {
 		return fmt.Errorf("finalized sshd effective-port validation failed: %w", err)
 	}
+	if err := verifyOnlyEffectivePorts(ctx, []int{port}); err != nil {
+		return fmt.Errorf("finalized sshd exclusive-port validation failed: %w", err)
+	}
 	if err := verifyFinalAuthPolicy(ctx, sys, cfg); err != nil {
 		return fmt.Errorf("finalized sshd authentication-policy validation failed: %w", err)
 	}
 	log.Success("Finalized SSH config validation passed")
 
 	// Reload
-	log.Infof("Reloading SSH service: %s...", j.serviceName)
-	if err := runSSHDReload(j.serviceName); err != nil {
+	log.Infof("Reloading SSH activation unit: %s...", j.reloadTarget.unit)
+	if err := reloadSSH(j.reloadTarget); err != nil {
 		return fmt.Errorf("SSH service reload failed during finalization: %w", err)
 	}
 	if err := verifyListeningPorts(ctx, []int{port}); err != nil {
 		return fmt.Errorf("final SSH listener validation failed: %w", err)
 	}
-	log.Successf("SSH service %s reloaded", j.serviceName)
+	log.Successf("SSH activation unit %s reloaded", j.reloadTarget.unit)
 
 	return nil
 }
@@ -516,8 +616,7 @@ func findUnmanagedPorts(configPath string, managedPort int) ([]int, error) {
 			if len(fields) != 2 || strings.HasPrefix(trimmed, "#") || !strings.EqualFold(fields[0], "port") {
 				continue
 			}
-			var p int
-			if n, _ := fmt.Sscanf(fields[1], "%d", &p); n == 1 && p != managedPort && !seen[p] {
+			if p, convErr := strconv.Atoi(fields[1]); convErr == nil && p >= 1 && p <= 65535 && p != managedPort && !seen[p] {
 				seen[p] = true
 				extra = append(extra, p)
 			}
@@ -558,7 +657,7 @@ func rollbackPrepare(ctx context.Context, j *sshTransactionJournal) error {
 	// Reload sshd to restore effective config
 	if err := runSSHDValidate("-t"); err != nil {
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("validate restored sshd config: %w", err))
-	} else if err := runSSHDReload(j.serviceName); err != nil {
+	} else if err := reloadSSH(j.reloadTarget); err != nil {
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("reload restored sshd config: %w", err))
 	} else if len(j.oldPorts) > 0 {
 		if err := verifyEffectivePorts(cleanupCtx, j.oldPorts); err != nil {

@@ -7,6 +7,8 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+
+	"github.com/frankwei98/sys-bootstrap/internal/system"
 )
 
 const (
@@ -24,7 +26,12 @@ var SystemConfigPath = DefaultSystemConfigPath
 
 // defaultUserConfigPath computes the user config path from environment.
 func defaultUserConfigPath() string {
-	xdg := os.Getenv("XDG_CONFIG_HOME")
+	// sudo commonly preserves the root user's XDG_CONFIG_HOME. When a
+	// non-root invoker is known, derive the path from that user's home instead.
+	xdg := ""
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser == "" || sudoUser == "root" {
+		xdg = os.Getenv("XDG_CONFIG_HOME")
+	}
 	if xdg == "" {
 		home := userHomeDir()
 		if home == "" {
@@ -71,13 +78,13 @@ func SaveUser(s Settings) error {
 	if path == "" {
 		return fmt.Errorf("cannot determine user config path")
 	}
-	return writeConfig(path, s)
+	return writeConfig(path, s, true)
 }
 
 // SaveSystem writes settings to the system config file.
 // Requires root privileges (used by installer).
 func SaveSystem(s Settings) error {
-	return writeConfig(SystemConfigPath, s)
+	return writeConfig(SystemConfigPath, s, false)
 }
 
 // mergeFile reads a config file and overlays non-empty values onto s.
@@ -143,10 +150,17 @@ func isValidAptMirror(v string) bool {
 
 // writeConfig atomically writes a settings file.
 // Creates parent directories with 0755 and the file with 0644.
-func writeConfig(path string, s Settings) error {
+func writeConfig(path string, s Settings, userScoped bool) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("cannot create config dir %s: %w", dir, err)
+	}
+	if userScoped {
+		// The parent (usually ~/.config) may have been created by MkdirAll as
+		// root too. Both directories must be returned to the invoking user.
+		if err := system.ChownToInvokingUser(filepath.Dir(dir), dir); err != nil {
+			return fmt.Errorf("cannot set config directory ownership: %w", err)
+		}
 	}
 
 	var b strings.Builder
@@ -165,6 +179,11 @@ func writeConfig(path string, s Settings) error {
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("cannot rename config %s -> %s: %w", tmp, path, err)
+	}
+	if userScoped {
+		if err := system.ChownToInvokingUser(path); err != nil {
+			return fmt.Errorf("cannot set config file ownership: %w", err)
+		}
 	}
 	return nil
 }

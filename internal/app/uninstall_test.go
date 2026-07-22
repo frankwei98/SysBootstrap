@@ -239,6 +239,21 @@ func TestScanUninstallItems_DetectsNVM(t *testing.T) {
 	}
 }
 
+func TestScanUninstallItemsIgnoresEnvironmentOutsideTargetHome(t *testing.T) {
+	home := t.TempDir()
+	externalNVM := filepath.Join(t.TempDir(), ".nvm")
+	if err := os.MkdirAll(externalNVM, 0o755); err != nil {
+		t.Fatalf("create external nvm directory: %v", err)
+	}
+	t.Setenv("NVM_DIR", externalNVM)
+
+	for _, item := range ScanUninstallItems(home) {
+		if item.ID == "nvm" {
+			t.Fatalf("outside-home NVM_DIR must not be selected for uninstall: %#v", item)
+		}
+	}
+}
+
 func TestScanUninstallItems_DetectsBun(t *testing.T) {
 	home := t.TempDir()
 	bunDir := filepath.Join(home, ".bun")
@@ -508,6 +523,35 @@ export PATH="$PATH:/usr/local/bin"
 	}
 	if !strings.Contains(resultStr, "# other stuff") {
 		t.Error("other comments should be preserved")
+	}
+}
+
+func TestCleanShellRC_RemovesNodeEnvironmentMarker(t *testing.T) {
+	home := t.TempDir()
+	rcFile := filepath.Join(home, ".bashrc")
+	content := `# SYS_BOOTSTRAP_NODE_ENV
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+export PATH="$BUN_INSTALL/bin:$PATH"
+`
+	if err := os.WriteFile(rcFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("write rc file: %v", err)
+	}
+
+	removed, err := CleanShellRC([]string{rcFile}, []string{"nvm", "bun"}, false, createTestLogger(t))
+	if err != nil {
+		t.Fatalf("CleanShellRC failed: %v", err)
+	}
+	if removed != 5 {
+		t.Fatalf("removed = %d, want entire five-line managed block", removed)
+	}
+	cleaned, err := os.ReadFile(rcFile)
+	if err != nil {
+		t.Fatalf("read cleaned rc file: %v", err)
+	}
+	if strings.Contains(string(cleaned), "SYS_BOOTSTRAP_NODE_ENV") || strings.Contains(string(cleaned), "NVM_DIR") || strings.Contains(string(cleaned), "BUN_INSTALL") {
+		t.Fatalf("managed node environment remnants remain:\n%s", cleaned)
 	}
 }
 

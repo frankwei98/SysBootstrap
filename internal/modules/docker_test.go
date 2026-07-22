@@ -178,7 +178,12 @@ echo "apt-get $*" >> "$SYSBOOTSTRAP_TEST_LOG"
 exit 0
 `)
 	writeFakeCommand(t, tempBin, "env", `#!/bin/sh
-shift
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    *=*) shift ;;
+    *) break ;;
+  esac
+done
 exec "$@"
 `)
 	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
@@ -222,8 +227,10 @@ exit 0
 	text := string(content)
 	for _, want := range []string{
 		"ensureDockerRepo",
-		"apt-get update -y",
-		"apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
+		"DPkg::Lock::Timeout=120",
+		"Acquire::Retries=3",
+		"update -y",
+		"install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
 		"systemctl enable --now docker",
 		"usermod -aG docker deploy",
 	} {
@@ -239,18 +246,19 @@ func TestEnsureDockerRepoWritesValidSourceEntry(t *testing.T) {
 	repoPath := filepath.Join(tmpDir, "docker.list")
 	origPaths := dockerRepoPathsFn
 	origRunWithContext := dockerRunWithContextFn
+	origRunApt := dockerRunAptFn
 	t.Cleanup(func() {
 		dockerRepoPathsFn = origPaths
 		dockerRunWithContextFn = origRunWithContext
+		dockerRunAptFn = origRunApt
 	})
 
 	dockerRepoPathsFn = func(_ *system.Context) (string, string) { return keyPath, repoPath }
+	dockerRunAptFn = func(_ context.Context, _ ...string) (*system.Result, error) {
+		return &system.Result{ExitCode: 0}, nil
+	}
 	dockerRunWithContextFn = func(_ context.Context, name string, args ...string) (*system.Result, error) {
 		switch {
-		case name == "apt-get":
-			return &system.Result{ExitCode: 0}, nil
-		case name == "env":
-			return &system.Result{ExitCode: 0}, nil
 		case name == "bash" && len(args) >= 2 && args[0] == "-lc":
 			script := args[1]
 			if err := os.MkdirAll(filepath.Dir(keyPath), 0o755); err != nil {
@@ -265,6 +273,9 @@ func TestEnsureDockerRepoWritesValidSourceEntry(t *testing.T) {
 			}
 			if strings.Contains(script, "signed-by='") || strings.Contains(script, "signed-by=\"") {
 				t.Fatalf("script should not quote signed-by value:\n%s", script)
+			}
+			if !strings.Contains(script, "mktemp") || strings.Contains(script, "/tmp/sys-bootstrap-docker.gpg") {
+				t.Fatalf("script must use a private temporary GPG key path:\n%s", script)
 			}
 			repoLine := "deb [arch=arm64 signed-by=" + keyPath + "] https://download.docker.com/linux/debian trixie stable\n"
 			if err := os.WriteFile(repoPath, []byte(repoLine), 0o644); err != nil {
@@ -290,6 +301,15 @@ func TestEnsureDockerRepoWritesValidSourceEntry(t *testing.T) {
 	want := "deb [arch=arm64 signed-by=" + keyPath + "] https://download.docker.com/linux/debian trixie stable\n"
 	if got != want {
 		t.Fatalf("repo content = %q, want %q", got, want)
+	}
+}
+
+func TestDockerRepoInfoRejectsUnknownOrIncompleteDistribution(t *testing.T) {
+	if _, _, err := dockerRepoInfo(&system.Context{OSID: "linuxmint", OSCodename: "wilma"}); err == nil {
+		t.Fatal("expected unknown Docker repository distribution to be rejected")
+	}
+	if _, _, err := dockerRepoInfo(&system.Context{OSID: "ubuntu"}); err == nil {
+		t.Fatal("expected missing Docker repository codename to be rejected")
 	}
 }
 

@@ -20,7 +20,7 @@ func TestValidateKeyLines_Valid(t *testing.T) {
 
 func TestValidateKeyLines_MultiKey(t *testing.T) {
 	input := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq key1\n" +
-		"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCx8+key2\n"
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq key2\n"
 	got, err := validateKeyLines(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -54,6 +54,40 @@ func TestValidateKeyLines_MalformedLine(t *testing.T) {
 	_, err := validateKeyLines(input)
 	if err == nil {
 		t.Fatal("expected error for malformed key line")
+	}
+}
+
+func TestValidateKeyLines_RejectsMalformedPayload(t *testing.T) {
+	_, err := validateKeyLines("ssh-ed25519 not-valid-base64\n")
+	if err == nil {
+		t.Fatal("expected malformed SSH key payload to be rejected")
+	}
+}
+
+func TestValidateGitHubUsername(t *testing.T) {
+	for _, username := range []string{"torvalds", "octo-cat", "A1"} {
+		if !ValidateGitHubUsername(username) {
+			t.Errorf("expected GitHub username %q to be valid", username)
+		}
+	}
+	for _, username := range []string{"-octo", "octo-", "octo--cat", "octo/cat", ""} {
+		if ValidateGitHubUsername(username) {
+			t.Errorf("expected GitHub username %q to be invalid", username)
+		}
+	}
+}
+
+func TestPublicKeyFingerprints(t *testing.T) {
+	input := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq test\n"
+	fingerprints, err := PublicKeyFingerprints(input)
+	if err != nil {
+		t.Fatalf("PublicKeyFingerprints failed: %v", err)
+	}
+	if len(fingerprints) != 1 {
+		t.Fatalf("fingerprint count = %d, want 1", len(fingerprints))
+	}
+	if !strings.HasPrefix(fingerprints[0], "SHA256:") {
+		t.Errorf("fingerprint = %q, want SHA256 fingerprint", fingerprints[0])
 	}
 }
 
