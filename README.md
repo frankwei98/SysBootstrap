@@ -9,6 +9,8 @@ It is designed for real remote vibecoding work, not just package installation. I
 ## Quick Start
 
 ```bash
+curl -fsSL https://19yo.de/systrap | bash
+# or if you don't like shortlink then: 
 curl -fsSL https://raw.githubusercontent.com/frankwei98/SysBootstrap/main/scripts/install.sh | bash
 ```
 
