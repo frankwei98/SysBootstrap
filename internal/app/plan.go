@@ -82,7 +82,7 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 		if m.ID() == "ssh" {
 			moduleCfg = cloneConfig(cfg)
 			if moduleCfg.SSHPort == 0 {
-				moduleCfg.SSHPort = 22122
+				moduleCfg.SSHPort = modules.DefaultSSHPort
 			}
 		}
 		if m.ID() == "user" {
@@ -119,11 +119,11 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			}
 		}
 
-			if m.ID() == "user" && cfg.NewUsername == "" && len(mp.Steps) == 0 {
-				mp.Status = "not_configured"
-				mp.CheckMessage = "No username configured yet"
-				mp.Warning = ""
-			}
+		if m.ID() == "user" && cfg.NewUsername == "" && len(mp.Steps) == 0 {
+			mp.Status = "not_configured"
+			mp.CheckMessage = "No username configured yet"
+			mp.Warning = ""
+		}
 
 		plan.Modules = append(plan.Modules, mp)
 	}
@@ -175,7 +175,7 @@ func cloneConfig(cfg *types.Config) *types.Config {
 
 func isConfigSensitivePlanModule(id string) bool {
 	switch id {
-	case "ssh", "user", "docker", "timezone", "fail2ban":
+	case "ssh", "user", "docker", "timezone", "fail2ban", "ai":
 		return true
 	default:
 		return false

@@ -2,6 +2,7 @@ package system
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -9,7 +10,9 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Context holds runtime information about the current system.
@@ -84,9 +87,10 @@ func NewContext() (*Context, error) {
 	// Network check — DNS resolution
 	ctx.HasNetwork = checkNetwork()
 
-	// SSH service availability (systemd unit, not just command)
+	// SSH availability can be supplied by a traditional service or by a
+	// socket-activated unit on current Ubuntu releases.
 	if ctx.HasSystemd {
-		ctx.HasSSHDService = serviceExists("sshd") || serviceExists("ssh")
+		ctx.HasSSHDService = serviceExists("sshd") || serviceExists("ssh") || socketExists("sshd") || socketExists("ssh")
 	}
 
 	return ctx, nil
@@ -123,9 +127,9 @@ func (ctx *Context) detectOS() error {
 	if ctx.OSVersion != "unknown" {
 		if dot := strings.Index(ctx.OSVersion, "."); dot > 0 {
 			major := ctx.OSVersion[:dot]
-			fmt.Sscanf(major, "%d", &ctx.OSVersionMajor)
+			ctx.OSVersionMajor, _ = strconv.Atoi(major)
 		} else {
-			fmt.Sscanf(ctx.OSVersion, "%d", &ctx.OSVersionMajor)
+			ctx.OSVersionMajor, _ = strconv.Atoi(ctx.OSVersion)
 		}
 	}
 
@@ -203,7 +207,9 @@ func parseUFWActive(out string) bool {
 
 // checkNetwork tests basic DNS resolution as a proxy for network connectivity.
 func checkNetwork() bool {
-	addrs, err := net.LookupHost("deb.debian.org")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupHost(ctx, "deb.debian.org")
 	return err == nil && len(addrs) > 0
 }
 
@@ -214,4 +220,12 @@ func serviceExists(name string) bool {
 		return false
 	}
 	return strings.Contains(string(out), name+".service")
+}
+
+func socketExists(name string) bool {
+	out, err := exec.Command("systemctl", "list-unit-files", name+".socket").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), name+".socket")
 }

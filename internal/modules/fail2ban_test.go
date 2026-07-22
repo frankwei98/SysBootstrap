@@ -69,6 +69,7 @@ func TestEffectiveSSHPortUsesConfigValue(t *testing.T) {
 
 func TestEffectiveSSHPortFallsBackToSSHDConfig(t *testing.T) {
 	origPath := sshdConfigPath
+	origEffectivePorts := effectiveSSHPortsFunc
 	tmpFile := filepath.Join(t.TempDir(), "sshd_config")
 	if err := os.WriteFile(tmpFile, []byte("Port 2222\n"), 0o644); err != nil {
 		t.Fatalf("write sshd_config: %v", err)
@@ -76,7 +77,11 @@ func TestEffectiveSSHPortFallsBackToSSHDConfig(t *testing.T) {
 	sshdConfigPath = tmpFile
 	t.Cleanup(func() {
 		sshdConfigPath = origPath
+		effectiveSSHPortsFunc = origEffectivePorts
 	})
+	effectiveSSHPortsFunc = func(context.Context) ([]int, error) {
+		return nil, os.ErrNotExist
+	}
 
 	port := effectiveSSHPort(&types.Config{})
 	if port != 2222 {
@@ -84,12 +89,62 @@ func TestEffectiveSSHPortFallsBackToSSHDConfig(t *testing.T) {
 	}
 }
 
-func TestWriteFail2banJailLocalIncludesSSHPort(t *testing.T) {
-	origPath := fail2banJailLocalPath
-	tmpFile := t.TempDir() + "/jail.local"
-	fail2banJailLocalPath = tmpFile
+func TestFail2banUsesEffectiveSSHDPortsFromDropIns(t *testing.T) {
+	origEffectivePorts := effectiveSSHPortsFunc
+	effectiveSSHPortsFunc = func(context.Context) ([]int, error) { return []int{22122}, nil }
+	t.Cleanup(func() { effectiveSSHPortsFunc = origEffectivePorts })
+
+	if got := fail2banSSHPortSetting(&types.Config{}); got != "22122" {
+		t.Fatalf("fail2ban port setting = %q, want effective sshd port 22122", got)
+	}
+}
+
+func TestFail2banRejectsUnsafePolicyValues(t *testing.T) {
+	m := NewFail2banModule()
+	_, err := m.Plan(context.Background(), &system.Context{}, &types.Config{Fail2banFindTime: "10m\nport = 22"})
+	if err == nil {
+		t.Fatal("expected newline-containing fail2ban value to be rejected")
+	}
+}
+
+func TestWriteFail2banManagedJailPreservesAdministratorJailLocal(t *testing.T) {
+	dir := t.TempDir()
+	adminJail := filepath.Join(dir, "jail.local")
+	managedJail := filepath.Join(dir, "jail.d", "99-sys-bootstrap.local")
+	adminContent := "[nginx-botsearch]\nenabled = true\n"
+	if err := os.WriteFile(adminJail, []byte(adminContent), 0o644); err != nil {
+		t.Fatalf("write administrator jail: %v", err)
+	}
+
+	origPath := fail2banManagedJailPath
+	fail2banManagedJailPath = managedJail
+	t.Cleanup(func() { fail2banManagedJailPath = origPath })
+
+	if err := writeFail2banManagedJail(&types.Config{SSHPort: 22000}); err != nil {
+		t.Fatalf("writeFail2banManagedJail failed: %v", err)
+	}
+	gotAdmin, err := os.ReadFile(adminJail)
+	if err != nil {
+		t.Fatalf("read administrator jail: %v", err)
+	}
+	if string(gotAdmin) != adminContent {
+		t.Fatalf("administrator jail.local was modified:\n%s", gotAdmin)
+	}
+	managed, err := os.ReadFile(managedJail)
+	if err != nil {
+		t.Fatalf("read managed jail: %v", err)
+	}
+	if !strings.Contains(string(managed), "port = 22000") {
+		t.Fatalf("managed jail missing SSH port:\n%s", managed)
+	}
+}
+
+func TestWriteFail2banManagedJailIncludesSSHPort(t *testing.T) {
+	origPath := fail2banManagedJailPath
+	tmpFile := t.TempDir() + "/jail.d/99-sys-bootstrap.local"
+	fail2banManagedJailPath = tmpFile
 	t.Cleanup(func() {
-		fail2banJailLocalPath = origPath
+		fail2banManagedJailPath = origPath
 	})
 
 	cfg := &types.Config{
@@ -100,12 +155,12 @@ func TestWriteFail2banJailLocalIncludesSSHPort(t *testing.T) {
 		Fail2banBackend:  "auto",
 		Fail2banIgnoreIP: "127.0.0.1/8 ::1 10.0.0.0/8",
 	}
-	if err := writeFail2banJailLocal(cfg); err != nil {
-		t.Fatalf("writeFail2banJailLocal failed: %v", err)
+	if err := writeFail2banManagedJail(cfg); err != nil {
+		t.Fatalf("writeFail2banManagedJail failed: %v", err)
 	}
 	content, err := os.ReadFile(tmpFile)
 	if err != nil {
-		t.Fatalf("reading jail.local failed: %v", err)
+		t.Fatalf("reading managed jail failed: %v", err)
 	}
 	text := string(content)
 	for _, part := range []string{
@@ -123,11 +178,11 @@ func TestWriteFail2banJailLocalIncludesSSHPort(t *testing.T) {
 }
 
 func TestFail2banSSHDJailMatchesConfig(t *testing.T) {
-	origPath := fail2banJailLocalPath
-	tmpFile := t.TempDir() + "/jail.local"
-	fail2banJailLocalPath = tmpFile
+	origPath := fail2banManagedJailPath
+	tmpFile := t.TempDir() + "/jail.d/99-sys-bootstrap.local"
+	fail2banManagedJailPath = tmpFile
 	t.Cleanup(func() {
-		fail2banJailLocalPath = origPath
+		fail2banManagedJailPath = origPath
 	})
 
 	cfg := &types.Config{
@@ -138,8 +193,8 @@ func TestFail2banSSHDJailMatchesConfig(t *testing.T) {
 		Fail2banBackend:  "auto",
 		Fail2banIgnoreIP: "127.0.0.1/8 ::1 10.0.0.0/8",
 	}
-	if err := writeFail2banJailLocal(cfg); err != nil {
-		t.Fatalf("writeFail2banJailLocal failed: %v", err)
+	if err := writeFail2banManagedJail(cfg); err != nil {
+		t.Fatalf("writeFail2banManagedJail failed: %v", err)
 	}
 
 	ok, summary := fail2banSSHDJailMatchesConfig(cfg)
@@ -166,15 +221,15 @@ func TestFail2banSSHDJailMatchesConfig(t *testing.T) {
 
 func TestFail2banRunInstallsWritesAndValidates(t *testing.T) {
 	origPath := os.Getenv("PATH")
-	origJailPath := fail2banJailLocalPath
+	origJailPath := fail2banManagedJailPath
 	t.Cleanup(func() {
 		_ = os.Setenv("PATH", origPath)
-		fail2banJailLocalPath = origJailPath
+		fail2banManagedJailPath = origJailPath
 	})
 
 	tempBin := t.TempDir()
 	logFile := filepath.Join(t.TempDir(), "fail2ban-run.log")
-	fail2banJailLocalPath = filepath.Join(t.TempDir(), "jail.local")
+	fail2banManagedJailPath = filepath.Join(t.TempDir(), "jail.d", "99-sys-bootstrap.local")
 
 	writeFakeCommand(t, tempBin, "dpkg", `#!/bin/sh
 echo "dpkg $*" >> "$SYSBOOTSTRAP_TEST_LOG"
@@ -185,7 +240,12 @@ echo "apt-get $*" >> "$SYSBOOTSTRAP_TEST_LOG"
 exit 0
 `)
 	writeFakeCommand(t, tempBin, "env", `#!/bin/sh
-shift
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    *=*) shift ;;
+    *) break ;;
+  esac
+done
 exec "$@"
 `)
 	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
@@ -229,8 +289,10 @@ exit 0
 	}
 	text := string(content)
 	for _, want := range []string{
-		"apt-get update -y",
-		"apt-get install -y fail2ban",
+		"DPkg::Lock::Timeout=120",
+		"Acquire::Retries=3",
+		"update -y",
+		"install -y fail2ban",
 		"fail2ban-client -d",
 		"systemctl enable --now fail2ban",
 	} {
@@ -242,7 +304,7 @@ exit 0
 		t.Fatalf("expected fail2ban-client -d twice, got %d:\n%s", count, text)
 	}
 
-	jailContent, err := os.ReadFile(fail2banJailLocalPath)
+	jailContent, err := os.ReadFile(fail2banManagedJailPath)
 	if err != nil {
 		t.Fatalf("read jail.local failed: %v", err)
 	}

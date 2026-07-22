@@ -22,6 +22,7 @@ var dockerGroupSatisfiedWithConfigFn = dockerGroupSatisfiedWithConfig
 var dockerRepoConfiguredFn = dockerRepoConfigured
 var ensureDockerRepoFn = ensureDockerRepo
 var dockerRunWithContextFn = system.RunWithContext
+var dockerRunAptFn = system.RunApt
 
 func NewDockerModule() *DockerModule { return &DockerModule{} }
 
@@ -87,17 +88,17 @@ func (m *DockerModule) Run(ctx context.Context, sys *system.Context, cfg *types.
 
 	if !hasDocker {
 		log.Info("Installing Docker packages...")
-		if res, err := dockerRunWithContextFn(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+		if res, err := dockerRunAptFn(ctx, "update", "-y"); err != nil || res == nil || res.ExitCode != 0 {
 			return system.FormatCommandError("apt-get update before Docker install failed", res, err)
 		}
-		if res, err := dockerRunWithContextFn(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
-			"docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"); err != nil || res.ExitCode != 0 {
+		if res, err := dockerRunAptFn(ctx, "install", "-y",
+			"docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"); err != nil || res == nil || res.ExitCode != 0 {
 			return system.FormatCommandError("Docker package installation failed", res, err)
 		}
 		log.Success("Docker packages installed")
 	} else if !hasCompose {
 		log.Info("Installing Docker Compose plugin...")
-		if res, err := dockerRunWithContextFn(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "docker-compose-plugin"); err != nil || res.ExitCode != 0 {
+		if res, err := dockerRunAptFn(ctx, "install", "-y", "docker-compose-plugin"); err != nil || res == nil || res.ExitCode != 0 {
 			return system.FormatCommandError("Docker Compose plugin installation failed", res, err)
 		}
 		log.Success("Docker Compose plugin installed")
@@ -130,7 +131,7 @@ func (m *DockerModule) Run(ctx context.Context, sys *system.Context, cfg *types.
 
 func dockerComposePluginInstalled() bool {
 	res, err := system.Run("docker", "compose", "version")
-	return err == nil && res.ExitCode == 0
+	return err == nil && res != nil && res.ExitCode == 0
 }
 
 func dockerRepoConfigured(sys *system.Context) bool {
@@ -150,11 +151,11 @@ func dockerServiceEnabled() bool {
 		return false
 	}
 	enabledRes, err := system.Run("systemctl", "is-enabled", "docker")
-	if err != nil || enabledRes.ExitCode != 0 || strings.TrimSpace(enabledRes.Stdout) != "enabled" {
+	if err != nil || enabledRes == nil || enabledRes.ExitCode != 0 || strings.TrimSpace(enabledRes.Stdout) != "enabled" {
 		return false
 	}
 	activeRes, err := system.Run("systemctl", "is-active", "docker")
-	return err == nil && activeRes.ExitCode == 0 && strings.TrimSpace(activeRes.Stdout) == "active"
+	return err == nil && activeRes != nil && activeRes.ExitCode == 0 && strings.TrimSpace(activeRes.Stdout) == "active"
 }
 
 func dockerGroupSatisfied(sys *system.Context) (bool, string) {
@@ -179,7 +180,7 @@ func dockerGroupSatisfiedWithConfig(sys *system.Context, cfg *types.Config) (boo
 		return true, ""
 	}
 	res, err := system.Run("id", "-nG", targetUser)
-	if err != nil || res.ExitCode != 0 {
+	if err != nil || res == nil || res.ExitCode != 0 {
 		return false, targetUser
 	}
 	groups := strings.Fields(strings.TrimSpace(res.Stdout))
@@ -204,25 +205,30 @@ func buildDockerCheckMessage(hasDocker, hasCompose, serviceEnabled bool, targetU
 
 func ensureDockerRepo(ctx context.Context, sys *system.Context) error {
 	keyPath, repoPath := dockerRepoPathsFn(sys)
+	repoOS, codename, err := dockerRepoInfo(sys)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create Docker keyring directory: %w", err)
 	}
 	if !dockerRepoConfigured(sys) {
-		if res, err := dockerRunWithContextFn(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+		if res, err := dockerRunAptFn(ctx, "update", "-y"); err != nil || res == nil || res.ExitCode != 0 {
 			return system.FormatCommandError("apt-get update before Docker repo setup failed", res, err)
 		}
-		if res, err := dockerRunWithContextFn(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "ca-certificates", "curl"); err != nil || res.ExitCode != 0 {
+		if res, err := dockerRunAptFn(ctx, "install", "-y", "ca-certificates", "curl"); err != nil || res == nil || res.ExitCode != 0 {
 			return system.FormatCommandError("failed to install Docker repo prerequisites", res, err)
 		}
 		script := fmt.Sprintf(`set -e
 install -m 0755 -d %s
-curl -fsSL https://download.docker.com/linux/%s/gpg -o /tmp/sys-bootstrap-docker.gpg
-install -m 0644 /tmp/sys-bootstrap-docker.gpg %s
-rm -f /tmp/sys-bootstrap-docker.gpg
+tmp_key=$(mktemp "${TMPDIR:-/tmp}/sys-bootstrap-docker.XXXXXX")
+trap 'rm -f "$tmp_key"' EXIT
+curl -fsSL https://download.docker.com/linux/%s/gpg -o "$tmp_key"
+install -m 0644 "$tmp_key" %s
 cat > %s <<'EOF'
 deb [arch=%s signed-by=%s] https://download.docker.com/linux/%s %s stable
 EOF
-`, shellQuote(filepath.Dir(keyPath)), dockerRepoOS(sys), shellQuote(keyPath), shellQuote(repoPath), dockerRepoArch(sys), keyPath, dockerRepoOS(sys), dockerRepoCodename(sys))
+	`, shellQuote(filepath.Dir(keyPath)), repoOS, shellQuote(keyPath), shellQuote(repoPath), dockerRepoArch(sys), keyPath, repoOS, codename)
 		if res, err := dockerRunWithContextFn(ctx, "bash", "-lc", script); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError("failed to configure Docker apt repository", res, err)
 		}
@@ -234,18 +240,24 @@ func dockerRepoPaths(sys *system.Context) (keyPath, repoPath string) {
 	return "/etc/apt/keyrings/docker.asc", "/etc/apt/sources.list.d/docker.list"
 }
 
-func dockerRepoOS(sys *system.Context) string {
-	if sys != nil && sys.OSID == "ubuntu" {
-		return "ubuntu"
+// dockerRepoInfo rejects unknown distributions and missing codenames rather
+// than silently adding a Debian Bookworm repository to an Ubuntu or derivative
+// host. Docker's repository layout is distribution-specific.
+func dockerRepoInfo(sys *system.Context) (repoOS, codename string, err error) {
+	if sys == nil {
+		return "", "", fmt.Errorf("cannot determine Docker repository distribution")
 	}
-	return "debian"
-}
-
-func dockerRepoCodename(sys *system.Context) string {
-	if sys != nil && sys.OSCodename != "" {
-		return sys.OSCodename
+	switch sys.OSID {
+	case "debian", "ubuntu":
+		repoOS = sys.OSID
+	default:
+		return "", "", fmt.Errorf("Docker's official apt repository is not automatically configured for %q; configure a supported repository manually", sys.OSID)
 	}
-	return "bookworm"
+	codename = strings.TrimSpace(sys.OSCodename)
+	if codename == "" {
+		return "", "", fmt.Errorf("cannot determine %s codename for Docker repository; refusing to guess", repoOS)
+	}
+	return repoOS, codename, nil
 }
 
 func dockerRepoArch(sys *system.Context) string {

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/frankwei98/sys-bootstrap/internal/types"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
+	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
 func TestSelectedSSHKeyPathUsesSelectedAlgorithm(t *testing.T) {
@@ -75,5 +75,26 @@ func TestTimezoneConfigFormOmitsKeepOptionWhenCurrentTimezoneUnknown(t *testing.
 				t.Fatalf("unexpected keep-current option when timezone is unknown: %v", options)
 			}
 		}
+	}
+}
+
+func TestParseTCPPortRejectsTrailingCharacters(t *testing.T) {
+	if _, err := parseTCPPort("22abc"); err == nil {
+		t.Fatal("expected trailing characters in port to be rejected")
+	}
+	if got, err := parseTCPPort(" 22122 "); err != nil || got != 22122 {
+		t.Fatalf("parseTCPPort valid input = (%d, %v), want (22122, nil)", got, err)
+	}
+}
+
+func TestFail2banInputValidators(t *testing.T) {
+	if err := validateFail2banDuration("10m\nbackend = auto"); err == nil {
+		t.Fatal("expected multiline duration to be rejected")
+	}
+	if err := validateFail2banBackend("systemd\nport = 22"); err == nil {
+		t.Fatal("expected multiline backend to be rejected")
+	}
+	if err := validateFail2banIgnoreIP("127.0.0.1/8 invalid-host"); err == nil {
+		t.Fatal("expected invalid ignoreip token to be rejected")
 	}
 }

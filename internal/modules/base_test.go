@@ -19,16 +19,16 @@ func TestSummarizeBasePackages(t *testing.T) {
 	status["curl"] = false
 
 	installed, missing := summarizeBasePackages(map[string]bool{
-		"sudo":                  status["sudo"],
-		"zsh":                   status["zsh"],
-		"gnupg":                 status["gnupg"],
-		"apt-transport-https":   status["apt-transport-https"],
-		"git":                   status["git"],
-		"curl":                  status["curl"],
-		"wget":                  status["wget"],
-		"unzip":                 status["unzip"],
-		"tree":                  status["tree"],
-		"neovim":                status["neovim"],
+		"sudo":                status["sudo"],
+		"zsh":                 status["zsh"],
+		"gnupg":               status["gnupg"],
+		"apt-transport-https": status["apt-transport-https"],
+		"git":                 status["git"],
+		"curl":                status["curl"],
+		"wget":                status["wget"],
+		"unzip":               status["unzip"],
+		"tree":                status["tree"],
+		"neovim":              status["neovim"],
 	})
 
 	if len(installed) != 2 {

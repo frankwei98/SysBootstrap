@@ -25,6 +25,19 @@ func TestUserModuleInterface(t *testing.T) {
 	}
 }
 
+func TestValidateLinuxUsername(t *testing.T) {
+	for _, username := range []string{"deploy", "deploy_1", "user-name"} {
+		if !ValidateLinuxUsername(username) {
+			t.Errorf("expected %q to be valid", username)
+		}
+	}
+	for _, username := range []string{"-deploy", "Deploy", "", "name with space", " deploy "} {
+		if ValidateLinuxUsername(username) {
+			t.Errorf("expected %q to be invalid", username)
+		}
+	}
+}
+
 func TestUserPlanNewUser(t *testing.T) {
 	m := NewUserModule()
 	cfg := &types.Config{
@@ -120,6 +133,14 @@ func TestUserPlanExistingUserNoOpWhenAlreadySatisfied(t *testing.T) {
 	oldSudoersDir := sudoersDir
 	sudoersDir = tmpDir
 	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+	origInspect := inspectUserStateFn
+	inspectUserStateFn = func(username string) (userState, error) {
+		if username != "root" {
+			return userState{}, nil
+		}
+		return userState{Exists: true, HomeDir: "/root", Shell: "/bin/bash"}, nil
+	}
+	t.Cleanup(func() { inspectUserStateFn = origInspect })
 
 	m := NewUserModule()
 	cfg := &types.Config{
@@ -264,6 +285,28 @@ func TestUserPlanGitHubKeys(t *testing.T) {
 	if !hasGitHub {
 		t.Error("expected 'Fetch SSH keys from GitHub' step")
 	}
+}
+
+func TestUserPlanUsesConfirmedGitHubKeys(t *testing.T) {
+	m := NewUserModule()
+	cfg := &types.Config{
+		NewUsername:    "nonexistent_user_12345",
+		UserAddKey:     true,
+		UserKeySource:  "github",
+		UserGitHubUser: "torvalds",
+		UserGitHubKeys: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq reviewed",
+	}
+
+	steps, err := m.Plan(context.Background(), &system.Context{}, cfg)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	for _, s := range steps {
+		if s.Title == "Install confirmed SSH keys from GitHub" {
+			return
+		}
+	}
+	t.Fatalf("expected plan to install the reviewed GitHub keys, got %#v", steps)
 }
 
 func TestPasswordPlanDetailExistingUser(t *testing.T) {

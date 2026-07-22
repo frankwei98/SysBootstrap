@@ -55,9 +55,11 @@ func (m *BaseModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 			Detail: "Rewrite Debian/Ubuntu official sources to mirrors.cernet.edu.cn (security sources unchanged)",
 		})
 	}
-	steps = append(steps,
-		types.Step{Module: "base", Title: "Run apt update & upgrade", Detail: "Update package lists and upgrade installed packages"},
-	)
+	if len(missing) > 0 || !hasZellij || cfg.AptMirror == "cernet" {
+		steps = append(steps,
+			types.Step{Module: "base", Title: "Run apt update & upgrade", Detail: "Update package lists and upgrade installed packages"},
+		)
+	}
 	steps = append(steps, buildBasePackageSteps(missing)...)
 	if !hasZellij {
 		steps = append(steps, types.Step{

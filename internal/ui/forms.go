@@ -3,8 +3,11 @@ package ui
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +17,8 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
+
+var fail2banDurationRegex = regexp.MustCompile(`^[1-9][0-9]*(?:[smhdw])?$`)
 
 // ModuleSelect shows a multi-select for optional modules.
 func ModuleSelect(registry *modules.Registry) ([]string, error) {
@@ -76,7 +81,7 @@ func ModuleSelectFiltered(registry *modules.Registry, allowedIDs map[string]bool
 func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 	port := fmt.Sprintf("%d", cfg.SSHPort)
 	if port == "0" {
-		port = "22122"
+		port = strconv.Itoa(modules.DefaultSSHPort)
 	}
 
 	groups := []*huh.Group{
@@ -86,11 +91,8 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 				Description(i18n.T("form_ssh_port_desc")).
 				Placeholder("22122").
 				Validate(func(s string) error {
-					var p int
-					if n, _ := fmt.Sscanf(s, "%d", &p); n != 1 || p < 1 || p > 65535 {
-						return fmt.Errorf("port must be a number between 1 and 65535")
-					}
-					return nil
+					_, err := parseTCPPort(s)
+					return err
 				}).
 				Value(&port),
 			huh.NewConfirm().
@@ -124,7 +126,11 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 		return err
 	}
 
-	fmt.Sscanf(port, "%d", &cfg.SSHPort)
+	parsedPort, err := parseTCPPort(port)
+	if err != nil {
+		return err
+	}
+	cfg.SSHPort = parsedPort
 
 	if cfg.SSHAddKey {
 		key := ""
@@ -135,13 +141,7 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 					Description(i18n.T("form_ssh_pubkey_desc")).
 					Placeholder("ssh-ed25519 AAAA...").
 					Validate(func(s string) error {
-						if strings.TrimSpace(s) == "" {
-							return nil // empty is allowed (no key)
-						}
-						if !modules.ValidatePublicKey(strings.Fields(s)[0]) {
-							return fmt.Errorf("invalid SSH public key format — must start with ssh-ed25519, ssh-rsa, etc.")
-						}
-						return nil
+						return validatePublicKeyContent(s)
 					}).
 					Value(&key),
 			),
@@ -150,6 +150,11 @@ func SSHConfigForm(cfg *types.Config, sys *system.Context) error {
 			return err
 		}
 		cfg.SSHPublicKey = strings.TrimSpace(key)
+	}
+	hasSSHKey := cfg.SSHAddKey && strings.TrimSpace(cfg.SSHPublicKey) != ""
+	hasUserKey := cfg.UserAddKey && (strings.TrimSpace(cfg.UserPublicKey) != "" || strings.TrimSpace(cfg.UserGitHubUser) != "")
+	if cfg.SSHDisableRoot && cfg.SSHDisablePass && !hasSSHKey && !hasUserKey {
+		return fmt.Errorf("cannot disable both root login and password authentication without a replacement SSH public key")
 	}
 
 	return nil
@@ -164,13 +169,8 @@ func UserConfigForm(cfg *types.Config) error {
 				Description(i18n.T("form_username_desc") + "\n" + i18n.T("form_user_existing_desc")).
 				Placeholder("deploy").
 				Validate(func(s string) error {
-					if s == "" {
-						return fmt.Errorf("username cannot be empty")
-					}
-					for _, c := range s {
-						if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
-							return fmt.Errorf("username may only contain letters, digits, hyphens, and underscores")
-						}
+					if !modules.ValidateLinuxUsername(s) {
+						return fmt.Errorf("username must be 1-32 lowercase letters, digits, hyphens, or underscores, starting with a letter")
 					}
 					return nil
 				}).
@@ -257,6 +257,7 @@ func UserConfigForm(cfg *types.Config) error {
 						Title(i18n.T("form_ssh_pubkey")).
 						Description(i18n.T("form_ssh_pubkey_desc")).
 						Placeholder("ssh-ed25519 AAAA...").
+						Validate(validatePublicKeyContent).
 						Value(&key),
 				),
 			)
@@ -271,13 +272,50 @@ func UserConfigForm(cfg *types.Config) error {
 					huh.NewInput().
 						Title(i18n.T("form_github_user")).
 						Description(i18n.T("form_github_user_desc")).
+						Validate(func(s string) error {
+							if !modules.ValidateGitHubUsername(s) {
+								return fmt.Errorf("GitHub username must be 1-39 letters, digits, or single hyphens")
+							}
+							return nil
+						}).
 						Value(&ghUser),
 				),
 			)
 			if err := ghForm.Run(); err != nil {
 				return err
 			}
-			cfg.UserGitHubUser = ghUser
+			cfg.UserGitHubUser = strings.TrimSpace(ghUser)
+
+			keyContent, err := modules.FetchGitHubKeys(cfg.UserGitHubUser)
+			if err != nil {
+				return fmt.Errorf("failed to fetch GitHub keys for %s: %w", cfg.UserGitHubUser, err)
+			}
+			fingerprints, err := modules.PublicKeyFingerprints(keyContent)
+			if err != nil {
+				return fmt.Errorf("failed to fingerprint GitHub keys for %s: %w", cfg.UserGitHubUser, err)
+			}
+
+			confirmed := false
+			fingerprintSummary := strings.Join(fingerprints, "\n")
+			confirmationForm := huh.NewForm(
+				huh.NewGroup(
+					huh.NewNote().
+						Title(i18n.T("form_github_keys_title")).
+						Description(fmt.Sprintf(i18n.T("form_github_keys_desc"), len(fingerprints), cfg.UserGitHubUser, fingerprintSummary)),
+					huh.NewConfirm().
+						Title(i18n.T("form_github_keys_confirm")).
+						Value(&confirmed),
+				),
+			)
+			if err := confirmationForm.Run(); err != nil {
+				return err
+			}
+			if !confirmed {
+				return fmt.Errorf("GitHub SSH key import cancelled")
+			}
+			// Keep the reviewed bytes so the subsequent run cannot install keys
+			// that changed at the remote endpoint after confirmation.
+			cfg.UserGitHubKeys = keyContent
 		}
 	}
 
@@ -511,6 +549,9 @@ func AIConfigForm(cfg *types.Config) error {
 		return err
 	}
 
+	cfg.AISelectionSet = true
+	cfg.InstallClaudeCode = false
+	cfg.InstallCodex = false
 	for _, s := range selected {
 		switch s {
 		case "claude-code":
@@ -595,6 +636,12 @@ func TimezoneConfigForm(cfg *types.Config, sys *system.Context) error {
 					Title(i18n.T("form_timezone_custom")).
 					Description(i18n.T("form_timezone_custom_desc")).
 					Placeholder("Etc/UTC").
+					Validate(func(s string) error {
+						if _, err := time.LoadLocation(strings.TrimSpace(s)); err != nil {
+							return fmt.Errorf("unknown timezone %q", strings.TrimSpace(s))
+						}
+						return nil
+					}).
 					Value(&custom),
 			),
 		).Run(); err != nil {
@@ -617,37 +664,52 @@ func Fail2banConfigForm(cfg *types.Config) error {
 
 	if err := huh.NewForm(
 		huh.NewGroup(
+			huh.NewNote().
+				Title("Protected SSH port(s)").
+				Description("fail2ban will use the effective sshd port setting: "+modules.EffectiveSSHPortSetting(cfg)),
 			huh.NewInput().
 				Title(i18n.T("form_fail2ban_maxretry")).
 				Description(i18n.T("form_fail2ban_maxretry_desc")).
 				Placeholder("5").
+				Validate(func(s string) error {
+					_, err := parsePositiveInt(s, "maxretry")
+					return err
+				}).
 				Value(&maxRetry),
 			huh.NewInput().
 				Title(i18n.T("form_fail2ban_findtime")).
 				Description(i18n.T("form_fail2ban_findtime_desc")).
 				Placeholder("10m").
+				Validate(validateFail2banDuration).
 				Value(&findTime),
 			huh.NewInput().
 				Title(i18n.T("form_fail2ban_bantime")).
 				Description(i18n.T("form_fail2ban_bantime_desc")).
 				Placeholder("1h").
+				Validate(validateFail2banDuration).
 				Value(&banTime),
 			huh.NewInput().
 				Title(i18n.T("form_fail2ban_backend")).
 				Description(i18n.T("form_fail2ban_backend_desc")).
 				Placeholder("systemd").
+				Validate(validateFail2banBackend).
 				Value(&backend),
 			huh.NewInput().
 				Title(i18n.T("form_fail2ban_ignoreip")).
 				Description(i18n.T("form_fail2ban_ignoreip_desc")).
 				Placeholder("127.0.0.1/8 ::1").
+				Validate(validateFail2banIgnoreIP).
 				Value(&ignoreIP),
 		),
 	).Run(); err != nil {
 		return err
 	}
 
-	fmt.Sscanf(maxRetry, "%d", &cfg.Fail2banMaxRetry)
+	parsedMaxRetry, err := parsePositiveInt(maxRetry, "maxretry")
+	if err != nil {
+		return err
+	}
+	cfg.Fail2banMaxRetry = parsedMaxRetry
 	cfg.Fail2banFindTime = strings.TrimSpace(findTime)
 	cfg.Fail2banBanTime = strings.TrimSpace(banTime)
 	cfg.Fail2banBackend = strings.TrimSpace(backend)
@@ -676,4 +738,62 @@ func defaultString(v, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func parseTCPPort(value string) (int, error) {
+	port, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("port must be a number between 1 and 65535")
+	}
+	return port, nil
+}
+
+func parsePositiveInt(value, label string) (int, error) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < 1 {
+		return 0, fmt.Errorf("%s must be a positive whole number", label)
+	}
+	return parsed, nil
+}
+
+func validatePublicKeyContent(value string) error {
+	lines := strings.Split(strings.TrimSpace(value), "\n")
+	if len(lines) == 0 || strings.TrimSpace(value) == "" {
+		return fmt.Errorf("an SSH public key is required")
+	}
+	for _, line := range lines {
+		if !modules.ValidatePublicKey(line) {
+			return fmt.Errorf("invalid SSH public key format")
+		}
+	}
+	return nil
+}
+
+func validateFail2banDuration(value string) error {
+	if !fail2banDurationRegex.MatchString(strings.TrimSpace(value)) {
+		return fmt.Errorf("use a positive duration such as 600, 10m, 1h, 1d, or 1w")
+	}
+	return nil
+}
+
+func validateFail2banBackend(value string) error {
+	switch strings.TrimSpace(value) {
+	case "systemd", "auto", "polling", "gamin", "pyinotify":
+		return nil
+	default:
+		return fmt.Errorf("backend must be one of systemd, auto, polling, gamin, or pyinotify")
+	}
+}
+
+func validateFail2banIgnoreIP(value string) error {
+	for _, token := range strings.Fields(strings.TrimSpace(value)) {
+		if _, err := netip.ParsePrefix(token); err == nil {
+			continue
+		}
+		if _, err := netip.ParseAddr(token); err == nil {
+			continue
+		}
+		return fmt.Errorf("ignoreip contains an invalid IP address or CIDR: %s", token)
+	}
+	return nil
 }

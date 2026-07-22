@@ -99,6 +99,30 @@ func TestRegistryResolveOrder(t *testing.T) {
 	}
 }
 
+func TestRegistryResolveOrderIgnoresInvertedRegistrationOrder(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&mockModule{id: "deploy", deps: []string{"prepare"}})
+	r.Register(&mockModule{id: "prepare"})
+
+	ordered, err := r.ResolveOrder([]string{"deploy"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := ordered, []string{"prepare", "deploy"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+func TestRegistryResolveOrderDetectsCycles(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&mockModule{id: "a", deps: []string{"b"}})
+	r.Register(&mockModule{id: "b", deps: []string{"a"}})
+
+	if _, err := r.ResolveOrder([]string{"a"}); err == nil {
+		t.Fatal("expected dependency cycle to be rejected")
+	}
+}
+
 func TestRegistryResolveOrderUnknown(t *testing.T) {
 	r := NewRegistry()
 	_, err := r.ResolveOrder([]string{"nonexistent"})

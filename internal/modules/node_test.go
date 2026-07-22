@@ -56,6 +56,17 @@ func TestAIModuleInterface(t *testing.T) {
 	}
 }
 
+func TestRequestedAIToolsHonorsExplicitEmptySelection(t *testing.T) {
+	claude, codex := requestedAITools(&types.Config{AISelectionSet: true})
+	if claude || codex {
+		t.Fatalf("explicit empty selection = (%v, %v), want neither tool", claude, codex)
+	}
+	claude, codex = requestedAITools(&types.Config{})
+	if !claude || !codex {
+		t.Fatalf("legacy/unset selection = (%v, %v), want both default tools", claude, codex)
+	}
+}
+
 func TestAIModuleCheckRequiresNode(t *testing.T) {
 	t.Setenv("NVM_DIR", filepath.Join(t.TempDir(), ".nvm"))
 
@@ -177,6 +188,12 @@ func TestEnsureNodeShellPathWritesStartupFiles(t *testing.T) {
 	}
 	if count := strings.Count(string(content), "SYS_BOOTSTRAP_NODE_ENV"); count != 1 {
 		t.Errorf("expected one node marker after second run, got %d", count)
+	}
+}
+
+func TestNodeShellFileConfiguredRejectsOrphanedMarker(t *testing.T) {
+	if nodeShellFileConfigured("# SYS_BOOTSTRAP_NODE_ENV\n") {
+		t.Fatal("orphaned marker must not be treated as a configured Node environment")
 	}
 }
 

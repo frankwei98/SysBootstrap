@@ -7,6 +7,8 @@ import (
 	"os/user"
 	"path/filepath"
 	"time"
+
+	"github.com/frankwei98/sys-bootstrap/internal/system"
 )
 
 type Level int
@@ -54,12 +56,25 @@ func New(quiet bool) (*Logger, error) {
 	// Open log file in user state directory
 	stateDir, err := stateHomeDir()
 	if err == nil {
-		logDir := filepath.Join(stateDir, ".local", "state", "sys-bootstrap", "logs")
-		os.MkdirAll(logDir, 0o755)
-		logFile := filepath.Join(logDir, fmt.Sprintf("sys-bootstrap-%s.log", time.Now().Format("20060102-150405")))
-		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err == nil {
-			l.file = f
+		localStateDir := filepath.Join(stateDir, ".local")
+		stateDataDir := filepath.Join(localStateDir, "state")
+		appStateDir := filepath.Join(stateDataDir, "sys-bootstrap")
+		logDir := filepath.Join(appStateDir, "logs")
+		if err := os.MkdirAll(logDir, 0o755); err == nil {
+			// MkdirAll may have created one or more parent directories as root.
+			// Hand back the complete user-state path, not just the leaf, so the
+			// invoking user can traverse it on later non-sudo runs.
+			if err := system.ChownToInvokingUser(localStateDir, stateDataDir, appStateDir, logDir); err == nil {
+				logFile := filepath.Join(logDir, fmt.Sprintf("sys-bootstrap-%s.log", time.Now().Format("20060102-150405")))
+				f, openErr := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+				if openErr == nil {
+					if system.ChownToInvokingUser(logFile) == nil {
+						l.file = f
+					} else {
+						_ = f.Close()
+					}
+				}
+			}
 		}
 	}
 

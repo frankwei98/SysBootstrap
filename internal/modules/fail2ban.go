@@ -3,8 +3,10 @@ package modules
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -13,8 +15,13 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
-var fail2banJailLocalPath = "/etc/fail2ban/jail.local"
+// Keep the tool's policy isolated from administrator-owned jail.local and
+// other jail.d snippets. A managed drop-in can be safely rewritten without
+// deleting unrelated jails or changing their [DEFAULT] values.
+var fail2banManagedJailPath = "/etc/fail2ban/jail.d/99-sys-bootstrap.local"
 var sshdConfigPath = "/etc/ssh/sshd_config"
+var fail2banRunAptFn = system.RunApt
+var fail2banDurationRegex = regexp.MustCompile(`^[1-9][0-9]*(?:[smhdw])?$`)
 
 type Fail2banModule struct{}
 
@@ -46,6 +53,9 @@ func (m *Fail2banModule) Check(ctx context.Context, sys *system.Context) CheckRe
 }
 
 func (m *Fail2banModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
+	if err := validateFail2banPolicy(cfg); err != nil {
+		return nil, err
+	}
 	var steps []types.Step
 	if !system.DpkgInstalled("fail2ban") {
 		steps = append(steps, types.Step{Module: "fail2ban", Title: "Install fail2ban", Detail: "apt-get install fail2ban"})
@@ -55,9 +65,9 @@ func (m *Fail2banModule) Plan(ctx context.Context, sys *system.Context, cfg *typ
 		steps = append(steps, types.Step{
 			Module: "fail2ban",
 			Title:  "Write sshd jail config",
-			Detail: fmt.Sprintf("%s (port %d, maxretry %d, findtime %s, bantime %s, backend %s%s)",
-				fail2banJailLocalPath,
-				effectiveSSHPort(cfg),
+			Detail: fmt.Sprintf("%s (port %s, maxretry %d, findtime %s, bantime %s, backend %s%s)",
+				fail2banManagedJailPath,
+				fail2banSSHPortSetting(cfg),
 				fail2banMaxRetry(cfg),
 				fail2banFindTime(cfg),
 				fail2banBanTime(cfg),
@@ -73,12 +83,15 @@ func (m *Fail2banModule) Plan(ctx context.Context, sys *system.Context, cfg *typ
 }
 
 func (m *Fail2banModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+	if err := validateFail2banPolicy(cfg); err != nil {
+		return err
+	}
 	if !system.DpkgInstalled("fail2ban") {
 		log.Info("Installing fail2ban...")
-		if res, err := system.RunWithContext(ctx, "apt-get", "update", "-y"); err != nil || res.ExitCode != 0 {
+		if res, err := fail2banRunAptFn(ctx, "update", "-y"); err != nil || res == nil || res.ExitCode != 0 {
 			return system.FormatCommandError("apt-get update before fail2ban install failed", res, err)
 		}
-		if res, err := system.RunWithContext(ctx, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "fail2ban"); err != nil || res.ExitCode != 0 {
+		if res, err := fail2banRunAptFn(ctx, "install", "-y", "fail2ban"); err != nil || res == nil || res.ExitCode != 0 {
 			return system.FormatCommandError("fail2ban installation failed", res, err)
 		}
 		log.Success("fail2ban installed")
@@ -89,7 +102,7 @@ func (m *Fail2banModule) Run(ctx context.Context, sys *system.Context, cfg *type
 	jailConfigured, _ := fail2banSSHDJailMatchesConfig(cfg)
 	if !jailConfigured {
 		log.Info("Writing fail2ban sshd jail configuration...")
-		if err := writeFail2banJailLocal(cfg); err != nil {
+		if err := writeFail2banManagedJail(cfg); err != nil {
 			return err
 		}
 		log.Success("fail2ban sshd jail configured")
@@ -127,15 +140,15 @@ func fail2banServiceEnabled() bool {
 		return false
 	}
 	enabledRes, err := system.Run("systemctl", "is-enabled", "fail2ban")
-	if err != nil || enabledRes.ExitCode != 0 || strings.TrimSpace(enabledRes.Stdout) != "enabled" {
+	if err != nil || enabledRes == nil || enabledRes.ExitCode != 0 || strings.TrimSpace(enabledRes.Stdout) != "enabled" {
 		return false
 	}
 	activeRes, err := system.Run("systemctl", "is-active", "fail2ban")
-	return err == nil && activeRes.ExitCode == 0 && strings.TrimSpace(activeRes.Stdout) == "active"
+	return err == nil && activeRes != nil && activeRes.ExitCode == 0 && strings.TrimSpace(activeRes.Stdout) == "active"
 }
 
 func fail2banSSHDJailMatchesConfig(cfg *types.Config) (bool, string) {
-	content, err := os.ReadFile(fail2banJailLocalPath)
+	content, err := os.ReadFile(fail2banManagedJailPath)
 	if err != nil {
 		return false, "sshd jail missing"
 	}
@@ -143,7 +156,7 @@ func fail2banSSHDJailMatchesConfig(cfg *types.Config) (bool, string) {
 	if !strings.Contains(text, "[sshd]") || !strings.Contains(text, "enabled = true") {
 		return false, "sshd jail missing"
 	}
-	expectedPort := fmt.Sprintf("port = %d", effectiveSSHPort(cfg))
+	expectedPort := "port = " + fail2banSSHPortSetting(cfg)
 	expectedMaxRetry := fmt.Sprintf("maxretry = %d", fail2banMaxRetry(cfg))
 	expectedFindTime := fmt.Sprintf("findtime = %s", fail2banFindTime(cfg))
 	expectedBanTime := fmt.Sprintf("bantime = %s", fail2banBanTime(cfg))
@@ -161,28 +174,43 @@ func fail2banSSHDJailMatchesConfig(cfg *types.Config) (bool, string) {
 	return true, "sshd jail configured"
 }
 
-func writeFail2banJailLocal(cfg *types.Config) error {
-	if err := os.MkdirAll(filepath.Dir(fail2banJailLocalPath), 0o755); err != nil {
+func writeFail2banManagedJail(cfg *types.Config) error {
+	if err := os.MkdirAll(filepath.Dir(fail2banManagedJailPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create fail2ban config directory: %w", err)
 	}
-	port := effectiveSSHPort(cfg)
 	maxRetry := fail2banMaxRetry(cfg)
 	findTime := fail2banFindTime(cfg)
 	banTime := fail2banBanTime(cfg)
 
-	content := fmt.Sprintf(`[DEFAULT]
+	content := fmt.Sprintf(`# Managed by sys-bootstrap. Do not edit by hand.
+[sshd]
+enabled = true
 bantime = %s
 findtime = %s
 maxretry = %d
 ignoreip = %s
-
-[sshd]
-enabled = true
 backend = %s
-port = %d
-`, banTime, findTime, maxRetry, fail2banIgnoreIP(cfg), fail2banBackend(cfg), port)
-	if err := os.WriteFile(fail2banJailLocalPath, []byte(content), 0o644); err != nil {
+port = %s
+`, banTime, findTime, maxRetry, fail2banIgnoreIP(cfg), fail2banBackend(cfg), fail2banSSHPortSetting(cfg))
+	tmp, err := os.CreateTemp(filepath.Dir(fail2banManagedJailPath), ".sys-bootstrap-fail2ban-*")
+	if err != nil {
+		return fmt.Errorf("failed to create fail2ban jail temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to set fail2ban jail file permissions: %w", err)
+	}
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
 		return fmt.Errorf("failed to write fail2ban jail config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close fail2ban jail config: %w", err)
+	}
+	if err := os.Rename(tmpPath, fail2banManagedJailPath); err != nil {
+		return fmt.Errorf("failed to install fail2ban jail config: %w", err)
 	}
 	return nil
 }
@@ -229,16 +257,64 @@ func fail2banIgnoreIPSummary(cfg *types.Config) string {
 	return fmt.Sprintf(", ignoreip %s", fail2banIgnoreIP(cfg))
 }
 
+func validateFail2banPolicy(cfg *types.Config) error {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.Fail2banMaxRetry != 0 && cfg.Fail2banMaxRetry < 1 {
+		return fmt.Errorf("fail2ban maxretry must be a positive whole number")
+	}
+	for label, value := range map[string]string{
+		"findtime": cfg.Fail2banFindTime,
+		"bantime":  cfg.Fail2banBanTime,
+	} {
+		if value != "" && !fail2banDurationRegex.MatchString(strings.TrimSpace(value)) {
+			return fmt.Errorf("fail2ban %s must be a positive duration such as 600, 10m, 1h, 1d, or 1w", label)
+		}
+	}
+	if backend := strings.TrimSpace(cfg.Fail2banBackend); backend != "" {
+		switch backend {
+		case "systemd", "auto", "polling", "gamin", "pyinotify":
+		default:
+			return fmt.Errorf("unsupported fail2ban backend %q", backend)
+		}
+	}
+	for _, token := range strings.Fields(cfg.Fail2banIgnoreIP) {
+		if _, err := netip.ParsePrefix(token); err == nil {
+			continue
+		}
+		if _, err := netip.ParseAddr(token); err == nil {
+			continue
+		}
+		return fmt.Errorf("invalid fail2ban ignoreip address %q", token)
+	}
+	return nil
+}
+
 func validateFail2banConfig(action string) error {
-	if res, err := system.Run("fail2ban-client", "-d"); err != nil || res.ExitCode != 0 {
+	if res, err := system.Run("fail2ban-client", "-d"); err != nil || res == nil || res.ExitCode != 0 {
 		return system.FormatCommandError(action, res, err)
 	}
 	return nil
 }
 
 func effectiveSSHPort(cfg *types.Config) int {
+	ports := effectiveSSHPortsForFail2ban(cfg)
+	if len(ports) > 0 {
+		return ports[0]
+	}
+	return 22
+}
+
+// effectiveSSHPortsForFail2ban resolves the daemon's actual port list via
+// sshd -T, including sshd_config.d snippets. A requested SSH port takes
+// precedence while the SSH module is configuring that exact target.
+func effectiveSSHPortsForFail2ban(cfg *types.Config) []int {
 	if cfg != nil && cfg.SSHPort > 0 {
-		return cfg.SSHPort
+		return []int{cfg.SSHPort}
+	}
+	if ports, err := effectiveSSHPortsFunc(context.Background()); err == nil && len(ports) > 0 {
+		return ports
 	}
 	if content, err := os.ReadFile(sshdConfigPath); err == nil {
 		for _, line := range strings.Split(string(content), "\n") {
@@ -246,15 +322,36 @@ func effectiveSSHPort(cfg *types.Config) int {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			if strings.HasPrefix(line, "Port ") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					if port, err := strconv.Atoi(fields[1]); err == nil && port > 0 {
-						return port
-					}
+			fields := strings.Fields(line)
+			if len(fields) == 2 && strings.EqualFold(fields[0], "port") {
+				if port, err := strconv.Atoi(fields[1]); err == nil && port >= 1 && port <= 65535 {
+					return []int{port}
 				}
 			}
 		}
 	}
-	return 22
+	return []int{22}
+}
+
+func fail2banSSHPortSetting(cfg *types.Config) string {
+	ports := effectiveSSHPortsForFail2ban(cfg)
+	values := make([]string, 0, len(ports))
+	seen := make(map[int]bool, len(ports))
+	for _, port := range ports {
+		if port < 1 || port > 65535 || seen[port] {
+			continue
+		}
+		seen[port] = true
+		values = append(values, strconv.Itoa(port))
+	}
+	if len(values) == 0 {
+		return "22"
+	}
+	return strings.Join(values, ",")
+}
+
+// EffectiveSSHPortSetting exposes the port list that fail2ban will protect so
+// the interactive form and plan can show the user the consequential value.
+func EffectiveSSHPortSetting(cfg *types.Config) string {
+	return fail2banSSHPortSetting(cfg)
 }

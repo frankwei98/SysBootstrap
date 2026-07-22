@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
@@ -27,6 +28,8 @@ type userState struct {
 }
 
 var sudoersDir = "/etc/sudoers.d"
+var linuxUsernameRegex = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+var inspectUserStateFn = inspectUserState
 
 type userDesiredState struct {
 	Username             string
@@ -75,7 +78,7 @@ func (m *UserModule) Check(ctx context.Context, sys *system.Context) CheckResult
 		UserAddSudo:          true,
 		UserPasswordlessSudo: false,
 	}
-	state, err := inspectUserState(username)
+	state, err := inspectUserStateFn(username)
 	if err != nil {
 		return CheckResult{Satisfied: false, Message: fmt.Sprintf("failed to inspect user %s: %v", username, err)}
 	}
@@ -91,8 +94,11 @@ func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 	if cfg.NewUsername == "" {
 		return nil, nil
 	}
+	if !ValidateLinuxUsername(cfg.NewUsername) {
+		return nil, fmt.Errorf("invalid username %q: use 1-32 lowercase letters, digits, hyphens, or underscores, starting with a letter", cfg.NewUsername)
+	}
 
-	state, err := inspectUserState(cfg.NewUsername)
+	state, err := inspectUserStateFn(cfg.NewUsername)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +129,11 @@ func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 	}
 	if cfg.UserAddKey {
 		if cfg.UserKeySource == "github" && cfg.UserGitHubUser != "" {
-			steps = append(steps, types.Step{Module: "user", Title: "Fetch SSH keys from GitHub", Detail: "github.com/" + cfg.UserGitHubUser})
+			title := "Fetch SSH keys from GitHub"
+			if strings.TrimSpace(cfg.UserGitHubKeys) != "" {
+				title = "Install confirmed SSH keys from GitHub"
+			}
+			steps = append(steps, types.Step{Module: "user", Title: title, Detail: "github.com/" + cfg.UserGitHubUser})
 		} else if desired.NeedsSSHKey {
 			steps = append(steps, types.Step{Module: "user", Title: "Write SSH public key", Detail: "authorized_keys"})
 		}
@@ -156,6 +166,9 @@ func (m *UserModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 	username := cfg.NewUsername
 	if username == "" {
 		return fmt.Errorf("username is required")
+	}
+	if !ValidateLinuxUsername(username) {
+		return fmt.Errorf("invalid username %q: use 1-32 lowercase letters, digits, hyphens, or underscores, starting with a letter", username)
 	}
 
 	if userExists(username) {
@@ -195,7 +208,7 @@ func (m *UserModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 
 // supplementUser applies sudo, shell, and SSH key updates to an existing user.
 func (m *UserModule) supplementUser(ctx context.Context, username string, cfg *types.Config, log *logging.Logger) error {
-	state, err := inspectUserState(username)
+	state, err := inspectUserStateFn(username)
 	if err != nil {
 		return err
 	}
@@ -255,7 +268,7 @@ func (m *UserModule) configureSudo(username string, cfg *types.Config, log *logg
 
 func (m *UserModule) setPasswordIfNeeded(ctx context.Context, username string, cfg *types.Config, log *logging.Logger) error {
 	if cfg.UserAddSudo && !cfg.UserPasswordlessSudo {
-		if state, err := inspectUserState(username); err == nil && state.Exists && state.PasswordKnown && state.HasUsablePassword {
+		if state, err := inspectUserStateFn(username); err == nil && state.Exists && state.PasswordKnown && state.HasUsablePassword {
 			log.Info("Existing password already usable for sudo, skipping passwd")
 			return nil
 		}
@@ -321,12 +334,17 @@ func (m *UserModule) writeSSHKey(ctx context.Context, username string, cfg *type
 	var err error
 
 	if cfg.UserKeySource == "github" && cfg.UserGitHubUser != "" {
-		log.Infof("Fetching SSH keys for GitHub user %s...", cfg.UserGitHubUser)
-		keyContent, err = fetchGitHubKeys(cfg.UserGitHubUser)
-		if err != nil {
-			return fmt.Errorf("failed to fetch GitHub keys for %s: %w", cfg.UserGitHubUser, err)
+		if strings.TrimSpace(cfg.UserGitHubKeys) != "" {
+			keyContent = cfg.UserGitHubKeys
+			log.Infof("Using reviewed SSH keys for GitHub user %s...", cfg.UserGitHubUser)
+		} else {
+			log.Infof("Fetching SSH keys for GitHub user %s...", cfg.UserGitHubUser)
+			keyContent, err = FetchGitHubKeys(cfg.UserGitHubUser)
+			if err != nil {
+				return fmt.Errorf("failed to fetch GitHub keys for %s: %w", cfg.UserGitHubUser, err)
+			}
 		}
-		log.Successf("Fetched %d SSH key(s) from GitHub user %s", len(strings.Split(strings.TrimSpace(keyContent), "\n")), cfg.UserGitHubUser)
+		log.Successf("Using %d SSH key(s) from GitHub user %s", len(strings.Split(strings.TrimSpace(keyContent), "\n")), cfg.UserGitHubUser)
 	} else if cfg.UserPublicKey != "" {
 		keyContent = cfg.UserPublicKey
 	} else {
@@ -373,8 +391,15 @@ func (m *UserModule) writeSSHKey(ctx context.Context, username string, cfg *type
 }
 
 func userExists(username string) bool {
-	state, err := inspectUserState(username)
+	state, err := inspectUserStateFn(username)
 	return err == nil && state.Exists
+}
+
+// ValidateLinuxUsername accepts the ordinary account names supported by the
+// Debian/Ubuntu useradd default policy. In particular, it rejects uppercase
+// names and a leading hyphen, which useradd could otherwise parse as an option.
+func ValidateLinuxUsername(username string) bool {
+	return username == strings.TrimSpace(username) && linuxUsernameRegex.MatchString(username)
 }
 
 func inspectUserState(username string) (userState, error) {
@@ -481,7 +506,11 @@ func describeUserTargetState(cfg *types.Config, state userState, desired userDes
 	}
 	if cfg.UserAddKey {
 		if cfg.UserKeySource == "github" && cfg.UserGitHubUser != "" {
-			parts = append(parts, "GitHub SSH keys will be refreshed")
+			if strings.TrimSpace(cfg.UserGitHubKeys) != "" {
+				parts = append(parts, "confirmed GitHub SSH keys will be installed")
+			} else {
+				parts = append(parts, "GitHub SSH keys will be fetched")
+			}
 		} else {
 			parts = append(parts, "authorized_keys "+boolWord(!desired.NeedsSSHKey, "ready", "needs update"))
 		}
@@ -493,7 +522,7 @@ func DescribeUserCheckForConfig(cfg *types.Config) (CheckResult, error) {
 	if cfg == nil || strings.TrimSpace(cfg.NewUsername) == "" {
 		return CheckResult{Satisfied: false, Message: "No target username configured yet"}, nil
 	}
-	state, err := inspectUserState(cfg.NewUsername)
+	state, err := inspectUserStateFn(cfg.NewUsername)
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -513,7 +542,7 @@ func DescribeUserCheckForConfig(cfg *types.Config) (CheckResult, error) {
 }
 
 func LookupUserState(username string) (UserStateInfo, error) {
-	state, err := inspectUserState(username)
+	state, err := inspectUserStateFn(username)
 	if err != nil {
 		return UserStateInfo{}, err
 	}
@@ -543,7 +572,7 @@ func passwordlessSudoEnabled(username string) bool {
 }
 
 func userHomeDir(username string) string {
-	state, err := inspectUserState(username)
+	state, err := inspectUserStateFn(username)
 	if err == nil && state.HomeDir != "" {
 		return state.HomeDir
 	}

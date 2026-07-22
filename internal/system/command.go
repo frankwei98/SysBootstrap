@@ -331,9 +331,41 @@ func NvmShellScriptForContextInHome(sys *Context, script string) string {
 	return NvmShellScriptForContext(sys, fmt.Sprintf("cd %s\n%s", shellQuote(home), script))
 }
 
+// NvmShellScriptForHome creates an nvm-aware shell explicitly rooted at home.
+// It is used by uninstall paths that run under sudo but must inspect and
+// remove packages belonging to the invoking user rather than /root.
+func NvmShellScriptForHome(home, script string) string {
+	if home == "" {
+		return NvmShellScript(script)
+	}
+	return fmt.Sprintf(`export HOME=%s
+export NVM_DIR=%s
+export PNPM_HOME="$HOME/.local/share/pnpm"
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$PNPM_HOME:$PNPM_HOME/bin:$BUN_INSTALL/bin:$PATH"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+%s`, shellQuote(home), shellQuote(filepath.Join(home, ".nvm")), script)
+}
+
 // RunInNvmShell executes a script in a bash shell with nvm sourced.
 func RunInNvmShell(script string) (*Result, error) {
 	return RunWithInput("", "bash", "-c", NvmShellScript(script))
+}
+
+// RunInNvmShellForHome executes an nvm-aware shell against an explicit home.
+// When launched through sudo, it also drops back to the invoking user when
+// that user's home is the requested target. This prevents package-manager
+// operations during uninstall from creating root-owned files in that home.
+func RunInNvmShellForHome(home, script string) (*Result, error) {
+	if os.Geteuid() == 0 {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
+			if target, err := user.Lookup(sudoUser); err == nil && target.HomeDir != "" && filepath.Clean(home) == filepath.Clean(target.HomeDir) {
+				args := []string{"-n", "-H", "-u", target.Username, "env", "HOME=" + target.HomeDir, "bash", "-c", NvmShellScriptForHome(home, script)}
+				return RunWithInput("", "sudo", args...)
+			}
+		}
+	}
+	return RunWithInput("", "bash", "-c", NvmShellScriptForHome(home, script))
 }
 
 // RunInNvmShellForContext executes an nvm-aware shell as the user-level target.
@@ -353,17 +385,17 @@ func NvmCommandExists(name string) bool {
 	return err == nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != ""
 }
 
+// NvmCommandExistsForHome checks a command in the nvm environment rooted at
+// home, avoiding accidental use of root's Node installation during sudo runs.
+func NvmCommandExistsForHome(home, name string) bool {
+	res, err := RunInNvmShellForHome(home, "command -v "+shellQuote(name))
+	return err == nil && res != nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != ""
+}
+
 // NvmCommandExistsForContext checks command availability for the user-level target.
 func NvmCommandExistsForContext(sys *Context, name string) bool {
 	res, err := RunInNvmShellForContext(sys, fmt.Sprintf("command -v %s", name))
 	return err == nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != ""
-}
-
-// RetryConfig defines bounded retry behavior for idempotent operations.
-type RetryConfig struct {
-	MaxAttempts int
-	BaseDelay   time.Duration
-	Timeout     time.Duration
 }
 
 // RunApt executes apt-get with one bounded, noninteractive policy. Acquire
@@ -381,37 +413,4 @@ func RunApt(ctx context.Context, args ...string) (*Result, error) {
 	}
 	aptArgs = append(aptArgs, args...)
 	return RunWithContext(opCtx, "env", aptArgs...)
-}
-
-// RunWithRetry runs a command with bounded retries. Retries only for failures
-// that appear idempotent (network, transient). Cancellation and context
-// deadline errors are not retried.
-func RunWithRetry(ctx context.Context, cfg RetryConfig, name string, args ...string) (*Result, error) {
-	var lastErr error
-	for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
-		if attempt > 0 {
-			delay := time.NewTimer(cfg.BaseDelay * time.Duration(1<<uint(attempt-1)))
-			select {
-			case <-ctx.Done():
-				delay.Stop()
-				return nil, ctx.Err()
-			case <-delay.C:
-			}
-		}
-		opCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-		res, err := RunWithContext(opCtx, name, args...)
-		cancel()
-		if err == nil && res.ExitCode == 0 {
-			return res, nil
-		}
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return res, err
-			}
-			lastErr = err
-		} else {
-			lastErr = fmt.Errorf("%s exited with code %d", name, res.ExitCode)
-		}
-	}
-	return nil, fmt.Errorf("%s: all %d attempts failed: %w", name, cfg.MaxAttempts, lastErr)
 }
