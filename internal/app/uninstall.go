@@ -301,6 +301,7 @@ var rcCleanupPatterns = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)^\s*(export\s+)?PATH=.*\$BUN_INSTALL`), // PATH lines that add BUN_INSTALL
 	},
 	"pnpm": {
+		regexp.MustCompile(`(?i)^\s*#\s*SYS_BOOTSTRAP_PNPM_HOME\s*$`),
 		regexp.MustCompile(`(?i)^\s*(export\s+)?PNPM_HOME=`),
 		regexp.MustCompile(`(?i)^\s*(export\s+)?PATH=.*\$PNPM_HOME`), // PATH lines that add PNPM_HOME
 	},
