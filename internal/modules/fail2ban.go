@@ -23,6 +23,8 @@ var sshdConfigPath = "/etc/ssh/sshd_config"
 var fail2banRunAptFn = system.RunApt
 var fail2banDurationRegex = regexp.MustCompile(`^[1-9][0-9]*(?:[smhdw])?$`)
 
+const fail2banEffectiveSSHPortFallbackWarning = "warning: sshd -T could not resolve effective SSH ports, so this preview may omit sshd_config.d drop-ins; run as root to verify"
+
 type Fail2banModule struct{}
 
 func NewFail2banModule() *Fail2banModule { return &Fail2banModule{} }
@@ -62,18 +64,23 @@ func (m *Fail2banModule) Plan(ctx context.Context, sys *system.Context, cfg *typ
 	}
 	jailConfigured, _ := fail2banSSHDJailMatchesConfig(cfg)
 	if !jailConfigured {
+		ports, fellBack := resolveEffectiveSSHPortsForFail2ban(cfg)
+		detail := fmt.Sprintf("%s (port %s, maxretry %d, findtime %s, bantime %s, backend %s%s)",
+			fail2banManagedJailPath,
+			fail2banSSHPortSettingForPorts(ports),
+			fail2banMaxRetry(cfg),
+			fail2banFindTime(cfg),
+			fail2banBanTime(cfg),
+			fail2banBackend(cfg),
+			fail2banIgnoreIPSummary(cfg),
+		)
+		if fellBack {
+			detail += "; " + fail2banEffectiveSSHPortFallbackWarning
+		}
 		steps = append(steps, types.Step{
 			Module: "fail2ban",
 			Title:  "Write sshd jail config",
-			Detail: fmt.Sprintf("%s (port %s, maxretry %d, findtime %s, bantime %s, backend %s%s)",
-				fail2banManagedJailPath,
-				fail2banSSHPortSetting(cfg),
-				fail2banMaxRetry(cfg),
-				fail2banFindTime(cfg),
-				fail2banBanTime(cfg),
-				fail2banBackend(cfg),
-				fail2banIgnoreIPSummary(cfg),
-			),
+			Detail: detail,
 		})
 	}
 	if !fail2banServiceEnabled() {
@@ -156,7 +163,8 @@ func fail2banSSHDJailMatchesConfig(cfg *types.Config) (bool, string) {
 	if !strings.Contains(text, "[sshd]") || !strings.Contains(text, "enabled = true") {
 		return false, "sshd jail missing"
 	}
-	expectedPort := "port = " + fail2banSSHPortSetting(cfg)
+	ports, fellBack := resolveEffectiveSSHPortsForFail2ban(cfg)
+	expectedPort := "port = " + fail2banSSHPortSettingForPorts(ports)
 	expectedMaxRetry := fmt.Sprintf("maxretry = %d", fail2banMaxRetry(cfg))
 	expectedFindTime := fmt.Sprintf("findtime = %s", fail2banFindTime(cfg))
 	expectedBanTime := fmt.Sprintf("bantime = %s", fail2banBanTime(cfg))
@@ -171,7 +179,11 @@ func fail2banSSHDJailMatchesConfig(cfg *types.Config) (bool, string) {
 	if len(missing) > 0 {
 		return false, "sshd jail differs from target policy"
 	}
-	return true, "sshd jail configured"
+	summary := "sshd jail configured"
+	if fellBack {
+		summary += "; " + fail2banEffectiveSSHPortFallbackWarning
+	}
+	return true, summary
 }
 
 func writeFail2banManagedJail(cfg *types.Config) error {
@@ -310,11 +322,19 @@ func effectiveSSHPort(cfg *types.Config) int {
 // sshd -T, including sshd_config.d snippets. A requested SSH port takes
 // precedence while the SSH module is configuring that exact target.
 func effectiveSSHPortsForFail2ban(cfg *types.Config) []int {
+	ports, _ := resolveEffectiveSSHPortsForFail2ban(cfg)
+	return ports
+}
+
+// resolveEffectiveSSHPortsForFail2ban reports whether it had to fall back to
+// parsing only the main sshd_config. That fallback cannot see config drop-ins,
+// so plan output must not imply that its port list is authoritative.
+func resolveEffectiveSSHPortsForFail2ban(cfg *types.Config) ([]int, bool) {
 	if cfg != nil && cfg.SSHPort > 0 {
-		return []int{cfg.SSHPort}
+		return []int{cfg.SSHPort}, false
 	}
 	if ports, err := effectiveSSHPortsFunc(context.Background()); err == nil && len(ports) > 0 {
-		return ports
+		return ports, false
 	}
 	if content, err := os.ReadFile(sshdConfigPath); err == nil {
 		for _, line := range strings.Split(string(content), "\n") {
@@ -325,16 +345,19 @@ func effectiveSSHPortsForFail2ban(cfg *types.Config) []int {
 			fields := strings.Fields(line)
 			if len(fields) == 2 && strings.EqualFold(fields[0], "port") {
 				if port, err := strconv.Atoi(fields[1]); err == nil && port >= 1 && port <= 65535 {
-					return []int{port}
+					return []int{port}, true
 				}
 			}
 		}
 	}
-	return []int{22}
+	return []int{22}, true
 }
 
 func fail2banSSHPortSetting(cfg *types.Config) string {
-	ports := effectiveSSHPortsForFail2ban(cfg)
+	return fail2banSSHPortSettingForPorts(effectiveSSHPortsForFail2ban(cfg))
+}
+
+func fail2banSSHPortSettingForPorts(ports []int) string {
 	values := make([]string, 0, len(ports))
 	seen := make(map[int]bool, len(ports))
 	for _, port := range ports {
