@@ -108,7 +108,7 @@ type Module interface {
 
 ## Module Dependency Order
 
-```
+```text
 base (always included in full mode, mandatory)
   ├── zellij (default software module; its install failure is a warning)
   └── docker
