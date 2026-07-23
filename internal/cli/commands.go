@@ -482,8 +482,12 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 
 	runner := app.NewRunner(registry, sys, log)
 	runner.SetSSHCheckpoint(ui.NewSSHCheckpointFunc())
-	if err := runner.Run(ctx, cfg, []string{moduleID}); err != nil {
+	result, err := runner.RunWithResult(ctx, cfg, []string{moduleID})
+	if err != nil {
 		return err
+	}
+	if result.ModuleFailed(moduleID) {
+		return fmt.Errorf("module %s failed; see warning output above", m.Name())
 	}
 
 	if needsShellReloadHint(append(append([]string{}, missing...), moduleID)) {
