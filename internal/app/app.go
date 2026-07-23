@@ -8,6 +8,7 @@ import (
 func NewRegistry() *modules.Registry {
 	r := modules.NewRegistry()
 	r.Register(modules.NewBaseModule())
+	r.Register(modules.NewZellijModule())
 	r.Register(modules.NewSSHModule())
 	r.Register(modules.NewNodeModule())
 	r.Register(modules.NewAIModule())

@@ -49,17 +49,20 @@ For setting up a fresh VM end to end:
 ```bash
 sys-bootstrap run
 # Choose run mode: full
-# base is always included
+# base and zellij are always included
 # Select any extra modules you need
 ```
 
-Full mode runs `base` first, then optionally `ssh`, `node`, `ai`, `user`, `ssh_keygen`, `docker`, `timezone`, and `fail2ban`. If you select `ai`, `node` is added automatically.
+Full mode runs `base` and `zellij` first, then optionally `ssh`, `node`, `ai`, `user`, `ssh_keygen`, `docker`, `timezone`, and `fail2ban`. If you select `ai`, `node` is added automatically.
+
+`base` failure stops the run because it provides system prerequisites. A failed optional software installation is reported as a warning, and modules that depend on it are skipped.
 
 ## What It Sets Up
 
 | Module | What You Get | Root |
 | --- | --- | --- |
-| **base** | `git`, `curl`, `zsh`, `neovim`, `zellij`, apt update/upgrade | Yes |
+| **base** | `sudo`, `zsh`, `gnupg`, `apt-transport-https`, `git`, `curl`, `wget`, `unzip`, `tree`, `neovim`, apt update/upgrade | Yes |
+| **zellij** | Zellij terminal multiplexer | Yes |
 | **node** | nvm, Node.js LTS, pnpm, bun | No |
 | **ai** | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://github.com/openai/codex) | No |
 | **ssh** | SSH hardening, custom port, authorized keys, optional auth tightening | Yes |

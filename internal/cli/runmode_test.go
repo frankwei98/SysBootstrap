@@ -39,6 +39,7 @@ func (m *testModule) Run(context.Context, *system.Context, *types.Config, *loggi
 func newTestRegistry() *modules.Registry {
 	r := modules.NewRegistry()
 	r.Register(&testModule{id: "base", defaultOn: true, needsRoot: true})
+	r.Register(&testModule{id: "zellij", defaultOn: true, needsRoot: true, deps: []string{"base"}})
 	r.Register(&testModule{id: "ssh", needsRoot: true})
 	r.Register(&testModule{id: "node"})
 	r.Register(&testModule{id: "ai", deps: []string{"node"}})
@@ -86,6 +87,9 @@ func TestBuildModuleList_FullMode_HasBase(t *testing.T) {
 	}
 	if !contains(ordered, "base") {
 		t.Errorf("full mode should inject base, got: %v", ordered)
+	}
+	if !contains(ordered, "zellij") {
+		t.Errorf("full mode should inject zellij, got: %v", ordered)
 	}
 	// base should be first (registered first)
 	if ordered[0] != "base" {

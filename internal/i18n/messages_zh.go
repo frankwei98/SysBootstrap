@@ -42,13 +42,15 @@ var zhCNMessages = map[string]string{
 	"doctor_support_tier_value":   "检测结果",
 
 	// runner
-	"runner_module_needs_root": "模块 %s 需要 root 权限，请使用 sudo 重新运行",
-	"runner_starting":          "正在启动 %s...",
-	"runner_skipping":          "%s — 已配置，跳过",
-	"runner_completed":         "%s 完成",
-	"runner_failed":            "%s 失败：%v",
-	"runner_all_done":          "全部完成！",
-	"runner_cancelled":         "执行已取消",
+	"runner_module_needs_root":            "模块 %s 需要 root 权限，请使用 sudo 重新运行",
+	"runner_starting":                     "正在启动 %s...",
+	"runner_skipping":                     "%s — 已配置，跳过",
+	"runner_completed":                    "%s 完成",
+	"runner_failed":                       "%s 失败：%v",
+	"runner_failed_continue":              "%s 失败：%v；继续执行不依赖它的模块",
+	"runner_skipping_failed_dependencies": "%s 已跳过，因为所需模块失败：%v",
+	"runner_all_done":                     "全部完成！",
+	"runner_cancelled":                    "执行已取消",
 
 	// module command
 	"module_requires_root":      "模块 %s 需要 root 权限 — 请使用 sudo 重新运行",

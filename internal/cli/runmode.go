@@ -11,7 +11,7 @@ import (
 // buildModuleList takes the user-selected module IDs and a run mode, then
 // returns the final ordered module list:
 //   - Ensures node is present when ai is selected.
-//   - Injects base in full mode.
+//   - Injects all default-enabled modules in full mode.
 //   - Resolves dependency order via the registry.
 //
 // This is a pure function (no UI, no system checks) extracted for testability.
@@ -31,9 +31,15 @@ func buildModuleList(registry *modules.Registry, mode RunMode, selected []string
 		selected = append([]string{"node"}, selected...)
 	}
 
-	// Inject base only in full mode
+	// Inject default-enabled modules only in full mode.
 	if mode == RunModeFull {
-		selected = append([]string{"base"}, selected...)
+		var defaults []string
+		for _, m := range registry.All() {
+			if m.DefaultEnabled() {
+				defaults = append(defaults, m.ID())
+			}
+		}
+		selected = append(defaults, selected...)
 	}
 
 	return registry.ResolveOrder(selected)
