@@ -116,6 +116,9 @@ func TestLiveSSHTwoPhaseCutover(t *testing.T) {
 	if rootSettings["permitrootlogin"] != "no" {
 		t.Fatalf("PermitRootLogin=%q, want no", rootSettings["permitrootlogin"])
 	}
+	if err := verifyOnlyListeningPorts(ctx, []int{port}); err != nil {
+		t.Fatalf("final listener set is not exclusive to the requested port: %v", err)
+	}
 }
 
 func TestLiveSSHDeclineKeepsDualPath(t *testing.T) {

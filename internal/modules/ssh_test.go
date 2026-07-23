@@ -656,6 +656,15 @@ LISTEN 0 4096 127.0.0.53:53 0.0.0.0:* users:(("systemd-resolved",pid=35,fd=14))`
 	}
 }
 
+func TestSSHListeningPortsMatchExactly(t *testing.T) {
+	if !sshListeningPortsMatchExactly(map[int]bool{22122: true}, map[int]bool{22122: true}) {
+		t.Fatal("identical port sets should match")
+	}
+	if sshListeningPortsMatchExactly(map[int]bool{22: true, 22122: true}, map[int]bool{22122: true}) {
+		t.Fatal("legacy SSH listener must prevent an exact match")
+	}
+}
+
 func TestVerifyOnlyEffectivePortsRejectsAdditionalListener(t *testing.T) {
 	orig := effectiveSSHPortsFunc
 	effectiveSSHPortsFunc = func(context.Context) ([]int, error) { return []int{22, 22333}, nil }

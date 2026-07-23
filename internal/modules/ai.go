@@ -217,7 +217,8 @@ func pnpmShellPathConfigured(sys *system.Context) bool {
 }
 
 func pnpmShellFileConfigured(content string) bool {
-	return strings.Contains(content, "SYS_BOOTSTRAP_PNPM_HOME") || strings.Contains(content, "$PNPM_HOME/bin")
+	return strings.Contains(content, `export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"`) &&
+		strings.Contains(content, `export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"`)
 }
 
 func ensurePnpmShellPath(sys *system.Context) error {
@@ -228,10 +229,10 @@ func ensurePnpmShellPath(sys *system.Context) error {
 
 	script := fmt.Sprintf(`set -e
 export HOME=%s
-marker="# SYS_BOOTSTRAP_PNPM_HOME"
 for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
   touch "$rc"
-  if ! grep -qF "$marker" "$rc"; then
+  if ! grep -qF 'export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"' "$rc" || \
+     ! grep -qF 'export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"' "$rc"; then
     cat >> "$rc" <<'EOF'
 
 # SYS_BOOTSTRAP_PNPM_HOME

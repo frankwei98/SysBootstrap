@@ -141,6 +141,29 @@ export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
 	}
 }
 
+func TestPnpmShellFileConfiguredRejectsOrphanedMarker(t *testing.T) {
+	if pnpmShellFileConfigured("# SYS_BOOTSTRAP_PNPM_HOME\n") {
+		t.Fatal("orphaned marker must not be treated as a configured pnpm environment")
+	}
+}
+
+func TestEnsurePnpmShellPathRepairsOrphanedMarker(t *testing.T) {
+	home := t.TempDir()
+	sys := &system.Context{CurrentUser: &user.User{Username: "testuser", HomeDir: home}}
+	for _, name := range []string{".zshrc", ".bashrc", ".profile"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte("# SYS_BOOTSTRAP_PNPM_HOME\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	if err := ensurePnpmShellPath(sys); err != nil {
+		t.Fatalf("ensurePnpmShellPath failed: %v", err)
+	}
+	if !pnpmShellPathConfigured(sys) {
+		t.Fatal("pnpm shell path should be configured after repairing orphaned markers")
+	}
+}
+
 func TestEnsureNodeShellPathWritesStartupFiles(t *testing.T) {
 	home := t.TempDir()
 	sys := &system.Context{

@@ -313,11 +313,26 @@ func verifyFinalAuthPolicy(ctx context.Context, sys *system.Context, cfg *types.
 }
 
 func verifyListeningPorts(ctx context.Context, wanted []int) error {
+	return waitForSSHListeningPorts(ctx, wanted, false)
+}
+
+// verifyOnlyListeningPorts waits until sshd/socket listeners exactly match the
+// requested ports. Finalization must prove that the legacy listener is gone,
+// not merely that the replacement port appeared.
+func verifyOnlyListeningPorts(ctx context.Context, wanted []int) error {
+	return waitForSSHListeningPorts(ctx, wanted, true)
+}
+
+func waitForSSHListeningPorts(ctx context.Context, wanted []int, requireExact bool) error {
 	if !system.CommandExists("ss") {
 		return fmt.Errorf("cannot verify SSH listeners: ss command is unavailable")
 	}
 	opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	wantedSet := make(map[int]bool, len(wanted))
+	for _, port := range wanted {
+		wantedSet[port] = true
+	}
 	var lastListening map[int]bool
 	for {
 		res, err := system.RunWithContext(opCtx, "ss", "-ltnpH")
@@ -325,14 +340,14 @@ func verifyListeningPorts(ctx context.Context, wanted []int) error {
 			return fmt.Errorf("cannot inspect listening TCP ports: %v (%s)", err, resultStderr(res))
 		}
 		lastListening = parseSSHListeningPorts(res.Stdout)
-		allListening := true
-		for _, port := range wanted {
+		allListening := len(wantedSet) > 0
+		for port := range wantedSet {
 			if !lastListening[port] {
 				allListening = false
 				break
 			}
 		}
-		if allListening {
+		if allListening && (!requireExact || sshListeningPortsMatchExactly(lastListening, wantedSet)) {
 			return nil
 		}
 		timer := time.NewTimer(100 * time.Millisecond)
@@ -344,10 +359,25 @@ func verifyListeningPorts(ctx context.Context, wanted []int) error {
 				observed = append(observed, port)
 			}
 			sort.Ints(observed)
+			if requireExact {
+				return fmt.Errorf("SSH listeners did not converge exclusively to %v (observed SSH ports: %v): %w", wanted, observed, opCtx.Err())
+			}
 			return fmt.Errorf("SSH listeners %v did not become ready (observed SSH ports: %v): %w", wanted, observed, opCtx.Err())
 		case <-timer.C:
 		}
 	}
+}
+
+func sshListeningPortsMatchExactly(observed, wanted map[int]bool) bool {
+	if len(observed) != len(wanted) {
+		return false
+	}
+	for port := range wanted {
+		if !observed[port] {
+			return false
+		}
+	}
+	return true
 }
 
 func parseSSHListeningPorts(output string) map[int]bool {
@@ -583,8 +613,8 @@ func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Confi
 	if err := reloadSSH(j.reloadTarget); err != nil {
 		return fmt.Errorf("SSH service reload failed during finalization: %w", err)
 	}
-	if err := verifyListeningPorts(ctx, []int{port}); err != nil {
-		return fmt.Errorf("final SSH listener validation failed: %w", err)
+	if err := verifyOnlyListeningPorts(ctx, []int{port}); err != nil {
+		return fmt.Errorf("final SSH exclusive-listener validation failed: %w", err)
 	}
 	log.Successf("SSH activation unit %s reloaded", j.reloadTarget.unit)
 

@@ -590,7 +590,8 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 func TestCleanShellRC_RemovesPnpmLines(t *testing.T) {
 	home := t.TempDir()
 	rcFile := filepath.Join(home, ".bashrc")
-	content := `export PNPM_HOME="$HOME/.local/share/pnpm"
+	content := `# SYS_BOOTSTRAP_PNPM_HOME
+export PNPM_HOME="$HOME/.local/share/pnpm"
 export PATH="$PNPM_HOME:$PATH"
 `
 	os.WriteFile(rcFile, []byte(content), 0o644)
@@ -600,14 +601,17 @@ export PATH="$PNPM_HOME:$PATH"
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if removed != 2 {
-		t.Errorf("expected 2 lines removed, got %d", removed)
+	if removed != 3 {
+		t.Errorf("expected 3 lines removed, got %d", removed)
 	}
 
 	result, _ := os.ReadFile(rcFile)
 	resultStr := string(result)
 	if strings.Contains(resultStr, "PNPM_HOME") {
 		t.Error("PNPM_HOME line should have been removed")
+	}
+	if strings.Contains(resultStr, "SYS_BOOTSTRAP_PNPM_HOME") {
+		t.Error("pnpm marker should have been removed")
 	}
 }
 
