@@ -400,8 +400,20 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 			return fmt.Errorf(i18n.T("module_cannot_run_without"), m.Name(), strings.Join(missing, ", "))
 		}
 		runner := app.NewRunner(registry, sys, log)
-		if err := runner.Run(ctx, &types.Config{SSHPort: modules.DefaultSSHPort}, missing); err != nil {
+		result, err := runner.RunWithResult(ctx, &types.Config{SSHPort: modules.DefaultSSHPort}, missing)
+		if err != nil {
 			return fmt.Errorf("dependency %s failed: %w", strings.Join(missing, ", "), err)
+		}
+		var failedDeps []string
+		for _, dep := range missing {
+			if result.ModuleFailed(dep) {
+				failedDeps = append(failedDeps, dep)
+			}
+		}
+		if len(failedDeps) > 0 {
+			log.SetModule(m.Name())
+			log.Warnf(i18n.T("runner_skipping_failed_dependencies"), m.Name(), failedDeps)
+			return nil
 		}
 	}
 
@@ -468,36 +480,12 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 		}
 	}
 
-	log.SetModule(m.Name())
-	log.Infof(i18n.T("runner_starting"), m.Name())
-
-	check := m.Check(ctx, sys)
-	steps, err := m.Plan(ctx, sys, cfg)
-	if err != nil {
-		return fmt.Errorf("module %s plan failed: %w", m.Name(), err)
-	}
-	if moduleID == "user" {
-		if userCheck, err := modules.DescribeUserCheckForConfig(cfg); err == nil {
-			check = userCheck
-		}
-	}
-	check = app.ApplyConfigSensitiveModuleState(moduleID, check, steps)
-	if app.ShouldSkipSatisfiedForModule(moduleID, cfg, check) {
-		log.Successf(i18n.T("runner_skipping"), m.Name())
-		if check.Message != "" {
-			log.Info(check.Message)
-		}
-		return nil
+	runner := app.NewRunner(registry, sys, log)
+	runner.SetSSHCheckpoint(ui.NewSSHCheckpointFunc())
+	if err := runner.Run(ctx, cfg, []string{moduleID}); err != nil {
+		return err
 	}
 
-	if sm, ok := m.(*modules.SSHModule); ok {
-		sm.SetCheckpoint(ui.NewSSHCheckpointFunc())
-	}
-	if err := m.Run(ctx, sys, cfg, log); err != nil {
-		return fmt.Errorf(i18n.T("runner_failed"), m.Name(), err)
-	}
-
-	log.Successf(i18n.T("runner_completed"), m.Name())
 	if needsShellReloadHint(append(append([]string{}, missing...), moduleID)) {
 		log.Warnf(i18n.T("shell_reload_hint"), shellReloadCommand())
 	}

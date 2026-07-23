@@ -25,7 +25,7 @@ func ModuleSelect(registry *modules.Registry) ([]string, error) {
 	var options []huh.Option[string]
 	for _, m := range registry.All() {
 		if m.DefaultEnabled() {
-			continue // base is always included
+			continue // default-enabled modules are always included in full mode
 		}
 		options = append(options, huh.NewOption(m.Name(), m.ID()))
 	}

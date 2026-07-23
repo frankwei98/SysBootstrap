@@ -42,13 +42,15 @@ var enMessages = map[string]string{
 	"doctor_support_tier_value":   "detected",
 
 	// runner
-	"runner_module_needs_root": "module %s requires root, please re-run with sudo",
-	"runner_starting":          "Starting %s...",
-	"runner_skipping":          "%s — already configured, skipping",
-	"runner_completed":         "%s completed",
-	"runner_failed":            "%s failed: %v",
-	"runner_all_done":          "All done!",
-	"runner_cancelled":         "Execution cancelled",
+	"runner_module_needs_root":            "module %s requires root, please re-run with sudo",
+	"runner_starting":                     "Starting %s...",
+	"runner_skipping":                     "%s — already configured, skipping",
+	"runner_completed":                    "%s completed",
+	"runner_failed":                       "%s failed: %v",
+	"runner_failed_continue":              "%s failed: %v; continuing with independent modules",
+	"runner_skipping_failed_dependencies": "%s skipped because required module(s) failed: %v",
+	"runner_all_done":                     "All done!",
+	"runner_cancelled":                    "Execution cancelled",
 
 	// module command
 	"module_requires_root":      "module %s requires root — please re-run with sudo",

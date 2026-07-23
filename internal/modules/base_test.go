@@ -50,15 +50,15 @@ func TestSummarizeBasePackages(t *testing.T) {
 }
 
 func TestBuildBaseCheckMessage(t *testing.T) {
-	msg := buildBaseCheckMessage([]string{"git", "zsh"}, []string{"curl"}, false)
+	msg := buildBaseCheckMessage([]string{"git", "zsh"}, []string{"curl"})
 	if !strings.Contains(msg, "Installed packages: git, zsh") {
 		t.Fatalf("missing installed section: %s", msg)
 	}
 	if !strings.Contains(msg, "Missing packages: curl") {
 		t.Fatalf("missing package section: %s", msg)
 	}
-	if !strings.Contains(msg, "zellij missing") {
-		t.Fatalf("missing zellij section: %s", msg)
+	if strings.Contains(msg, "zellij") {
+		t.Fatalf("base check must not include zellij: %s", msg)
 	}
 }
 
@@ -86,10 +86,19 @@ func TestBasePlanIncludesMissingPackagesOnly(t *testing.T) {
 	for _, step := range steps {
 		if step.Title == "Install base packages" {
 			foundBaseInstall = true
-			break
+		}
+		if step.Title == "Install zellij" {
+			t.Fatal("base plan must not include zellij; it is an independent module")
 		}
 	}
 	if !foundBaseInstall {
 		t.Fatal("expected plan to include base package installation step")
+	}
+}
+
+func TestBaseCheckDoesNotMentionZellij(t *testing.T) {
+	result := NewBaseModule().Check(context.Background(), &system.Context{})
+	if strings.Contains(result.Message, "zellij") {
+		t.Fatalf("base check should not include zellij state, got: %q", result.Message)
 	}
 }

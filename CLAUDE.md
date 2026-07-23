@@ -64,7 +64,8 @@ internal/
   modules/
     module.go                Module interface definition
     registry.go              Module registry with dependency resolution (topological sort)
-    base.go                  apt update/upgrade, base packages, zellij
+    base.go                  apt update/upgrade and base packages
+    zellij.go                Zellij terminal multiplexer installation
     ssh.go                   SSH hardening (port, keys, root/password login)
     node.go                  nvm, Node.js LTS, pnpm, bun
     ai.go                    Claude Code, Codex (pnpm global install)
@@ -101,15 +102,16 @@ type Module interface {
 - **Idempotency** is required — `Check()` should return `Satisfied: true` when already configured
 - **Dependencies** — declare in `Dependencies()`, registry resolves topological order
 - **Root check** — set `RequiresRoot() bool`; runner enforces before execution
-- **Error handling** — return descriptive errors with context; runner logs stderr on failure
+- **Error handling** — return descriptive errors with context; base failures are fatal, while optional software installation failures are logged as warnings and their dependents are skipped
 - **User interaction** — use `huh` forms in `ui/forms.go`, not inline in modules
 - **New modules** — register in `app.NewRegistry()` in `internal/app/app.go`
 
 ## Module Dependency Order
 
 ```
-base (always first, mandatory)
-  ↓
+base (always included in full mode, mandatory)
+  ├── zellij (default software module; its install failure is a warning)
+  └── docker
 node → ai (ai depends on node)
 ssh, user, ssh_keygen (independent)
 ```

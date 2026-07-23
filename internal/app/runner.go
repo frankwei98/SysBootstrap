@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
@@ -17,6 +18,18 @@ type Runner struct {
 	sys           *system.Context
 	log           *logging.Logger
 	sshCheckpoint types.CheckpointFunc
+}
+
+// RunResult records non-fatal module failures from one run. Callers can use it
+// to avoid launching a module whose prerequisite only produced a warning.
+type RunResult struct {
+	failedModules map[string]bool
+}
+
+// ModuleFailed reports whether a module failed or was skipped because one of
+// its required modules failed during this run.
+func (r *RunResult) ModuleFailed(moduleID string) bool {
+	return r != nil && r.failedModules[moduleID]
 }
 
 // NewRunner creates a new module runner.
@@ -37,29 +50,49 @@ func (r *Runner) SetSSHCheckpoint(f types.CheckpointFunc) {
 
 // Run executes the given modules in dependency order.
 func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error {
+	_, err := r.RunWithResult(ctx, cfg, ids)
+	return err
+}
+
+// RunWithResult executes the given modules in dependency order and returns
+// non-fatal failures alongside any fatal error.
+func (r *Runner) RunWithResult(ctx context.Context, cfg *types.Config, ids []string) (*RunResult, error) {
+	result := &RunResult{failedModules: make(map[string]bool)}
 	ordered, err := r.registry.ResolveOrder(ids)
 	if err != nil {
-		return fmt.Errorf("dependency resolution failed: %w", err)
+		return result, fmt.Errorf("dependency resolution failed: %w", err)
 	}
 
 	var pendingSSH bool
 	for _, id := range ordered {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+
 		m, err := r.registry.Get(id)
 		if err != nil {
-			return err
+			return result, err
 		}
 
 		if m.RequiresRoot() && !r.sys.IsRoot {
-			return fmt.Errorf(i18n.T("runner_module_needs_root"), m.Name())
+			return result, fmt.Errorf(i18n.T("runner_module_needs_root"), m.Name())
 		}
 
 		r.log.SetModule(m.Name())
+		if failedDeps := failedDependencies(m, result.failedModules); len(failedDeps) > 0 {
+			r.log.Warnf(i18n.T("runner_skipping_failed_dependencies"), m.Name(), failedDeps)
+			result.failedModules[m.ID()] = true
+			continue
+		}
 		r.log.Infof(i18n.T("runner_starting"), m.Name())
 
 		check := m.Check(ctx, r.sys)
 		steps, planErr := m.Plan(ctx, r.sys, cfg)
 		if planErr != nil {
-			return fmt.Errorf("module %s plan failed: %w", m.Name(), planErr)
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
+			return result, fmt.Errorf("module %s plan failed: %w", m.Name(), planErr)
 		}
 		if m.ID() == "user" {
 			if userCheck, err := modules.DescribeUserCheckForConfig(cfg); err == nil {
@@ -88,8 +121,16 @@ func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error
 			continue
 		}
 		if err != nil {
-			r.log.Errorf(i18n.T("runner_failed"), m.Name(), err)
-			return fmt.Errorf("module %s failed: %w", m.Name(), err)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return result, ctxErr
+			}
+			if !ShouldWarnOnModuleFailure(m.ID(), ctx, err) {
+				r.log.Errorf(i18n.T("runner_failed"), m.Name(), err)
+				return result, fmt.Errorf("module %s failed: %w", m.Name(), err)
+			}
+			result.failedModules[m.ID()] = true
+			r.log.Warnf(i18n.T("runner_failed_continue"), m.Name(), err)
+			continue
 		}
 
 		r.log.Successf(i18n.T("runner_completed"), m.Name())
@@ -97,9 +138,35 @@ func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error
 
 	r.log.SetModule("")
 	if pendingSSH {
-		return types.ErrSSHPendingConfirmation
+		return result, types.ErrSSHPendingConfirmation
 	}
-	return nil
+	return result, nil
+}
+
+func failedDependencies(m modules.Module, failedModules map[string]bool) []string {
+	var failed []string
+	for _, dependency := range m.Dependencies() {
+		if failedModules[dependency] {
+			failed = append(failed, dependency)
+		}
+	}
+	return failed
+}
+
+// ShouldWarnOnModuleFailure reports whether an installation failure may be
+// downgraded to a warning. Security and configuration modules remain fatal;
+// cancellation is always fatal so the caller's stop request is honored.
+func ShouldWarnOnModuleFailure(moduleID string, ctx context.Context, err error) bool {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	switch moduleID {
+	case "zellij", "node", "ai", "docker", "fail2ban":
+		return true
+	default:
+		return false
+	}
 }
 
 func ApplyConfigSensitiveModuleState(moduleID string, check modules.CheckResult, steps []types.Step) modules.CheckResult {
