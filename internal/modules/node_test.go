@@ -214,6 +214,53 @@ func TestEnsureNodeShellPathWritesStartupFiles(t *testing.T) {
 	}
 }
 
+func TestEnsureNodeShellPathRestoresBunWithoutDuplicatingNodeEnvironment(t *testing.T) {
+	home := t.TempDir()
+	sys := &system.Context{
+		CurrentUser: &user.User{
+			Username: "testuser",
+			HomeDir:  home,
+		},
+	}
+	remainingNodeSetup := `# SYS_BOOTSTRAP_NODE_ENV
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+`
+	for _, name := range []string{".zshrc", ".bashrc", ".profile"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte(remainingNodeSetup), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	if err := ensureNodeShellPath(sys); err != nil {
+		t.Fatalf("ensureNodeShellPath failed: %v", err)
+	}
+	for _, rcFile := range nodeShellRCFiles(sys) {
+		content, err := os.ReadFile(rcFile)
+		if err != nil {
+			t.Fatalf("read %s: %v", rcFile, err)
+		}
+		text := string(content)
+		for _, line := range []string{
+			`export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"`,
+			`export PATH="$BUN_INSTALL/bin:$PATH"`,
+		} {
+			if !strings.Contains(text, line) {
+				t.Errorf("%s missing restored line %q:\n%s", rcFile, line, text)
+			}
+		}
+		for _, line := range []string{
+			"SYS_BOOTSTRAP_NODE_ENV",
+			`export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"`,
+			`[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"`,
+		} {
+			if count := strings.Count(text, line); count != 1 {
+				t.Errorf("%s contains %d copies of %q, want 1:\n%s", rcFile, count, line, text)
+			}
+		}
+	}
+}
+
 func TestNodeShellFileConfiguredRejectsOrphanedMarker(t *testing.T) {
 	if nodeShellFileConfigured("# SYS_BOOTSTRAP_NODE_ENV\n") {
 		t.Fatal("orphaned marker must not be treated as a configured Node environment")

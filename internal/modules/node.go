@@ -210,18 +210,20 @@ func ensureNodeShellPath(sys *system.Context) error {
 export HOME=%s
 for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
   touch "$rc"
-  if ! grep -qF 'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"' "$rc" || \
-     ! grep -qF '"$NVM_DIR/nvm.sh"' "$rc" || \
-     ! grep -qF 'export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"' "$rc" || \
-     ! grep -qF 'export PATH="$BUN_INSTALL/bin:$PATH"' "$rc"; then
-    cat >> "$rc" <<'EOF'
-
-# SYS_BOOTSTRAP_NODE_ENV
-export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
-export PATH="$BUN_INSTALL/bin:$PATH"
-EOF
+  if ! grep -qF 'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"' "$rc"; then
+    if ! grep -qF '# SYS_BOOTSTRAP_NODE_ENV' "$rc"; then
+      printf '\n# SYS_BOOTSTRAP_NODE_ENV\n' >> "$rc"
+    fi
+    printf '%%s\n' 'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"' >> "$rc"
+  fi
+  if ! grep -qF '"$NVM_DIR/nvm.sh"' "$rc"; then
+    printf '%%s\n' '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> "$rc"
+  fi
+  if ! grep -qF 'export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"' "$rc"; then
+    printf '%%s\n' 'export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"' >> "$rc"
+  fi
+  if ! grep -qF 'export PATH="$BUN_INSTALL/bin:$PATH"' "$rc"; then
+    printf '%%s\n' 'export PATH="$BUN_INSTALL/bin:$PATH"' >> "$rc"
   fi
 done`, shellQuote(home))
 	res, err := system.RunAsUserWithInput(sys, "", "bash", "-c", script)

@@ -99,6 +99,71 @@ func TestFail2banUsesEffectiveSSHDPortsFromDropIns(t *testing.T) {
 	}
 }
 
+func TestFail2banPlanWarnsWhenEffectivePortsFallback(t *testing.T) {
+	origPath := sshdConfigPath
+	origEffectivePorts := effectiveSSHPortsFunc
+	sshdConfigPath = filepath.Join(t.TempDir(), "sshd_config")
+	if err := os.WriteFile(sshdConfigPath, []byte("Port 22\n"), 0o644); err != nil {
+		t.Fatalf("write sshd config: %v", err)
+	}
+	effectiveSSHPortsFunc = func(context.Context) ([]int, error) {
+		return nil, os.ErrPermission
+	}
+	t.Cleanup(func() {
+		sshdConfigPath = origPath
+		effectiveSSHPortsFunc = origEffectivePorts
+	})
+
+	steps, err := NewFail2banModule().Plan(context.Background(), &system.Context{}, &types.Config{})
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	for _, step := range steps {
+		if step.Title == "Write sshd jail config" {
+			if !strings.Contains(step.Detail, "warning: sshd -T could not resolve effective SSH ports") {
+				t.Fatalf("expected fallback warning in plan detail, got %q", step.Detail)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected sshd jail config step, got %#v", steps)
+}
+
+func TestFail2banCheckWarnsWhenExistingJailMatchesFallbackPort(t *testing.T) {
+	origPath := os.Getenv("PATH")
+	origJailPath := fail2banManagedJailPath
+	origEffectivePorts := effectiveSSHPortsFunc
+	t.Cleanup(func() {
+		fail2banManagedJailPath = origJailPath
+		effectiveSSHPortsFunc = origEffectivePorts
+	})
+
+	tempBin := t.TempDir()
+	t.Setenv("PATH", tempBin+":"+origPath)
+	writeFakeCommand(t, tempBin, "dpkg", "#!/bin/sh\nexit 0\n")
+	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
+case "$1" in
+  is-enabled) echo enabled ;;
+  is-active) echo active ;;
+esac
+`)
+	fail2banManagedJailPath = filepath.Join(t.TempDir(), "jail.d", "99-sys-bootstrap.local")
+	effectiveSSHPortsFunc = func(context.Context) ([]int, error) {
+		return nil, os.ErrPermission
+	}
+	if err := writeFail2banManagedJail(&types.Config{}); err != nil {
+		t.Fatalf("write managed jail: %v", err)
+	}
+
+	result := NewFail2banModule().Check(context.Background(), &system.Context{})
+	if !result.Satisfied {
+		t.Fatalf("expected matching jail to satisfy check, got %#v", result)
+	}
+	if !strings.Contains(result.Message, "warning: sshd -T could not resolve effective SSH ports") {
+		t.Fatalf("expected fallback warning in check message, got %q", result.Message)
+	}
+}
+
 func TestFail2banRejectsUnsafePolicyValues(t *testing.T) {
 	m := NewFail2banModule()
 	_, err := m.Plan(context.Background(), &system.Context{}, &types.Config{Fail2banFindTime: "10m\nport = 22"})
