@@ -90,9 +90,9 @@ func TestPlanJSONStructure(t *testing.T) {
 		}
 	}
 
-	// Verify base is satisfied
-	if plan.Modules[0].Status != "satisfied" {
-		t.Errorf("base status = %q, want satisfied", plan.Modules[0].Status)
+	// Verify base is pending because its plan still contains an action.
+	if plan.Modules[0].Status != "pending" {
+		t.Errorf("base status = %q, want pending", plan.Modules[0].Status)
 	}
 	if plan.Modules[2].Dependencies == nil || len(plan.Modules[2].Dependencies) != 1 || plan.Modules[2].Dependencies[0] != "node" {
 		t.Errorf("ai dependencies = %v, want [node]", plan.Modules[2].Dependencies)
@@ -159,7 +159,6 @@ func TestPlanTextFormat(t *testing.T) {
 	r := modules.NewRegistry()
 	r.Register(&stubModule{
 		id: "base", name: "Base", satisfied: true,
-		steps: []types.Step{{Module: "base", Title: "Step 1"}},
 	})
 
 	ctx := context.Background()
@@ -183,6 +182,45 @@ func TestPlanTextFormat(t *testing.T) {
 	}
 	if !strings.Contains(text, "No actions required") {
 		t.Errorf("plan text should mark satisfied modules as requiring no actions:\n%s", text)
+	}
+}
+
+func TestPlanDerivesPendingStatusFromPlannedActions(t *testing.T) {
+	i18n.SetLang(i18n.LangEN)
+
+	r := modules.NewRegistry()
+	r.Register(&stubModule{
+		id:        "base",
+		name:      "Base Environment",
+		satisfied: true,
+		checkMsg:  "all packages installed",
+		steps: []types.Step{{
+			Module: "base",
+			Title:  "Switch APT mirror to CERNET",
+		}},
+	})
+
+	plan, err := GeneratePlan(context.Background(), &system.Context{}, &types.Config{}, r, []string{"base"})
+	if err != nil {
+		t.Fatalf("GeneratePlan failed: %v", err)
+	}
+
+	if plan.Modules[0].Status != "pending" {
+		t.Fatalf("base status = %q, want pending when plan has actions", plan.Modules[0].Status)
+	}
+	if plan.Counts.Pending != 1 || plan.Counts.Satisfied != 0 {
+		t.Fatalf("plan counts = %+v, want 1 pending and 0 satisfied", plan.Counts)
+	}
+	if !strings.Contains(plan.Summary, "1 module(s) to execute, 0 already satisfied") {
+		t.Fatalf("summary = %q, want pending action reflected", plan.Summary)
+	}
+
+	text := FormatPlanText(plan)
+	if !strings.Contains(text, "Switch APT mirror to CERNET") {
+		t.Fatalf("plan text hides planned action:\n%s", text)
+	}
+	if strings.Contains(text, "No actions required") {
+		t.Fatalf("plan text says no actions are required despite planned action:\n%s", text)
 	}
 }
 
