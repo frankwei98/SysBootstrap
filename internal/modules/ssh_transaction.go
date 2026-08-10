@@ -166,11 +166,11 @@ func getEffectiveServiceState(svc string) (active bool, enabled bool) {
 }
 
 // writeManagedDropIn writes the tool's managed config section.
-func writeManagedDropIn(port int, permitRootLogin, passwordAuth string) error {
-	return writeManagedDropInPorts([]int{port}, permitRootLogin, passwordAuth)
+func writeManagedDropIn(port int, permitRootLogin, passwordAuth, kbdInteractiveAuth string) error {
+	return writeManagedDropInPorts([]int{port}, permitRootLogin, passwordAuth, kbdInteractiveAuth)
 }
 
-func writeManagedDropInPorts(ports []int, permitRootLogin, passwordAuth string) error {
+func writeManagedDropInPorts(ports []int, permitRootLogin, passwordAuth, kbdInteractiveAuth string) error {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# Managed by sys-bootstrap — do not edit by hand\n"))
 	b.WriteString(fmt.Sprintf("# Created: %s\n", time.Now().Format(time.RFC3339)))
@@ -191,18 +191,21 @@ func writeManagedDropInPorts(ports []int, permitRootLogin, passwordAuth string) 
 	if passwordAuth != "" {
 		b.WriteString(fmt.Sprintf("PasswordAuthentication %s\n", passwordAuth))
 	}
+	if kbdInteractiveAuth != "" {
+		b.WriteString(fmt.Sprintf("KbdInteractiveAuthentication %s\n", kbdInteractiveAuth))
+	}
 	return os.WriteFile(managedSSHDropIn, []byte(b.String()), 0o644)
 }
 
-func managedAuthPolicyBeforeRun(j *sshTransactionJournal) (string, string, error) {
+func managedAuthPolicyBeforeRun(j *sshTransactionJournal) (string, string, string, error) {
 	if !j.hadDropIn {
-		return "", "", nil
+		return "", "", "", nil
 	}
 	var state sshConfigState
 	if err := mergeSSHConfigState(&state, j.dropInBytes); err != nil {
-		return "", "", fmt.Errorf("cannot parse existing managed SSH drop-in: %w", err)
+		return "", "", "", fmt.Errorf("cannot parse existing managed SSH drop-in: %w", err)
 	}
-	return state.permitRootLogin, state.passwordAuthentication, nil
+	return state.permitRootLogin, state.passwordAuthentication, state.kbdInteractiveAuthentication, nil
 }
 
 func effectiveSSHPorts(ctx context.Context) ([]int, error) {
@@ -329,6 +332,9 @@ func verifyFinalAuthPolicy(ctx context.Context, sys *system.Context, cfg *types.
 		}
 		if cfg.SSHDisablePass && settings["passwordauthentication"] != "no" {
 			return fmt.Errorf("effective PasswordAuthentication for %s is %q, want no", username, settings["passwordauthentication"])
+		}
+		if cfg.SSHDisablePass && settings["kbdinteractiveauthentication"] != "no" {
+			return fmt.Errorf("effective KbdInteractiveAuthentication for %s is %q, want no", username, settings["kbdinteractiveauthentication"])
 		}
 	}
 	return nil
@@ -536,12 +542,12 @@ func prepareSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Config
 
 	// Keep the authentication policy already managed by this tool while adding
 	// the new port. Omitting it here would temporarily relax a hardened host.
-	permitRootLogin, passwordAuth, err := managedAuthPolicyBeforeRun(j)
+	permitRootLogin, passwordAuth, kbdInteractiveAuth, err := managedAuthPolicyBeforeRun(j)
 	if err != nil {
 		return err
 	}
 	preparePorts := append(append([]int{}, j.oldPorts...), port)
-	if err := writeManagedDropInPorts(preparePorts, permitRootLogin, passwordAuth); err != nil {
+	if err := writeManagedDropInPorts(preparePorts, permitRootLogin, passwordAuth, kbdInteractiveAuth); err != nil {
 		return fmt.Errorf("cannot write managed sshd config: %w", err)
 	}
 	log.Successf("Managed SSH drop-in written: port %d", port)
@@ -591,7 +597,7 @@ func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Confi
 
 	// Preserve restrictions from an earlier run unless this run explicitly
 	// tightens them further.
-	permitRootLogin, passwordAuth, err := managedAuthPolicyBeforeRun(j)
+	permitRootLogin, passwordAuth, kbdInteractiveAuth, err := managedAuthPolicyBeforeRun(j)
 	if err != nil {
 		return err
 	}
@@ -600,6 +606,7 @@ func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Confi
 	}
 	if cfg.SSHDisablePass {
 		passwordAuth = "no"
+		kbdInteractiveAuth = "no"
 	}
 
 	// A port change is a replacement operation, even when the user leaves the
@@ -614,7 +621,7 @@ func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Confi
 	}
 
 	// Rewrite drop-in with restrictive auth
-	if err := writeManagedDropIn(port, permitRootLogin, passwordAuth); err != nil {
+	if err := writeManagedDropIn(port, permitRootLogin, passwordAuth, kbdInteractiveAuth); err != nil {
 		return fmt.Errorf("cannot write final managed sshd config: %w", err)
 	}
 	log.Success("Managed SSH drop-in updated with restrictive auth")

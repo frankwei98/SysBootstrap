@@ -38,10 +38,11 @@ var supportedPublicKeyTypes = map[string]bool{
 }
 
 type sshConfigState struct {
-	port                   int
-	portSet                bool
-	permitRootLogin        string
-	passwordAuthentication string
+	port                         int
+	portSet                      bool
+	permitRootLogin              string
+	passwordAuthentication       string
+	kbdInteractiveAuthentication string
 }
 
 type SSHModule struct {
@@ -83,6 +84,9 @@ func (m *SSHModule) Check(ctx context.Context, sys *system.Context) CheckResult 
 	if state.passwordAuthentication != "" {
 		parts = append(parts, "PasswordAuthentication "+state.passwordAuthentication)
 	}
+	if state.kbdInteractiveAuthentication != "" {
+		parts = append(parts, "KbdInteractiveAuthentication "+state.kbdInteractiveAuthentication)
+	}
 
 	return CheckResult{
 		Satisfied: currentSSHPort(state) > 0 && serviceReady,
@@ -116,8 +120,8 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 		steps = append(steps, types.Step{Module: "ssh", Title: "Disable root login", Detail: "PermitRootLogin no", Risk: "high"})
 		needsReload = true
 	}
-	if cfg.SSHDisablePass && !strings.EqualFold(state.passwordAuthentication, "no") {
-		steps = append(steps, types.Step{Module: "ssh", Title: "Disable password auth", Detail: "PasswordAuthentication no", Risk: "high"})
+	if cfg.SSHDisablePass && (!strings.EqualFold(state.passwordAuthentication, "no") || !strings.EqualFold(state.kbdInteractiveAuthentication, "no")) {
+		steps = append(steps, types.Step{Module: "ssh", Title: "Disable password auth", Detail: "PasswordAuthentication no; KbdInteractiveAuthentication no", Risk: "high"})
 		needsReload = true
 	}
 	if cfg.SSHAddKey && cfg.SSHPublicKey != "" && !sshAuthorizedKeyPresent(sys, cfg.SSHPublicKey) {
@@ -331,6 +335,8 @@ func mergeSSHConfigState(state *sshConfigState, content []byte) error {
 			state.permitRootLogin = value
 		case "passwordauthentication":
 			state.passwordAuthentication = value
+		case "kbdinteractiveauthentication":
+			state.kbdInteractiveAuthentication = value
 		}
 	}
 	return nil

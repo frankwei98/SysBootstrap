@@ -109,6 +109,9 @@ func TestLiveSSHTwoPhaseCutover(t *testing.T) {
 	if settings["passwordauthentication"] != "no" {
 		t.Fatalf("PasswordAuthentication=%q, want no", settings["passwordauthentication"])
 	}
+	if settings["kbdinteractiveauthentication"] != "no" {
+		t.Fatalf("KbdInteractiveAuthentication=%q, want no", settings["kbdinteractiveauthentication"])
+	}
 	rootSettings, err := effectiveSSHSettings(ctx, "root")
 	if err != nil {
 		t.Fatalf("read root effective settings: %v", err)
