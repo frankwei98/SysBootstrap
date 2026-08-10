@@ -296,6 +296,14 @@ func buildPlanChecks(sys *system.Context) []PlanCheck {
 			Detail: boolDetail(sys.HasSSHDService, "available", "not found"),
 		})
 	}
+	if sys.HasUFW {
+		check := PlanCheck{Name: "ufw", Status: "ok", Detail: boolDetail(sys.UFWActive, "active", "inactive")}
+		if !sys.UFWStatusKnown {
+			check.Status = "warning"
+			check.Detail = "status unknown; run as root for an accurate firewall plan"
+		}
+		checks = append(checks, check)
+	}
 
 	return checks
 }
