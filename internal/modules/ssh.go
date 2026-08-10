@@ -290,6 +290,24 @@ func readSSHConfigState() (sshConfigState, error) {
 	}
 
 	var state sshConfigState
+	if err := mergeSSHConfigState(&state, content); err != nil {
+		return sshConfigState{}, err
+	}
+
+	managedContent, err := os.ReadFile(managedSSHDropIn)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return state, nil
+		}
+		return sshConfigState{}, err
+	}
+	if err := mergeSSHConfigState(&state, managedContent); err != nil {
+		return sshConfigState{}, err
+	}
+	return state, nil
+}
+
+func mergeSSHConfigState(state *sshConfigState, content []byte) error {
 	for _, line := range strings.Split(string(content), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -305,7 +323,7 @@ func readSSHConfigState() (sshConfigState, error) {
 		case "port":
 			port, convErr := strconv.Atoi(fields[1])
 			if convErr != nil {
-				return sshConfigState{}, fmt.Errorf("invalid Port value %q", fields[1])
+				return fmt.Errorf("invalid Port value %q", fields[1])
 			}
 			state.port = port
 			state.portSet = true
@@ -315,8 +333,7 @@ func readSSHConfigState() (sshConfigState, error) {
 			state.passwordAuthentication = value
 		}
 	}
-
-	return state, nil
+	return nil
 }
 
 func currentSSHPort(state sshConfigState) int {

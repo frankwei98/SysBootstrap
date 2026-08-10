@@ -297,17 +297,28 @@ func TestSSHPlanDefaultPort(t *testing.T) {
 
 func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 	origPath := sshConfigPath
+	origDropIn := managedSSHDropIn
 	origService := sshServiceReadyFn
 	origUFW := sshUFWAllowsPortFn
-	tmpFile := filepath.Join(t.TempDir(), "sshd_config")
-	if err := os.WriteFile(tmpFile, []byte("Port 22122\n"), 0o644); err != nil {
+	sshDir := filepath.Join(t.TempDir(), "etc", "ssh")
+	dropInDir := filepath.Join(sshDir, "sshd_config.d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatalf("create SSH config directories: %v", err)
+	}
+	tmpFile := filepath.Join(sshDir, "sshd_config")
+	managedSSHDropIn = filepath.Join(dropInDir, "00-sys-bootstrap.conf")
+	if err := os.WriteFile(tmpFile, []byte("Include "+dropInDir+"/*.conf\n"), 0o644); err != nil {
 		t.Fatalf("write sshd_config: %v", err)
+	}
+	if err := os.WriteFile(managedSSHDropIn, []byte("Port 22122\nPermitRootLogin no\nPasswordAuthentication no\n"), 0o644); err != nil {
+		t.Fatalf("write managed SSH drop-in: %v", err)
 	}
 	sshConfigPath = tmpFile
 	sshServiceReadyFn = func() bool { return true }
 	sshUFWAllowsPortFn = func(int) bool { return true }
 	t.Cleanup(func() {
 		sshConfigPath = origPath
+		managedSSHDropIn = origDropIn
 		sshServiceReadyFn = origService
 		sshUFWAllowsPortFn = origUFW
 	})
@@ -320,14 +331,21 @@ func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 		UFWActive:      true,
 	}
 
-	steps, err := m.Plan(context.Background(), sys, &types.Config{SSHPort: 22122, SSHAllowUFW: true})
+	steps, err := m.Plan(context.Background(), sys, &types.Config{
+		SSHPort:        22122,
+		SSHAllowUFW:    true,
+		SSHDisableRoot: true,
+		SSHDisablePass: true,
+	})
 	if err != nil {
 		t.Fatalf("Plan failed: %v", err)
 	}
-	for _, step := range steps {
-		if step.Title == "Configure SSH port" || step.Title == "Restart sshd" || step.Title == "Allow SSH port in UFW" {
-			t.Fatalf("unexpected step when ssh config is already satisfied: %#v", steps)
-		}
+	if len(steps) != 0 {
+		t.Fatalf("unexpected steps when managed SSH config is already satisfied: %#v", steps)
+	}
+	check := m.Check(context.Background(), sys)
+	if !strings.Contains(check.Message, "port 22122") {
+		t.Fatalf("Check message = %q, want managed SSH port", check.Message)
 	}
 }
 
@@ -596,6 +614,44 @@ func TestSSHRunReplacesExplicitLegacyPort(t *testing.T) {
 	env := newSSHRunTestEnvironment(t)
 	if err := env.run(t); err != nil {
 		t.Fatalf("SSH hardening should replace an explicit legacy port: %v", err)
+	}
+}
+
+func TestSSHRunPreservesManagedHardeningOnRerun(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	const existingHardening = "Port 22122\nPermitRootLogin no\nPasswordAuthentication no\n"
+	if err := os.WriteFile(env.dropInPath, []byte(existingHardening), 0o644); err != nil {
+		t.Fatalf("write existing managed SSH drop-in: %v", err)
+	}
+
+	var preparedConfig string
+	m := NewSSHModule()
+	m.SetCheckpoint(func(context.Context, []types.AccessPath) (bool, error) {
+		content, err := os.ReadFile(env.dropInPath)
+		if err != nil {
+			return false, err
+		}
+		preparedConfig = string(content)
+		return true, nil
+	})
+	sys := &system.Context{CurrentUser: &user.User{Username: "sys-bootstrap-test-missing-user"}}
+	if err := m.Run(context.Background(), sys, &types.Config{SSHPort: 22122}, newQuietLogger(t)); err != nil {
+		t.Fatalf("rerun existing SSH hardening: %v", err)
+	}
+
+	for _, directive := range []string{"PermitRootLogin no", "PasswordAuthentication no"} {
+		if !strings.Contains(preparedConfig, directive) {
+			t.Errorf("prepare phase removed existing %q directive:\n%s", directive, preparedConfig)
+		}
+	}
+	finalizedConfig, err := os.ReadFile(env.dropInPath)
+	if err != nil {
+		t.Fatalf("read finalized managed SSH drop-in: %v", err)
+	}
+	for _, directive := range []string{"PermitRootLogin no", "PasswordAuthentication no"} {
+		if !strings.Contains(string(finalizedConfig), directive) {
+			t.Errorf("finalize phase removed existing %q directive:\n%s", directive, finalizedConfig)
+		}
 	}
 }
 
