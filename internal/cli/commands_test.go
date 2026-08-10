@@ -2,12 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
+	"github.com/frankwei98/sys-bootstrap/internal/modules"
 	"github.com/frankwei98/sys-bootstrap/internal/settings"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
@@ -337,6 +339,35 @@ func TestResolveRunMode_NonInteractive_NoEnv(t *testing.T) {
 	_, err := resolveRunMode(false)
 	if err == nil {
 		t.Error("expected error when non-interactive and no env var")
+	}
+}
+
+func TestRunCmdNonInteractiveFailsFastEvenWithRunModeEnv(t *testing.T) {
+	t.Setenv("SYS_BOOTSTRAP_RUN_MODE", "user")
+
+	oldStdin := os.Stdin
+	stdin, stdinWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe stdin failed: %v", err)
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		stdin.Close()
+	})
+	os.Stdin = stdin
+
+	err = RunCmd(context.Background(), modules.NewRegistry())
+	if err == nil {
+		t.Fatal("expected run to reject non-interactive execution")
+	}
+	if !strings.Contains(err.Error(), "run requires an interactive terminal") {
+		t.Fatalf("error = %q, want interactive terminal guidance", err)
+	}
+	if !strings.Contains(err.Error(), "SYS_BOOTSTRAP_RUN_MODE only preselects the mode") {
+		t.Fatalf("error = %q, want run-mode environment variable semantics", err)
 	}
 }
 

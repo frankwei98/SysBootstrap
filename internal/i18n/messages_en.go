@@ -200,6 +200,7 @@ var enMessages = map[string]string{
 	"run_full_needs_root":        "Full mode selected modules require root: %s — please re-run with sudo",
 	"run_user_no_root":           "User-level tools mode does not require sudo",
 	"run_noninteractive_no_mode": "SYS_BOOTSTRAP_RUN_MODE not set; use 'user' or 'full' (or run interactively)",
+	"run_requires_tty":           "run requires an interactive terminal; SYS_BOOTSTRAP_RUN_MODE only preselects the mode and does not enable non-interactive execution",
 	"shell_reload_hint":          "To use newly installed Node/AI tools in this shell, run: %s",
 
 	// config / settings

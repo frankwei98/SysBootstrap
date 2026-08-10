@@ -74,6 +74,9 @@ type DoctorResult struct {
 
 // RunCmd handles the `run` command (interactive execution).
 func RunCmd(ctx context.Context, registry *modules.Registry) error {
+	if !isInteractiveTerminal() {
+		return fmt.Errorf("%s", i18n.T("run_requires_tty"))
+	}
 
 	sys, err := system.NewContext()
 	if err != nil {
