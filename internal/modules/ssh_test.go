@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -310,7 +311,7 @@ func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 	if err := os.WriteFile(tmpFile, []byte("Include "+dropInDir+"/*.conf\n"), 0o644); err != nil {
 		t.Fatalf("write sshd_config: %v", err)
 	}
-	if err := os.WriteFile(managedSSHDropIn, []byte("Port 22122\nPermitRootLogin no\nPasswordAuthentication no\n"), 0o644); err != nil {
+	if err := os.WriteFile(managedSSHDropIn, []byte("Port 22122\nPermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n"), 0o644); err != nil {
 		t.Fatalf("write managed SSH drop-in: %v", err)
 	}
 	sshConfigPath = tmpFile
@@ -347,6 +348,45 @@ func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 	if !strings.Contains(check.Message, "port 22122") {
 		t.Fatalf("Check message = %q, want managed SSH port", check.Message)
 	}
+}
+
+func TestSSHPlanDisablesKeyboardInteractiveAuthenticationWithPassword(t *testing.T) {
+	origPath := sshConfigPath
+	origDropIn := managedSSHDropIn
+	origService := sshServiceReadyFn
+	sshDir := filepath.Join(t.TempDir(), "etc", "ssh")
+	dropInDir := filepath.Join(sshDir, "sshd_config.d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatalf("create SSH config directories: %v", err)
+	}
+	sshConfigPath = filepath.Join(sshDir, "sshd_config")
+	managedSSHDropIn = filepath.Join(dropInDir, "00-sys-bootstrap.conf")
+	if err := os.WriteFile(sshConfigPath, []byte("Include "+dropInDir+"/*.conf\n"), 0o644); err != nil {
+		t.Fatalf("write sshd_config: %v", err)
+	}
+	if err := os.WriteFile(managedSSHDropIn, []byte("Port 22122\nPasswordAuthentication no\nKbdInteractiveAuthentication yes\n"), 0o644); err != nil {
+		t.Fatalf("write managed SSH drop-in: %v", err)
+	}
+	sshServiceReadyFn = func() bool { return true }
+	t.Cleanup(func() {
+		sshConfigPath = origPath
+		managedSSHDropIn = origDropIn
+		sshServiceReadyFn = origService
+	})
+
+	steps, err := NewSSHModule().Plan(context.Background(), &system.Context{
+		HasSSHD:        true,
+		HasSSHDService: true,
+	}, &types.Config{SSHPort: 22122, SSHDisablePass: true})
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	for _, step := range steps {
+		if step.Title == "Disable password auth" && strings.Contains(step.Detail, "KbdInteractiveAuthentication no") {
+			return
+		}
+	}
+	t.Fatalf("expected password hardening step to disable keyboard-interactive authentication: %#v", steps)
 }
 
 func TestSSHPlanSkipsAuthorizedKeyWhenAlreadyPresent(t *testing.T) {
@@ -551,6 +591,14 @@ case "$1" in
     echo "pubkeyauthentication yes"
     echo "permitrootlogin yes"
     echo "passwordauthentication yes"
+    echo "kbdinteractiveauthentication yes"
+    for file in "$SYSBOOTSTRAP_TEST_DROPIN" "$SYSBOOTSTRAP_TEST_SSHD_CONFIG"; do
+      [ -f "$file" ] || continue
+      awk 'BEGIN { IGNORECASE=1 } /^[[:space:]]*#/ { next } tolower($1) ~ /^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication)$/ { print tolower($1), tolower($2) }' "$file"
+    done
+    if [ "$SYSBOOTSTRAP_TEST_FORCE_KBD_INTERACTIVE" = "yes" ]; then
+      echo "kbdinteractiveauthentication yes"
+    fi
     exit 0
     ;;
 esac
@@ -610,6 +658,37 @@ func (e *sshRunTestEnvironment) run(t *testing.T) error {
 	return m.Run(context.Background(), sys, &types.Config{SSHPort: 22122}, newQuietLogger(t))
 }
 
+func newSSHRunTestAccessPath(t *testing.T) *system.Context {
+	t.Helper()
+	const username = "sys-bootstrap-test-user"
+	const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatalf("create test .ssh directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "authorized_keys"), []byte(publicKey+"\n"), 0o600); err != nil {
+		t.Fatalf("write test authorized_keys: %v", err)
+	}
+
+	testUser := &user.User{
+		Username: username,
+		Uid:      strconv.Itoa(os.Getuid()),
+		Gid:      strconv.Itoa(os.Getgid()),
+		HomeDir:  home,
+	}
+	origLookupUser := lookupUser
+	lookupUser = func(string) (*user.User, error) { return testUser, nil }
+	t.Cleanup(func() { lookupUser = origLookupUser })
+
+	pathEntries := filepath.SplitList(os.Getenv("PATH"))
+	if len(pathEntries) == 0 {
+		t.Fatal("test PATH is empty")
+	}
+	writeFakeCommand(t, pathEntries[0], "ssh-keygen", "#!/bin/sh\necho '256 SHA256:test fingerprint (ED25519)'\n")
+	return &system.Context{CurrentUser: testUser}
+}
+
 func TestSSHRunReplacesExplicitLegacyPort(t *testing.T) {
 	env := newSSHRunTestEnvironment(t)
 	if err := env.run(t); err != nil {
@@ -617,9 +696,49 @@ func TestSSHRunReplacesExplicitLegacyPort(t *testing.T) {
 	}
 }
 
+func TestSSHRunDisablesPasswordAndKeyboardInteractiveAuthentication(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	m := NewSSHModule()
+	m.SetCheckpoint(func(context.Context, []types.AccessPath) (bool, error) { return true, nil })
+	sys := newSSHRunTestAccessPath(t)
+	if err := m.Run(context.Background(), sys, &types.Config{
+		SSHPort:        22122,
+		SSHDisablePass: true,
+	}, newQuietLogger(t)); err != nil {
+		t.Fatalf("disable SSH password authentication: %v", err)
+	}
+
+	content, err := os.ReadFile(env.dropInPath)
+	if err != nil {
+		t.Fatalf("read finalized managed SSH drop-in: %v", err)
+	}
+	for _, directive := range []string{"PasswordAuthentication no", "KbdInteractiveAuthentication no"} {
+		if !strings.Contains(string(content), directive) {
+			t.Errorf("finalized SSH config is missing %q:\n%s", directive, content)
+		}
+	}
+}
+
+func TestSSHRunRejectsEffectiveKeyboardInteractiveAuthentication(t *testing.T) {
+	newSSHRunTestEnvironment(t)
+	t.Setenv("SYSBOOTSTRAP_TEST_FORCE_KBD_INTERACTIVE", "yes")
+	m := NewSSHModule()
+	m.SetCheckpoint(func(context.Context, []types.AccessPath) (bool, error) { return true, nil })
+	err := m.Run(context.Background(), newSSHRunTestAccessPath(t), &types.Config{
+		SSHPort:        22122,
+		SSHDisablePass: true,
+	}, newQuietLogger(t))
+	if err == nil {
+		t.Fatal("expected effective keyboard-interactive authentication to fail final verification")
+	}
+	if !strings.Contains(err.Error(), "KbdInteractiveAuthentication") {
+		t.Fatalf("unexpected final verification error: %v", err)
+	}
+}
+
 func TestSSHRunPreservesManagedHardeningOnRerun(t *testing.T) {
 	env := newSSHRunTestEnvironment(t)
-	const existingHardening = "Port 22122\nPermitRootLogin no\nPasswordAuthentication no\n"
+	const existingHardening = "Port 22122\nPermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n"
 	if err := os.WriteFile(env.dropInPath, []byte(existingHardening), 0o644); err != nil {
 		t.Fatalf("write existing managed SSH drop-in: %v", err)
 	}
@@ -639,7 +758,7 @@ func TestSSHRunPreservesManagedHardeningOnRerun(t *testing.T) {
 		t.Fatalf("rerun existing SSH hardening: %v", err)
 	}
 
-	for _, directive := range []string{"PermitRootLogin no", "PasswordAuthentication no"} {
+	for _, directive := range []string{"PermitRootLogin no", "PasswordAuthentication no", "KbdInteractiveAuthentication no"} {
 		if !strings.Contains(preparedConfig, directive) {
 			t.Errorf("prepare phase removed existing %q directive:\n%s", directive, preparedConfig)
 		}
@@ -648,7 +767,7 @@ func TestSSHRunPreservesManagedHardeningOnRerun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read finalized managed SSH drop-in: %v", err)
 	}
-	for _, directive := range []string{"PermitRootLogin no", "PasswordAuthentication no"} {
+	for _, directive := range []string{"PermitRootLogin no", "PasswordAuthentication no", "KbdInteractiveAuthentication no"} {
 		if !strings.Contains(string(finalizedConfig), directive) {
 			t.Errorf("finalize phase removed existing %q directive:\n%s", directive, finalizedConfig)
 		}
@@ -702,7 +821,7 @@ func TestWriteManagedDropIn(t *testing.T) {
 	managedSSHDropIn = filepath.Join(tmpDir, "00-sys-bootstrap.conf")
 	t.Cleanup(func() { managedSSHDropIn = origDropIn })
 
-	err := writeManagedDropIn(22122, "no", "no")
+	err := writeManagedDropIn(22122, "no", "no", "no")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -720,6 +839,9 @@ func TestWriteManagedDropIn(t *testing.T) {
 	}
 	if !strings.Contains(content, "PasswordAuthentication no") {
 		t.Errorf("missing PasswordAuthentication: %s", content)
+	}
+	if !strings.Contains(content, "KbdInteractiveAuthentication no") {
+		t.Errorf("missing KbdInteractiveAuthentication: %s", content)
 	}
 }
 
