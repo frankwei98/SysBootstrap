@@ -66,16 +66,16 @@ func (r *Runner) RunWithResult(ctx context.Context, cfg *types.Config, ids []str
 	var pendingSSH bool
 	for _, id := range ordered {
 		if err := ctx.Err(); err != nil {
-			return result, err
+			return result, withSSHPending(err, pendingSSH)
 		}
 
 		m, err := r.registry.Get(id)
 		if err != nil {
-			return result, err
+			return result, withSSHPending(err, pendingSSH)
 		}
 
 		if m.RequiresRoot() && !r.sys.IsRoot {
-			return result, fmt.Errorf(i18n.T("runner_module_needs_root"), m.Name())
+			return result, withSSHPending(fmt.Errorf(i18n.T("runner_module_needs_root"), m.Name()), pendingSSH)
 		}
 
 		r.log.SetModule(m.Name())
@@ -90,9 +90,9 @@ func (r *Runner) RunWithResult(ctx context.Context, cfg *types.Config, ids []str
 		steps, planErr := m.Plan(ctx, r.sys, cfg)
 		if planErr != nil {
 			if err := ctx.Err(); err != nil {
-				return result, err
+				return result, withSSHPending(err, pendingSSH)
 			}
-			return result, fmt.Errorf("module %s plan failed: %w", m.Name(), planErr)
+			return result, withSSHPending(fmt.Errorf("module %s plan failed: %w", m.Name(), planErr), pendingSSH)
 		}
 		if m.ID() == "user" {
 			if userCheck, err := modules.DescribeUserCheckForConfig(cfg); err == nil {
@@ -122,11 +122,11 @@ func (r *Runner) RunWithResult(ctx context.Context, cfg *types.Config, ids []str
 		}
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return result, ctxErr
+				return result, withSSHPending(ctxErr, pendingSSH)
 			}
 			if !ShouldWarnOnModuleFailure(m.ID(), ctx, err) {
 				r.log.Errorf(i18n.T("runner_failed"), m.Name(), err)
-				return result, fmt.Errorf("module %s failed: %w", m.Name(), err)
+				return result, withSSHPending(fmt.Errorf("module %s failed: %w", m.Name(), err), pendingSSH)
 			}
 			result.failedModules[m.ID()] = true
 			r.log.Warnf(i18n.T("runner_failed_continue"), m.Name(), err)
@@ -137,10 +137,17 @@ func (r *Runner) RunWithResult(ctx context.Context, cfg *types.Config, ids []str
 	}
 
 	r.log.SetModule("")
-	if pendingSSH {
-		return result, types.ErrSSHPendingConfirmation
+	return result, withSSHPending(nil, pendingSSH)
+}
+
+func withSSHPending(err error, pending bool) error {
+	if !pending {
+		return err
 	}
-	return result, nil
+	if err == nil {
+		return types.ErrSSHPendingConfirmation
+	}
+	return errors.Join(err, types.ErrSSHPendingConfirmation)
 }
 
 func failedDependencies(m modules.Module, failedModules map[string]bool) []string {
