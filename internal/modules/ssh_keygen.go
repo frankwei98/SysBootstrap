@@ -11,6 +11,8 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
+var sshKeygenCommandExistsFn = system.CommandExists
+
 type SSHKeygenModule struct{}
 
 func NewSSHKeygenModule() *SSHKeygenModule { return &SSHKeygenModule{} }
@@ -46,6 +48,10 @@ func (m *SSHKeygenModule) Plan(ctx context.Context, sys *system.Context, cfg *ty
 }
 
 func (m *SSHKeygenModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+	if !sshKeygenCommandExistsFn("ssh-keygen") {
+		return fmt.Errorf("ssh-keygen is required; install openssh-client (for example: sudo apt-get install openssh-client)")
+	}
+
 	keyType := cfg.KeygenType
 	if keyType == "" {
 		keyType = "ed25519"
