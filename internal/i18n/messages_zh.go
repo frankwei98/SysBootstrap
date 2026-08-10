@@ -200,6 +200,7 @@ var zhCNMessages = map[string]string{
 	"run_full_needs_root":        "完整模式选中的模块需要 root 权限：%s — 请使用 sudo 重新运行",
 	"run_user_no_root":           "用户级工具模式不需要 sudo",
 	"run_noninteractive_no_mode": "未设置 SYS_BOOTSTRAP_RUN_MODE；请使用 'user' 或 'full'（或以交互方式运行）",
+	"run_requires_tty":           "run 需要交互式终端；SYS_BOOTSTRAP_RUN_MODE 仅用于预选模式，不会启用非交互执行",
 	"shell_reload_hint":          "要在当前 Shell 中立即使用新安装的 Node/AI 工具，请执行：%s",
 
 	// config / settings
