@@ -186,6 +186,36 @@ func TestRunnerSSHPendingConfirmationContinues(t *testing.T) {
 	}
 }
 
+func TestRunnerPreservesSSHPendingWhenLaterModuleFailsFatally(t *testing.T) {
+	registry := modules.NewRegistry()
+	sshMod := &pendingModule{
+		runnerTestModule: runnerTestModule{
+			id:    "ssh",
+			steps: []types.Step{{Module: "ssh", Title: "Prepare SSH hardening"}},
+		},
+		returnPending: true,
+	}
+	fatalErr := errors.New("apt failed")
+	base := &runnerTestModule{id: "base", runErr: fatalErr}
+	registry.Register(sshMod)
+	registry.Register(base)
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New() failed: %v", err)
+	}
+	defer log.Close()
+
+	runner := NewRunner(registry, &system.Context{}, log)
+	err = runner.Run(context.Background(), &types.Config{SSHPort: 22122}, []string{"ssh", "base"})
+	if !errors.Is(err, fatalErr) {
+		t.Fatalf("Run() error = %v, want later fatal failure", err)
+	}
+	if !errors.Is(err, types.ErrSSHPendingConfirmation) {
+		t.Fatalf("Run() error = %v, want SSH pending state preserved", err)
+	}
+}
+
 func TestRunnerWarnsAndContinuesAfterNonBaseModuleFailure(t *testing.T) {
 	registry := modules.NewRegistry()
 	base := &runnerTestModule{id: "base", satisfied: true}
