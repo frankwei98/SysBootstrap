@@ -483,6 +483,141 @@ exit 0
 
 // --- U2: SSH two-phase transaction tests ---
 
+type sshRunTestEnvironment struct {
+	configPath     string
+	dropInPath     string
+	originalConfig string
+}
+
+func newSSHRunTestEnvironment(t *testing.T) *sshRunTestEnvironment {
+	t.Helper()
+	origPath := os.Getenv("PATH")
+	origConfigPath := sshConfigPath
+	origDropIn := managedSSHDropIn
+	origRuntimeDir := sshdRuntimeDir
+	origFail2banJailPath := fail2banManagedJailPath
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", origPath)
+		sshConfigPath = origConfigPath
+		managedSSHDropIn = origDropIn
+		sshdRuntimeDir = origRuntimeDir
+		fail2banManagedJailPath = origFail2banJailPath
+	})
+
+	root := t.TempDir()
+	sshDir := filepath.Join(root, "etc", "ssh")
+	dropInDir := filepath.Join(sshDir, "sshd_config.d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatalf("create SSH config directories: %v", err)
+	}
+	sshConfigPath = filepath.Join(sshDir, "sshd_config")
+	managedSSHDropIn = filepath.Join(dropInDir, "00-sys-bootstrap.conf")
+	sshdRuntimeDir = filepath.Join(root, "run", "sshd")
+	fail2banManagedJailPath = filepath.Join(root, "etc", "fail2ban", "jail.d", "99-sys-bootstrap.local")
+	originalConfig := "Include " + dropInDir + "/*.conf\nPort 22\n"
+	if err := os.WriteFile(sshConfigPath, []byte(originalConfig), 0o644); err != nil {
+		t.Fatalf("write sshd_config: %v", err)
+	}
+
+	tempBin := t.TempDir()
+	writeFakeCommand(t, tempBin, "sshd", `#!/bin/sh
+case "$1" in
+  -t)
+    exit 0
+    ;;
+  -T)
+    for file in "$SYSBOOTSTRAP_TEST_DROPIN" "$SYSBOOTSTRAP_TEST_SSHD_CONFIG"; do
+      [ -f "$file" ] || continue
+      awk 'BEGIN { IGNORECASE=1 } /^[[:space:]]*#/ { next } tolower($1) == "port" { print "port " $2 }' "$file"
+    done | sort -u
+    echo "pubkeyauthentication yes"
+    echo "permitrootlogin yes"
+    echo "passwordauthentication yes"
+    exit 0
+    ;;
+esac
+exit 1
+`)
+	writeFakeCommand(t, tempBin, "ss", `#!/bin/sh
+for file in "$SYSBOOTSTRAP_TEST_DROPIN" "$SYSBOOTSTRAP_TEST_SSHD_CONFIG"; do
+  [ -f "$file" ] || continue
+  awk 'BEGIN { IGNORECASE=1 } /^[[:space:]]*#/ { next } tolower($1) == "port" { print $2 }' "$file"
+done | sort -nu | while read -r port; do
+  echo "LISTEN 0 128 0.0.0.0:$port 0.0.0.0:* users:((\"sshd\",pid=100,fd=3))"
+done
+`)
+	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
+case "$1" in
+  list-unit-files)
+    echo "ssh.service enabled"
+    exit 0
+    ;;
+  is-active)
+    echo "inactive"
+    exit 3
+    ;;
+  reload-or-restart)
+	count=0
+	if [ -f "$SYSBOOTSTRAP_TEST_RELOAD_COUNT" ]; then
+	  count=$(awk 'NR == 1 { print $1 }' "$SYSBOOTSTRAP_TEST_RELOAD_COUNT")
+	fi
+	count=$((count + 1))
+	echo "$count" > "$SYSBOOTSTRAP_TEST_RELOAD_COUNT"
+	if [ "$SYSBOOTSTRAP_TEST_FAIL_FINAL_RELOAD" = "1" ] && [ "$count" -eq 2 ]; then
+	  exit 1
+	fi
+    exit 0
+    ;;
+esac
+exit 0
+`)
+	writeFakeCommand(t, tempBin, "dpkg", "#!/bin/sh\nexit 1\n")
+	t.Setenv("SYSBOOTSTRAP_TEST_DROPIN", managedSSHDropIn)
+	t.Setenv("SYSBOOTSTRAP_TEST_SSHD_CONFIG", sshConfigPath)
+	t.Setenv("SYSBOOTSTRAP_TEST_RELOAD_COUNT", filepath.Join(root, "reload-count"))
+	t.Setenv("PATH", tempBin+":"+origPath)
+
+	return &sshRunTestEnvironment{
+		configPath:     sshConfigPath,
+		dropInPath:     managedSSHDropIn,
+		originalConfig: originalConfig,
+	}
+}
+
+func (e *sshRunTestEnvironment) run(t *testing.T) error {
+	t.Helper()
+	m := NewSSHModule()
+	m.SetCheckpoint(func(context.Context, []types.AccessPath) (bool, error) { return true, nil })
+	sys := &system.Context{CurrentUser: &user.User{Username: "sys-bootstrap-test-missing-user"}}
+	return m.Run(context.Background(), sys, &types.Config{SSHPort: 22122}, newQuietLogger(t))
+}
+
+func TestSSHRunReplacesExplicitLegacyPort(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	if err := env.run(t); err != nil {
+		t.Fatalf("SSH hardening should replace an explicit legacy port: %v", err)
+	}
+}
+
+func TestSSHRunRestoresExplicitLegacyPortWhenFinalReloadFails(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	t.Setenv("SYSBOOTSTRAP_TEST_FAIL_FINAL_RELOAD", "1")
+	if err := env.run(t); err == nil {
+		t.Fatal("SSH hardening should report a failed final reload")
+	}
+
+	content, err := os.ReadFile(env.configPath)
+	if err != nil {
+		t.Fatalf("read restored sshd_config: %v", err)
+	}
+	if string(content) != env.originalConfig {
+		t.Fatalf("sshd_config was not restored after rollback:\n%s", content)
+	}
+	if _, err := os.Stat(env.dropInPath); !os.IsNotExist(err) {
+		t.Fatalf("managed drop-in should be removed after rollback: %v", err)
+	}
+}
+
 func TestSSHDPreCheck_StockConfig(t *testing.T) {
 	origPath := sshConfigPath
 	sshConfigPath = "testdata/sshd_config/stock_debian.conf"
@@ -502,17 +637,6 @@ func TestSSHDPreCheck_NoInclude(t *testing.T) {
 	err := sshdPreCheck(context.Background(), &system.Context{}, newQuietLogger(t))
 	if err == nil {
 		t.Fatal("expected error for config without Include")
-	}
-}
-
-func TestFindUnmanagedPorts(t *testing.T) {
-	extra, err := findUnmanagedPorts("testdata/sshd_config/stock_debian.conf", 22122)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// stock_debian has Port 22, managed port is 22122, so Port 22 is unmanaged
-	if len(extra) != 1 || extra[0] != 22 {
-		t.Fatalf("expected [22], got %v", extra)
 	}
 }
 
