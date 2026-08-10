@@ -30,6 +30,7 @@ type userState struct {
 var sudoersDir = "/etc/sudoers.d"
 var linuxUsernameRegex = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 var inspectUserStateFn = inspectUserState
+var loginShellAvailableFn = system.CommandExists
 
 type userDesiredState struct {
 	Username             string
@@ -170,13 +171,16 @@ func (m *UserModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 	if !ValidateLinuxUsername(username) {
 		return fmt.Errorf("invalid username %q: use 1-32 lowercase letters, digits, hyphens, or underscores, starting with a letter", username)
 	}
+	shell := desiredUserShell(cfg)
+	if !loginShellAvailableFn(shell) {
+		shellCommand := filepath.Base(shell)
+		return fmt.Errorf("login shell %s is unavailable; install %s before configuring user %s", shell, shellCommand, username)
+	}
 
 	if userExists(username) {
 		log.Warnf("User %s already exists — applying supplemental updates only", username)
 		return m.supplementUser(ctx, username, cfg, log)
 	}
-
-	shell := desiredUserShell(cfg)
 
 	log.Infof("Creating user %s (shell: %s)...", username, shell)
 	if res, err := system.Run("useradd", "-m", "-s", shell, username); err != nil || res.ExitCode != 0 {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
@@ -22,6 +23,42 @@ func TestUserModuleInterface(t *testing.T) {
 	}
 	if m.Dependencies() != nil {
 		t.Errorf("Dependencies() = %v, want nil", m.Dependencies())
+	}
+}
+
+func TestUserRunRejectsUnavailableLoginShellBeforeCreatingAccount(t *testing.T) {
+	originalShellAvailable := loginShellAvailableFn
+	loginShellAvailableFn = func(path string) bool {
+		return path != "/bin/zsh"
+	}
+	t.Cleanup(func() { loginShellAvailableFn = originalShellAvailable })
+
+	tempBin := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "useradd-called")
+	useradd := filepath.Join(tempBin, "useradd")
+	if err := os.WriteFile(useradd, []byte("#!/bin/sh\n: > \""+marker+"\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake useradd: %v", err)
+	}
+	t.Setenv("PATH", tempBin)
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New failed: %v", err)
+	}
+	t.Cleanup(log.Close)
+
+	err = NewUserModule().Run(context.Background(), &system.Context{}, &types.Config{
+		NewUsername: "shellcheck_user_12345",
+		UserShell:   "zsh",
+	}, log)
+	if err == nil {
+		t.Fatal("expected unavailable zsh to be rejected")
+	}
+	if !strings.Contains(err.Error(), "/bin/zsh") || !strings.Contains(err.Error(), "install zsh") {
+		t.Fatalf("error = %q, want unavailable shell path and installation guidance", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("useradd ran before shell validation; marker stat error = %v", statErr)
 	}
 }
 
