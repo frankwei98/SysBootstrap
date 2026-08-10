@@ -107,7 +107,11 @@ func (l *Logger) write(level Level, msg string) {
 	// Colorized terminal output
 	if !l.quiet {
 		color := levelColors[level]
-		fmt.Fprintf(l.stdout, "%s[%s]%s %s%s\n", color, levelNames[level], colorReset, prefix, msg)
+		terminal := l.stdout
+		if level == LevelError {
+			terminal = l.stderr
+		}
+		fmt.Fprintf(terminal, "%s[%s]%s %s%s\n", color, levelNames[level], colorReset, prefix, msg)
 	}
 
 	// Plain text to log file
