@@ -41,6 +41,64 @@ func TestNodeModuleCheckNoNvm(t *testing.T) {
 	}
 }
 
+func TestNodeRunRejectsMissingCurlBeforeMutatingHome(t *testing.T) {
+	originalCommandExists := nodeCommandExistsFn
+	nodeCommandExistsFn = func(name string) bool {
+		return name == "bash"
+	}
+	t.Cleanup(func() { nodeCommandExistsFn = originalCommandExists })
+
+	home := t.TempDir()
+	t.Setenv("NVM_DIR", filepath.Join(home, ".nvm"))
+	zshrc := filepath.Join(home, ".zshrc")
+	wantZshrc := []byte("# existing user configuration\n")
+	if err := os.WriteFile(zshrc, wantZshrc, 0o644); err != nil {
+		t.Fatalf("write existing .zshrc: %v", err)
+	}
+
+	tempBin := t.TempDir()
+	bashMarker := filepath.Join(t.TempDir(), "bash-called")
+	fakeBash := "#!/bin/sh\n: > \"" + bashMarker + "\"\nexit 99\n"
+	if err := os.WriteFile(filepath.Join(tempBin, "bash"), []byte(fakeBash), 0o755); err != nil {
+		t.Fatalf("write fake bash: %v", err)
+	}
+	t.Setenv("PATH", tempBin)
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New failed: %v", err)
+	}
+	t.Cleanup(log.Close)
+
+	err = NewNodeModule().Run(context.Background(), &system.Context{
+		CurrentUser: &user.User{Username: "testuser", HomeDir: home},
+	}, &types.Config{}, log)
+	if err == nil {
+		t.Fatal("expected missing curl to be rejected")
+	}
+	if !strings.Contains(err.Error(), "install curl") {
+		t.Fatalf("error = %q, want curl installation guidance", err)
+	}
+
+	gotZshrc, readErr := os.ReadFile(zshrc)
+	if readErr != nil {
+		t.Fatalf("read existing .zshrc after failure: %v", readErr)
+	}
+	if string(gotZshrc) != string(wantZshrc) {
+		t.Fatalf(".zshrc changed before dependency validation: got %q, want %q", gotZshrc, wantZshrc)
+	}
+	for _, path := range []string{
+		filepath.Join(home, ".bashrc"),
+		filepath.Join(home, ".profile"),
+		filepath.Join(home, ".nvm"),
+		bashMarker,
+	} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("%s was created before dependency validation; stat error = %v", path, statErr)
+		}
+	}
+}
+
 func TestAIModuleInterface(t *testing.T) {
 	m := NewAIModule()
 

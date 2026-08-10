@@ -17,6 +17,8 @@ import (
 
 const nvmVersion = "v0.40.4"
 
+var nodeCommandExistsFn = system.CommandExists
+
 type NodeModule struct{}
 
 func NewNodeModule() *NodeModule { return &NodeModule{} }
@@ -92,6 +94,12 @@ func (m *NodeModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 }
 
 func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+	for _, command := range []string{"bash", "curl"} {
+		if !nodeCommandExistsFn(command) {
+			return fmt.Errorf("required command %s is unavailable; install %s before running the node module", command, command)
+		}
+	}
+
 	nvmScript := filepath.Join(system.NvmDirForContext(sys), "nvm.sh")
 
 	// Install nvm
