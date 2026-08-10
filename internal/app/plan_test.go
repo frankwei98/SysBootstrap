@@ -224,6 +224,20 @@ func TestPlanDerivesPendingStatusFromPlannedActions(t *testing.T) {
 	}
 }
 
+func TestPlanChecksReportUnknownUFWState(t *testing.T) {
+	checks := buildPlanChecks(&system.Context{HasUFW: true, UFWStatusKnown: false})
+	for _, check := range checks {
+		if check.Name != "ufw" {
+			continue
+		}
+		if check.Status != "warning" || !strings.Contains(check.Detail, "unknown") {
+			t.Fatalf("UFW check = %+v, want warning with unknown detail", check)
+		}
+		return
+	}
+	t.Fatal("plan checks omitted installed UFW with unknown status")
+}
+
 func TestPlanMarksUserModuleNotConfiguredWithoutUsername(t *testing.T) {
 	i18n.SetLang(i18n.LangEN)
 

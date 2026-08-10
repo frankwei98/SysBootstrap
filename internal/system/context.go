@@ -32,6 +32,7 @@ type Context struct {
 	HasSSHD        bool
 	HasUFW         bool
 	UFWActive      bool
+	UFWStatusKnown bool
 	HasNetwork     bool
 	HasSSHDService bool
 }
@@ -81,7 +82,7 @@ func NewContext() (*Context, error) {
 	ctx.HasUFW = commandExists("ufw")
 
 	if ctx.HasUFW {
-		ctx.UFWActive = isUFWActive()
+		ctx.UFWActive, ctx.UFWStatusKnown = detectUFWStatus()
 	}
 
 	// Network check — DNS resolution
@@ -188,21 +189,33 @@ func commandExists(name string) bool {
 	return false
 }
 
-func isUFWActive() bool {
-	out, err := exec.Command("ufw", "status").Output()
+var ufwStatusOutputFn = func() ([]byte, error) {
+	return exec.Command("ufw", "status").Output()
+}
+
+func detectUFWStatus() (active, known bool) {
+	out, err := ufwStatusOutputFn()
 	if err != nil {
-		return false
+		return false, false
 	}
-	return parseUFWActive(string(out))
+	return parseUFWStatus(string(out))
 }
 
 func parseUFWActive(out string) bool {
+	active, _ := parseUFWStatus(out)
+	return active
+}
+
+func parseUFWStatus(out string) (active, known bool) {
 	for _, line := range strings.Split(out, "\n") {
-		if strings.TrimSpace(line) == "Status: active" {
-			return true
+		switch strings.TrimSpace(line) {
+		case "Status: active":
+			return true, true
+		case "Status: inactive":
+			return false, true
 		}
 	}
-	return false
+	return false, false
 }
 
 // checkNetwork tests basic DNS resolution as a proxy for network connectivity.

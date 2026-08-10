@@ -1,11 +1,25 @@
 package system
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 )
+
+func TestDetectUFWStatusTreatsCommandFailureAsUnknown(t *testing.T) {
+	original := ufwStatusOutputFn
+	ufwStatusOutputFn = func() ([]byte, error) {
+		return nil, errors.New("permission denied")
+	}
+	t.Cleanup(func() { ufwStatusOutputFn = original })
+
+	active, known := detectUFWStatus()
+	if known || active {
+		t.Fatalf("detectUFWStatus() = active %v, known %v; want unknown", active, known)
+	}
+}
 
 func TestNewContext(t *testing.T) {
 	ctx, err := NewContext()
