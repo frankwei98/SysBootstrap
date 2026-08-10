@@ -29,6 +29,11 @@ type sshTransactionJournal struct {
 	dropInBytes []byte
 	dropInMode  os.FileMode
 
+	// Administrator-owned SSH config files whose legacy Port directives were
+	// disabled during finalization. Keep exact snapshots so a failed cutover
+	// restores the pre-run configuration byte for byte.
+	legacyPortFiles []sshConfigFileSnapshot
+
 	// SSH can be activated either by a traditional service unit or by a
 	// systemd socket. Keep the pre-mutation activation target so rollback
 	// applies the restored configuration through the same path.
@@ -40,6 +45,12 @@ type sshTransactionJournal struct {
 
 	// Whether prepare completed
 	prepared bool
+}
+
+type sshConfigFileSnapshot struct {
+	path string
+	data []byte
+	mode os.FileMode
 }
 
 type sshReloadTarget struct {
@@ -573,17 +584,14 @@ func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Confi
 	}
 
 	// A port change is a replacement operation, even when the user leaves the
-	// authentication policy unchanged. Refuse to silently leave an explicitly
-	// configured legacy port open.
-	extraPorts, err := findUnmanagedPorts(sshConfigPath, port)
+	// authentication policy unchanged. Disable explicit legacy Port directives
+	// transactionally so stock images with `Port 22` can complete the cutover.
+	disabledPorts, err := disableLegacyPortDirectives(sshConfigPath, port, j)
 	if err != nil {
-		return fmt.Errorf("cannot check for unmanaged ports: %w", err)
+		return fmt.Errorf("cannot disable legacy SSH ports: %w", err)
 	}
-	if len(extraPorts) > 0 {
-		return fmt.Errorf(
-			"cannot finalize: unmanaged extra ports found (%v). Remove them from %s and re-run finalization",
-			extraPorts, sshConfigPath,
-		)
+	if len(disabledPorts) > 0 {
+		log.Infof("Disabled legacy SSH Port directives: %v", disabledPorts)
 	}
 
 	// Rewrite drop-in with restrictive auth
@@ -621,16 +629,20 @@ func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Confi
 	return nil
 }
 
-// findUnmanagedPorts scans the sshd_config for unmanaged Port directives
-// that are not in the managed drop-in.
-func findUnmanagedPorts(configPath string, managedPort int) ([]int, error) {
-	paths := []string{configPath}
+func sshConfigPaths(configPath string) ([]string, error) {
 	dropIns, err := filepath.Glob(filepath.Join(filepath.Dir(configPath), "sshd_config.d", "*.conf"))
 	if err != nil {
 		return nil, err
 	}
-	paths = append(paths, dropIns...)
-	var extra []int
+	return append([]string{configPath}, dropIns...), nil
+}
+
+func disableLegacyPortDirectives(configPath string, managedPort int, j *sshTransactionJournal) ([]int, error) {
+	paths, err := sshConfigPaths(configPath)
+	if err != nil {
+		return nil, err
+	}
+
 	seen := make(map[int]bool)
 	for _, path := range paths {
 		if path == managedSSHDropIn {
@@ -640,20 +652,58 @@ func findUnmanagedPorts(configPath string, managedPort int) ([]int, error) {
 		if readErr != nil {
 			return nil, readErr
 		}
-		for _, line := range strings.Split(string(data), "\n") {
-			trimmed := strings.TrimSpace(line)
-			fields := strings.Fields(trimmed)
-			if len(fields) != 2 || strings.HasPrefix(trimmed, "#") || !strings.EqualFold(fields[0], "port") {
-				continue
-			}
-			if p, convErr := strconv.Atoi(fields[1]); convErr == nil && p >= 1 && p <= 65535 && p != managedPort && !seen[p] {
-				seen[p] = true
-				extra = append(extra, p)
-			}
+		updated, ports := commentLegacyPortDirectives(string(data), managedPort)
+		if len(ports) == 0 {
+			continue
+		}
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			return nil, statErr
+		}
+		j.legacyPortFiles = append(j.legacyPortFiles, sshConfigFileSnapshot{
+			path: path,
+			data: append([]byte(nil), data...),
+			mode: info.Mode(),
+		})
+		if writeErr := os.WriteFile(path, []byte(updated), info.Mode()); writeErr != nil {
+			return nil, writeErr
+		}
+		for _, port := range ports {
+			seen[port] = true
 		}
 	}
-	sort.Ints(extra)
-	return extra, nil
+
+	var ports []int
+	for port := range seen {
+		ports = append(ports, port)
+	}
+	sort.Ints(ports)
+	return ports, nil
+}
+
+func commentLegacyPortDirectives(content string, managedPort int) (string, []int) {
+	lines := strings.Split(content, "\n")
+	seen := make(map[int]bool)
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		fields := strings.Fields(trimmed)
+		if len(fields) != 2 || strings.HasPrefix(trimmed, "#") || !strings.EqualFold(fields[0], "port") {
+			continue
+		}
+		port, err := strconv.Atoi(fields[1])
+		if err != nil || port < 1 || port > 65535 || port == managedPort {
+			continue
+		}
+		lines[index] = "# sys-bootstrap: disabled legacy SSH port during managed cutover: " + line
+		seen[port] = true
+	}
+
+	var ports []int
+	for port := range seen {
+		ports = append(ports, port)
+	}
+	sort.Ints(ports)
+	return strings.Join(lines, "\n"), ports
 }
 
 // rollbackPrepare reverses prepare-phase changes. It uses a separate context
@@ -674,6 +724,11 @@ func rollbackPrepare(ctx context.Context, j *sshTransactionJournal) error {
 	} else {
 		if err := removeManagedDropIn(); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("remove managed sshd config: %w", err))
+		}
+	}
+	for _, snapshot := range j.legacyPortFiles {
+		if err := os.WriteFile(snapshot.path, snapshot.data, snapshot.mode); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore SSH config %s: %w", snapshot.path, err))
 		}
 	}
 

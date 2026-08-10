@@ -180,6 +180,7 @@ That keeps the tool simple while still making repeat usage less annoying.
 ## Safety
 
 - SSH changes follow backup -> edit -> `sshd -t` -> rollback on failure
+- SSH port cutover transactionally disables explicit legacy `Port` directives and restores them if final validation or reload fails
 - nvm installer and bun release assets are checksum-verified in the module flow
 - modules are designed to be re-runnable
 - logs are written to `~/.local/state/sys-bootstrap/logs`
