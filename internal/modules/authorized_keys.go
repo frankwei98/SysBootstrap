@@ -21,10 +21,13 @@ const writeAuthKeysAsUserScript = `set -e
 dir=$1; file=$2
 mkdir -p -- "$dir"
 chmod 700 -- "$dir"
-tmp="${file}.tmp.$$"
+umask 077
+tmp=$(mktemp "${file}.tmp.XXXXXX")
+trap 'rm -f -- "$tmp"' EXIT
 cat > "$tmp"
 chmod 600 -- "$tmp"
 mv -f -- "$tmp" "$file"
+trap - EXIT
 `
 
 // writeAuthorizedKeysAsUser atomically writes key content to the given file

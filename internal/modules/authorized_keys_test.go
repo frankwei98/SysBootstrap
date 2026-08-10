@@ -2,10 +2,49 @@ package modules
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestAuthorizedKeysWriteDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	root := t.TempDir()
+	sshDir := filepath.Join(root, ".ssh")
+	keyFile := filepath.Join(sshDir, "authorized_keys")
+	victim := filepath.Join(root, "victim")
+	if err := os.WriteFile(victim, []byte("keep me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	attackSetup := `
+dir=$1; file=$2; victim=$3
+mkdir -p -- "$dir"
+ln -s -- "$victim" "${file}.tmp.$$"
+`
+	portableScript := strings.ReplaceAll(writeAuthKeysAsUserScript, "chmod 700 --", "chmod 700")
+	portableScript = strings.ReplaceAll(portableScript, "chmod 600 --", "chmod 600")
+	cmd := exec.Command("sh", "-e", "-c", attackSetup+portableScript, "--", sshDir, keyFile, victim)
+	cmd.Stdin = strings.NewReader("new key material\n")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("authorized_keys writer failed: %v (%s)", err, output)
+	}
+
+	victimContent, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(victimContent) != "keep me\n" {
+		t.Fatalf("predictable temporary path overwrote another file: %q", victimContent)
+	}
+	keyContent, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(keyContent) != "new key material\n" {
+		t.Fatalf("authorized_keys content = %q", keyContent)
+	}
+}
 
 func TestValidateKeyLines_Valid(t *testing.T) {
 	input := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq test\n"
