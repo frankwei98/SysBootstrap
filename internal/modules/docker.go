@@ -48,10 +48,15 @@ func (m *DockerModule) Check(ctx context.Context, sys *system.Context) CheckResu
 func (m *DockerModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
 	hasDocker := dockerInstalledFn()
 	hasCompose := dockerComposePluginInstalledFn()
-	serviceEnabled := dockerServiceEnabledFn()
-	groupReady, targetUser := dockerGroupSatisfiedWithConfigFn(sys, cfg)
 	repoReady := dockerRepoConfiguredFn(sys)
 	needsRepo := dockerNeedsRepo(hasDocker, hasCompose, repoReady)
+	if needsRepo {
+		if _, err := dockerRepoArch(sys); err != nil {
+			return nil, err
+		}
+	}
+	serviceEnabled := dockerServiceEnabledFn()
+	groupReady, targetUser := dockerGroupSatisfiedWithConfigFn(sys, cfg)
 
 	var steps []types.Step
 	if needsRepo {
@@ -209,6 +214,10 @@ func ensureDockerRepo(ctx context.Context, sys *system.Context) error {
 	if err != nil {
 		return err
 	}
+	repoArch, err := dockerRepoArch(sys)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create Docker keyring directory: %w", err)
 	}
@@ -228,7 +237,7 @@ install -m 0644 "$tmp_key" %s
 cat > %s <<'EOF'
 deb [arch=%s signed-by=%s] https://download.docker.com/linux/%s %s stable
 EOF
-	`, shellQuote(filepath.Dir(keyPath)), repoOS, shellQuote(keyPath), shellQuote(repoPath), dockerRepoArch(sys), keyPath, repoOS, codename)
+	`, shellQuote(filepath.Dir(keyPath)), repoOS, shellQuote(keyPath), shellQuote(repoPath), repoArch, keyPath, repoOS, codename)
 		if res, err := dockerRunWithContextFn(ctx, "bash", "-lc", script); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError("failed to configure Docker apt repository", res, err)
 		}
@@ -260,14 +269,16 @@ func dockerRepoInfo(sys *system.Context) (repoOS, codename string, err error) {
 	return repoOS, codename, nil
 }
 
-func dockerRepoArch(sys *system.Context) string {
+func dockerRepoArch(sys *system.Context) (string, error) {
 	if sys == nil {
-		return "amd64"
+		return "", fmt.Errorf("cannot determine Docker repository architecture")
 	}
 	switch sys.Arch {
+	case "linux/amd64":
+		return "amd64", nil
 	case "linux/arm64":
-		return "arm64"
+		return "arm64", nil
 	default:
-		return "amd64"
+		return "", fmt.Errorf("Docker's official apt repository is not automatically configured for architecture %q; supported architectures are linux/amd64 and linux/arm64", sys.Arch)
 	}
 }

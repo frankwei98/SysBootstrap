@@ -39,6 +39,7 @@ func TestDockerPlanUsesConfiguredUser(t *testing.T) {
 	m := NewDockerModule()
 	sys := &system.Context{
 		CurrentUser: &user.User{Username: "root", HomeDir: "/root"},
+		Arch:        "linux/amd64",
 	}
 	cfg := &types.Config{DockerUser: "deploy"}
 	steps, err := m.Plan(context.Background(), sys, cfg)
@@ -148,6 +149,38 @@ func TestDockerPlanSkipsRepoSetupWhenDockerAlreadyPresent(t *testing.T) {
 	}
 	if len(steps) != 0 {
 		t.Fatalf("steps len = %d, want 0 when docker runtime is already present and repo is only missing: %#v", len(steps), steps)
+	}
+}
+
+func TestDockerPlanRejectsUnsupportedRepoArchitectures(t *testing.T) {
+	origInstalled := dockerInstalledFn
+	origCompose := dockerComposePluginInstalledFn
+	origService := dockerServiceEnabledFn
+	origGroup := dockerGroupSatisfiedWithConfigFn
+	origRepo := dockerRepoConfiguredFn
+	t.Cleanup(func() {
+		dockerInstalledFn = origInstalled
+		dockerComposePluginInstalledFn = origCompose
+		dockerServiceEnabledFn = origService
+		dockerGroupSatisfiedWithConfigFn = origGroup
+		dockerRepoConfiguredFn = origRepo
+	})
+
+	dockerInstalledFn = func() bool { return false }
+	dockerComposePluginInstalledFn = func() bool { return false }
+	dockerServiceEnabledFn = func() bool { return true }
+	dockerGroupSatisfiedWithConfigFn = func(_ *system.Context, _ *types.Config) (bool, string) {
+		return true, ""
+	}
+	dockerRepoConfiguredFn = func(_ *system.Context) bool { return false }
+
+	for _, arch := range []string{"linux/ppc64le", "linux/riscv64", "linux/s390x"} {
+		t.Run(arch, func(t *testing.T) {
+			_, err := NewDockerModule().Plan(context.Background(), &system.Context{Arch: arch}, &types.Config{})
+			if err == nil || !strings.Contains(err.Error(), arch) {
+				t.Fatalf("Plan error = %v, want unsupported architecture %s", err, arch)
+			}
+		})
 	}
 }
 
@@ -301,6 +334,48 @@ func TestEnsureDockerRepoWritesValidSourceEntry(t *testing.T) {
 	want := "deb [arch=arm64 signed-by=" + keyPath + "] https://download.docker.com/linux/debian trixie stable\n"
 	if got != want {
 		t.Fatalf("repo content = %q, want %q", got, want)
+	}
+}
+
+func TestEnsureDockerRepoRejectsUnsupportedArchitectureBeforeMutation(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoRoot := filepath.Join(tmpDir, "apt")
+	keyPath := filepath.Join(repoRoot, "keyrings", "docker.asc")
+	repoPath := filepath.Join(repoRoot, "sources.list.d", "docker.list")
+	origPaths := dockerRepoPathsFn
+	origRunWithContext := dockerRunWithContextFn
+	origRunApt := dockerRunAptFn
+	t.Cleanup(func() {
+		dockerRepoPathsFn = origPaths
+		dockerRunWithContextFn = origRunWithContext
+		dockerRunAptFn = origRunApt
+	})
+
+	dockerRepoPathsFn = func(_ *system.Context) (string, string) { return keyPath, repoPath }
+	aptCalled := false
+	dockerRunAptFn = func(_ context.Context, _ ...string) (*system.Result, error) {
+		aptCalled = true
+		return &system.Result{ExitCode: 0}, nil
+	}
+	scriptCalled := false
+	dockerRunWithContextFn = func(_ context.Context, _ string, _ ...string) (*system.Result, error) {
+		scriptCalled = true
+		return &system.Result{ExitCode: 0}, nil
+	}
+
+	sys := &system.Context{OSID: "debian", OSCodename: "bookworm", Arch: "linux/ppc64le"}
+	err := ensureDockerRepo(context.Background(), sys)
+	if err == nil || !strings.Contains(err.Error(), "linux/ppc64le") {
+		t.Errorf("error = %v, want unsupported architecture error", err)
+	}
+	if aptCalled {
+		t.Error("apt ran before Docker repository architecture validation")
+	}
+	if scriptCalled {
+		t.Error("repository setup script ran before architecture validation")
+	}
+	if _, statErr := os.Stat(repoRoot); !os.IsNotExist(statErr) {
+		t.Errorf("repository path was created before architecture validation; stat error = %v", statErr)
 	}
 }
 
