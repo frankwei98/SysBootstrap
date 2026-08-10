@@ -194,6 +194,17 @@ func writeManagedDropInPorts(ports []int, permitRootLogin, passwordAuth string) 
 	return os.WriteFile(managedSSHDropIn, []byte(b.String()), 0o644)
 }
 
+func managedAuthPolicyBeforeRun(j *sshTransactionJournal) (string, string, error) {
+	if !j.hadDropIn {
+		return "", "", nil
+	}
+	var state sshConfigState
+	if err := mergeSSHConfigState(&state, j.dropInBytes); err != nil {
+		return "", "", fmt.Errorf("cannot parse existing managed SSH drop-in: %w", err)
+	}
+	return state.permitRootLogin, state.passwordAuthentication, nil
+}
+
 func effectiveSSHPorts(ctx context.Context) ([]int, error) {
 	if err := ensureSSHDRunDir(); err != nil {
 		return nil, err
@@ -523,9 +534,14 @@ func ufwAllowIfMissing(port int, log *logging.Logger) (added bool, err error) {
 func prepareSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger, port int, j *sshTransactionJournal) error {
 	log.Info("SSH prepare phase: writing managed drop-in with permissive settings...")
 
-	// Write permissive drop-in: new port only; keep existing auth settings
+	// Keep the authentication policy already managed by this tool while adding
+	// the new port. Omitting it here would temporarily relax a hardened host.
+	permitRootLogin, passwordAuth, err := managedAuthPolicyBeforeRun(j)
+	if err != nil {
+		return err
+	}
 	preparePorts := append(append([]int{}, j.oldPorts...), port)
-	if err := writeManagedDropInPorts(preparePorts, "", ""); err != nil {
+	if err := writeManagedDropInPorts(preparePorts, permitRootLogin, passwordAuth); err != nil {
 		return fmt.Errorf("cannot write managed sshd config: %w", err)
 	}
 	log.Successf("Managed SSH drop-in written: port %d", port)
@@ -573,12 +589,15 @@ func prepareSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Config
 func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger, port int, j *sshTransactionJournal) error {
 	log.Info("SSH finalize phase: applying restrictive auth...")
 
-	// Compute what to write
-	permitRootLogin := ""
+	// Preserve restrictions from an earlier run unless this run explicitly
+	// tightens them further.
+	permitRootLogin, passwordAuth, err := managedAuthPolicyBeforeRun(j)
+	if err != nil {
+		return err
+	}
 	if cfg.SSHDisableRoot {
 		permitRootLogin = "no"
 	}
-	passwordAuth := ""
 	if cfg.SSHDisablePass {
 		passwordAuth = "no"
 	}
