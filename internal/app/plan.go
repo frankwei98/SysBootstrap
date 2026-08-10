@@ -105,17 +105,15 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			mp.Warning = err.Error()
 		} else {
 			mp.Steps = steps
-			if isConfigSensitivePlanModule(m.ID()) {
-				if len(steps) == 0 {
-					mp.Status = "satisfied"
-					mp.Warning = ""
-				} else {
-					mp.Status = "pending"
-					if check.Satisfied {
-						mp.CheckMessage = "current state differs from requested configuration"
-					}
-					mp.Warning = mp.CheckMessage
+			if len(steps) > 0 {
+				mp.Status = "pending"
+				if check.Satisfied {
+					mp.CheckMessage = "current state differs from requested configuration"
 				}
+				mp.Warning = mp.CheckMessage
+			} else if isConfigSensitivePlanModule(m.ID()) {
+				mp.Status = "satisfied"
+				mp.Warning = ""
 			}
 		}
 
@@ -237,11 +235,9 @@ func FormatPlanText(plan *PlanResult) string {
 		if mp.CheckMessage != "" {
 			fmt.Fprintf(&b, "    %s %s\n", i18n.T("plan_check_result"), mp.CheckMessage)
 		}
-		if mp.Status == "satisfied" {
-			fmt.Fprintf(&b, "    %s\n", "No actions required")
-		} else if mp.Status == "not_configured" {
+		if mp.Status == "not_configured" {
 			fmt.Fprintf(&b, "    %s\n", "Awaiting interactive input")
-		} else {
+		} else if len(mp.Steps) > 0 {
 			for _, step := range mp.Steps {
 				riskTag := ""
 				if step.Risk != "" {
@@ -252,6 +248,8 @@ func FormatPlanText(plan *PlanResult) string {
 					fmt.Fprintf(&b, "      %s\n", step.Detail)
 				}
 			}
+		} else if mp.Status == "satisfied" {
+			fmt.Fprintf(&b, "    %s\n", "No actions required")
 		}
 		if mp.Warning != "" && mp.Warning != mp.CheckMessage {
 			fmt.Fprintf(&b, "    ⚠ %s\n", mp.Warning)
