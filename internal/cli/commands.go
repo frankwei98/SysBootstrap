@@ -369,7 +369,10 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 
 	// Check dependencies first so root user install covers both the target
 	// module and any dependencies that will be auto-run.
-	missing := missingDependenciesForModule(ctx, registry, m, sys, cfg)
+	missing, err := missingDependenciesForModule(ctx, registry, m, sys, cfg)
+	if err != nil {
+		return err
+	}
 
 	// Root user install protection: covers target module + missing deps
 	modsToCheck := append([]string{moduleID}, missing...)
@@ -497,18 +500,26 @@ func missingDependenciesForModule(
 	target modules.Module,
 	sys *system.Context,
 	cfg *types.Config,
-) []string {
+) ([]string, error) {
+	ordered, err := registry.ResolveOrder([]string{target.ID()})
+	if err != nil {
+		return nil, fmt.Errorf("resolve dependencies for %s: %w", target.ID(), err)
+	}
+
 	var missing []string
-	for _, dependencyID := range target.Dependencies() {
+	for _, dependencyID := range ordered {
+		if dependencyID == target.ID() {
+			continue
+		}
 		dependency, err := registry.Get(dependencyID)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("load dependency %s for %s: %w", dependencyID, target.ID(), err)
 		}
 		if check := dependency.Check(ctx, sys, cfg); !check.Satisfied {
 			missing = append(missing, dependencyID)
 		}
 	}
-	return missing
+	return missing, nil
 }
 
 func needsShellReloadHint(moduleIDs []string) bool {
