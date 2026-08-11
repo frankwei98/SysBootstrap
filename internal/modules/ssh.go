@@ -106,6 +106,9 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("SSH port %d must be between 1 and 65535", port)
 	}
+	if err := rejectAddressDependentSSHAuthPolicy(cfg); err != nil {
+		return nil, err
+	}
 
 	normalizedCfg := *cfg
 	normalizedCfg.SSHPort = port
@@ -172,11 +175,19 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 			return fmt.Errorf("cannot disable both root login and password authentication without providing an SSH public key — no replacement access path")
 		}
 	}
+	// Reject an existing unsupported policy before package installation or
+	// any other mutation. A second check after installation covers fresh hosts.
+	if err := rejectAddressDependentSSHAuthPolicy(cfg); err != nil {
+		return err
+	}
 	if err := requireSSHListenerInspection(); err != nil {
 		return err
 	}
 
 	if err := ensureOpenSSHServer(ctx, log); err != nil {
+		return err
+	}
+	if err := rejectAddressDependentSSHAuthPolicy(cfg); err != nil {
 		return err
 	}
 

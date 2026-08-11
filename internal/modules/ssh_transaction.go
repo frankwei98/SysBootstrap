@@ -336,6 +336,9 @@ func effectiveSSHSettingsForPort(ctx context.Context, username string, localPort
 }
 
 func verifyFinalAuthPolicy(ctx context.Context, sys *system.Context, cfg *types.Config) error {
+	if err := rejectAddressDependentSSHAuthPolicy(cfg); err != nil {
+		return err
+	}
 	ports, err := effectiveSSHPortsFunc(ctx)
 	if err != nil {
 		return fmt.Errorf("cannot inspect effective SSH ports for authentication policy: %w", err)
