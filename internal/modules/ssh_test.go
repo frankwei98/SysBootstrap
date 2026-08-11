@@ -223,9 +223,17 @@ func newQuietLogger(t *testing.T) *logging.Logger {
 
 func useFakeSSHEffectiveOutput(t *testing.T, output string) {
 	t.Helper()
+	useTempSSHDRunDir(t)
 	tempBin := t.TempDir()
 	writeFakeCommand(t, tempBin, "sshd", "#!/bin/sh\ncat <<'EOF'\n"+output+"\nEOF\n")
 	t.Setenv("PATH", tempBin+":"+os.Getenv("PATH"))
+}
+
+func useTempSSHDRunDir(t *testing.T) {
+	t.Helper()
+	original := sshdRuntimeDir
+	sshdRuntimeDir = filepath.Join(t.TempDir(), "run", "sshd")
+	t.Cleanup(func() { sshdRuntimeDir = original })
 }
 
 func TestSSHGuardDisableRootPassWithoutKey(t *testing.T) {
@@ -441,6 +449,7 @@ func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 }
 
 func TestSSHPlanUsesEffectiveDaemonState(t *testing.T) {
+	useTempSSHDRunDir(t)
 	origPath := os.Getenv("PATH")
 	origConfigPath := sshConfigPath
 	origDropIn := managedSSHDropIn
@@ -493,6 +502,7 @@ func TestSSHPlanUsesEffectiveDaemonState(t *testing.T) {
 }
 
 func TestSSHPlanAppliesConnectionContextToEffectiveState(t *testing.T) {
+	useTempSSHDRunDir(t)
 	origConfigPath := sshConfigPath
 	origDropIn := managedSSHDropIn
 	origService := sshServiceReadyFn
@@ -567,6 +577,7 @@ echo "kbdinteractiveauthentication no"
 }
 
 func TestSSHPlanChecksDefaultRequestedPortConnectionContext(t *testing.T) {
+	useTempSSHDRunDir(t)
 	origConfigPath := sshConfigPath
 	origDropIn := managedSSHDropIn
 	origService := sshServiceReadyFn
@@ -638,6 +649,7 @@ echo "kbdinteractiveauthentication no"
 }
 
 func TestQuerySSHEffectiveOutputErrorIncludesConnectionContext(t *testing.T) {
+	useTempSSHDRunDir(t)
 	tempBin := t.TempDir()
 	writeFakeCommand(t, tempBin, "sshd", "#!/bin/sh\necho query failed >&2\nexit 1\n")
 	t.Setenv("PATH", tempBin+":"+os.Getenv("PATH"))

@@ -219,6 +219,7 @@ type sshAddressPlanEnvironment struct {
 
 func newSSHAddressPlanEnvironment(t *testing.T) *sshAddressPlanEnvironment {
 	t.Helper()
+	origRuntimeDir := sshdRuntimeDir
 	origConfigPath := sshConfigPath
 	origDropIn := managedSSHDropIn
 	origService := sshServiceReadyFn
@@ -237,10 +238,12 @@ func newSSHAddressPlanEnvironment(t *testing.T) *sshAddressPlanEnvironment {
 	t.Setenv("PATH", tempBin+":"+os.Getenv("PATH"))
 	sshServiceReadyFn = func() bool { return true }
 	t.Cleanup(func() {
+		sshdRuntimeDir = origRuntimeDir
 		sshConfigPath = origConfigPath
 		managedSSHDropIn = origDropIn
 		sshServiceReadyFn = origService
 	})
+	sshdRuntimeDir = filepath.Join(t.TempDir(), "run", "sshd")
 	return &sshAddressPlanEnvironment{sshDir: sshDir, dropInDir: dropInDir}
 }
 
