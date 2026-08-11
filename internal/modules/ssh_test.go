@@ -547,6 +547,58 @@ esac
 	t.Fatalf("expected Match LocalPort policy to keep password hardening pending: %#v", steps)
 }
 
+func TestSSHPlanChecksDefaultRequestedPortConnectionContext(t *testing.T) {
+	origConfigPath := sshConfigPath
+	origDropIn := managedSSHDropIn
+	origService := sshServiceReadyFn
+	sshDir := filepath.Join(t.TempDir(), "etc", "ssh")
+	dropInDir := filepath.Join(sshDir, "sshd_config.d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatalf("create SSH config directories: %v", err)
+	}
+	sshConfigPath = filepath.Join(sshDir, "sshd_config")
+	managedSSHDropIn = filepath.Join(dropInDir, "00-sys-bootstrap.conf")
+	if err := os.WriteFile(sshConfigPath, []byte("Include "+dropInDir+"/*.conf\n"), 0o644); err != nil {
+		t.Fatalf("write sshd_config: %v", err)
+	}
+	tempBin := t.TempDir()
+	writeFakeCommand(t, tempBin, "sshd", `#!/bin/sh
+echo "port 22"
+echo "permitrootlogin no"
+case " $* " in
+  *"lport=22122"*)
+    echo "passwordauthentication yes"
+    echo "kbdinteractiveauthentication yes"
+    ;;
+  *)
+    echo "passwordauthentication no"
+    echo "kbdinteractiveauthentication no"
+    ;;
+esac
+`)
+	t.Setenv("PATH", tempBin+":"+os.Getenv("PATH"))
+	sshServiceReadyFn = func() bool { return true }
+	t.Cleanup(func() {
+		sshConfigPath = origConfigPath
+		managedSSHDropIn = origDropIn
+		sshServiceReadyFn = origService
+	})
+
+	steps, err := NewSSHModule().Plan(context.Background(), &system.Context{
+		HasSSHD:        true,
+		HasSSHDService: true,
+	}, &types.Config{SSHDisablePass: true})
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	for _, step := range steps {
+		if step.Title == "Disable password auth" {
+			return
+		}
+	}
+	t.Fatalf("expected default requested port Match policy to keep password hardening pending: %#v", steps)
+}
+
 func TestQuerySSHEffectiveOutputErrorIncludesConnectionContext(t *testing.T) {
 	tempBin := t.TempDir()
 	writeFakeCommand(t, tempBin, "sshd", "#!/bin/sh\necho query failed >&2\nexit 1\n")
