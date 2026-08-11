@@ -547,6 +547,22 @@ esac
 	t.Fatalf("expected Match LocalPort policy to keep password hardening pending: %#v", steps)
 }
 
+func TestQuerySSHEffectiveOutputErrorIncludesConnectionContext(t *testing.T) {
+	tempBin := t.TempDir()
+	writeFakeCommand(t, tempBin, "sshd", "#!/bin/sh\necho query failed >&2\nexit 1\n")
+	t.Setenv("PATH", tempBin+":"+os.Getenv("PATH"))
+
+	_, err := querySSHEffectiveOutput(context.Background(), "alice", 22122)
+	if err == nil {
+		t.Fatal("expected effective configuration query to fail")
+	}
+	for _, want := range []string{"alice", "22122"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("query error = %q, want connection context %q", err, want)
+		}
+	}
+}
+
 func TestSSHPlanDisablesKeyboardInteractiveAuthenticationWithPassword(t *testing.T) {
 	origPath := sshConfigPath
 	origDropIn := managedSSHDropIn
