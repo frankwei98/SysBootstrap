@@ -2,6 +2,7 @@ package modules
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,60 @@ func TestUserCheckUsesRequestedConfig(t *testing.T) {
 	})
 	if !check.Satisfied {
 		t.Fatalf("requested user configuration should be satisfied: %#v", check)
+	}
+}
+
+func TestUserPasswordStateReportsShadowReadFailure(t *testing.T) {
+	missingShadow := filepath.Join(t.TempDir(), "missing-shadow")
+	known, usable, err := userPasswordStateFromPath(missingShadow, "alice")
+	if err == nil {
+		t.Fatalf("userPasswordStateFromPath() = (%v, %v, nil), want read error", known, usable)
+	}
+	if !strings.Contains(err.Error(), missingShadow) {
+		t.Fatalf("error = %q, want shadow path context", err)
+	}
+}
+
+func TestUserPasswordStateReportsShadowScanFailure(t *testing.T) {
+	shadowPath := filepath.Join(t.TempDir(), "shadow")
+	if err := os.WriteFile(shadowPath, []byte(strings.Repeat("x", 70*1024)), 0o600); err != nil {
+		t.Fatalf("write oversized shadow fixture: %v", err)
+	}
+
+	_, _, err := userPasswordStateFromPath(shadowPath, "alice")
+	if err == nil || !strings.Contains(err.Error(), "cannot scan password state") {
+		t.Fatalf("userPasswordStateFromPath() error = %v, want scan failure", err)
+	}
+}
+
+func TestSetPasswordStopsWhenUserStateCannotBeRead(t *testing.T) {
+	originalInspect := inspectUserStateFn
+	inspectUserStateFn = func(string) (userState, error) {
+		return userState{}, errors.New("cannot read /etc/shadow")
+	}
+	t.Cleanup(func() { inspectUserStateFn = originalInspect })
+
+	tempBin := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "passwd-called")
+	writeFakeCommand(t, tempBin, "passwd", "#!/bin/sh\n: > \"$SYSBOOTSTRAP_TEST_PASSWD_MARKER\"\n")
+	t.Setenv("SYSBOOTSTRAP_TEST_PASSWD_MARKER", marker)
+	t.Setenv("PATH", tempBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New failed: %v", err)
+	}
+	defer log.Close()
+
+	err = NewUserModule().setPasswordIfNeeded(context.Background(), "alice", &types.Config{
+		UserAddSudo:          true,
+		UserPasswordlessSudo: false,
+	}, log)
+	if err == nil || !strings.Contains(err.Error(), "/etc/shadow") {
+		t.Fatalf("setPasswordIfNeeded() error = %v, want user-state read failure", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("passwd ran after user-state read failure: %v", statErr)
 	}
 }
 
@@ -148,6 +203,11 @@ func TestUserPlanExistingUser(t *testing.T) {
 	oldSudoersDir := sudoersDir
 	sudoersDir = tmpDir
 	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+	originalInspect := inspectUserStateFn
+	inspectUserStateFn = func(username string) (userState, error) {
+		return userState{Exists: true, HomeDir: "/root", Shell: "/bin/bash"}, nil
+	}
+	t.Cleanup(func() { inspectUserStateFn = originalInspect })
 
 	m := NewUserModule()
 	cfg := &types.Config{
@@ -231,6 +291,19 @@ func TestUserPlanExistingUserShellChangeAndDisablePasswordless(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmpDir, "sys-bootstrap-root"), []byte("root ALL=(ALL) NOPASSWD: ALL\n"), 0o440); err != nil {
 		t.Fatalf("write sudoers file: %v", err)
 	}
+	originalInspect := inspectUserStateFn
+	inspectUserStateFn = func(username string) (userState, error) {
+		return userState{
+			Exists:            true,
+			HomeDir:           "/root",
+			Shell:             "/bin/bash",
+			InSudoGroup:       true,
+			PasswordlessSudo:  true,
+			PasswordKnown:     true,
+			HasUsablePassword: true,
+		}, nil
+	}
+	t.Cleanup(func() { inspectUserStateFn = originalInspect })
 
 	m := NewUserModule()
 	cfg := &types.Config{
