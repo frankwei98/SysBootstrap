@@ -128,12 +128,14 @@ var zhCNMessages = map[string]string{
 	"form_fail2ban_ignoreip_desc": "永不封禁的 IP/CIDR，使用空格分隔",
 
 	// plan
-	"plan_title":        "执行计划",
-	"plan_pending":      "%d 个模块待执行，%d 个已满足",
-	"plan_support_tier": "支持级别",
-	"plan_checks":       "环境检查",
-	"plan_dependencies": "依赖：",
-	"plan_check_result": "检查结果：",
+	"plan_title":                      "执行计划",
+	"plan_pending":                    "%d 个模块待执行，%d 个已满足",
+	"plan_support_tier":               "支持级别",
+	"plan_checks":                     "环境检查",
+	"plan_dependencies":               "依赖：",
+	"plan_check_result":               "检查结果：",
+	"plan_no_actions_required":        "无需执行任何操作",
+	"plan_awaiting_interactive_input": "等待交互输入",
 
 	// APT mirror
 	"apt_mirror_form_title":  "是否切换 APT 镜像到 CERNET？",

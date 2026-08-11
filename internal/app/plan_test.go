@@ -185,6 +185,31 @@ func TestPlanTextFormat(t *testing.T) {
 	}
 }
 
+func TestPlanTextLocalizesEmptyModuleGuidance(t *testing.T) {
+	i18n.SetLang(i18n.LangZhCN)
+	t.Cleanup(func() { i18n.SetLang(i18n.LangEN) })
+
+	plan := &PlanResult{
+		Modules: []ModulePlan{
+			{Name: "Base", Status: "satisfied"},
+			{Name: "Create User", Status: "not_configured"},
+		},
+		Counts: PlanCounts{Satisfied: 1, NotConfigured: 1},
+	}
+
+	text := FormatPlanText(plan)
+	for _, want := range []string{"无需执行任何操作", "等待交互输入"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("Chinese plan text missing %q:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"No actions required", "Awaiting interactive input"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("Chinese plan text contains untranslated guidance %q:\n%s", unwanted, text)
+		}
+	}
+}
+
 func TestPlanDerivesPendingStatusFromPlannedActions(t *testing.T) {
 	i18n.SetLang(i18n.LangEN)
 
