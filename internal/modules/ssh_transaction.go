@@ -21,6 +21,7 @@ var managedSSHDropIn = "/etc/ssh/sshd_config.d/00-sys-bootstrap.conf"
 var effectiveSSHPortsFunc = effectiveSSHPorts
 var sshCommandExistsFn = system.CommandExists
 var sshdRuntimeDir = "/run/sshd"
+var ensureSSHDRunDirFn = ensureSSHDRunDir
 
 // sshTransactionJournal records state before the SSH module mutates anything,
 // so rollback can reverse only the tool's own changes.
@@ -210,9 +211,6 @@ func managedAuthPolicyBeforeRun(j *sshTransactionJournal) (string, string, strin
 }
 
 func effectiveSSHPorts(ctx context.Context) ([]int, error) {
-	if err := ensureSSHDRunDir(); err != nil {
-		return nil, err
-	}
 	output, err := querySSHEffectiveOutput(ctx, "", 0)
 	if err != nil {
 		return nil, err
@@ -221,6 +219,9 @@ func effectiveSSHPorts(ctx context.Context) ([]int, error) {
 }
 
 func querySSHEffectiveOutput(ctx context.Context, username string, localPort int) (string, error) {
+	if err := ensureSSHDRunDirFn(); err != nil {
+		return "", fmt.Errorf("cannot prepare sshd runtime directory: %w", err)
+	}
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	args := []string{"-T", "-f", sshConfigPath}
@@ -320,9 +321,6 @@ func effectiveSSHSettings(ctx context.Context, username string) (map[string]stri
 }
 
 func effectiveSSHSettingsForPort(ctx context.Context, username string, localPort int) (map[string]string, error) {
-	if err := ensureSSHDRunDir(); err != nil {
-		return nil, err
-	}
 	output, err := querySSHEffectiveOutput(ctx, username, localPort)
 	if err != nil {
 		return nil, err
