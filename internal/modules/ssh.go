@@ -199,6 +199,9 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	if err := requireSSHListenerInspection(); err != nil {
 		return err
 	}
+	if m.checkpoint == nil {
+		return fmt.Errorf("SSH confirmation checkpoint is required before hardening")
+	}
 
 	if err := ensureOpenSSHServer(ctx, log); err != nil {
 		return err
@@ -241,41 +244,36 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	log.Success("SSH prepare phase complete — dual-path access active")
 
 	// === CONFIRMATION CHECKPOINT ===
-	// If a checkpoint function is set (interactive two-phase mode),
-	// pause and wait for operator attestation. If not set (noninteractive
-	// or single-phase mode), skip directly.
-	if m.checkpoint != nil {
-		candidates := m.computeAccessPaths(ctx, sys, cfg)
-		if (cfg.SSHDisableRoot || cfg.SSHDisablePass) && len(candidates) == 0 {
-			return joinSSHRollbackError(
-				fmt.Errorf("cannot restrict SSH authentication: no verified replacement access path is available"),
-				rollbackPrepare(ctx, journal),
-			)
-		}
-		confirmed, cperr := m.checkpoint(ctx, candidates)
-		if cperr != nil {
-			return joinSSHRollbackError(fmt.Errorf("SSH confirmation failed: %w", cperr), rollbackPrepare(ctx, journal))
-		}
-		if !confirmed {
-			return types.ErrSSHPendingConfirmation
-		}
-
-		// === FINALIZE PHASE ===
-		// Apply restrictive auth after operator confirmation.
-		log.Info("=== SSH Finalize Phase ===")
-		if err := finalizeSSHPhase(ctx, sys, cfg, log, port, journal); err != nil {
-			return joinSSHRollbackError(fmt.Errorf("SSH finalize failed: %w", err), rollbackPrepare(ctx, journal))
-		}
-		log.Success("SSH hardening complete — restrictive auth applied")
-
-		// Keep an existing fail2ban sshd jail aligned with the now-finalized
-		// listener. A synchronization failure must not roll SSH back after the
-		// operator has already verified and selected the new access path.
-		if err := syncExistingFail2banSSHDPort(ctx, port, log); err != nil {
-			return fmt.Errorf("SSH finalized, but fail2ban sync failed: %w", err)
-		}
-	} else {
+	// Pause and wait for operator attestation. Run rejects a missing checkpoint
+	// before prepare so no caller can mutate SSH into an unconfirmable state.
+	candidates := m.computeAccessPaths(ctx, sys, cfg)
+	if (cfg.SSHDisableRoot || cfg.SSHDisablePass) && len(candidates) == 0 {
+		return joinSSHRollbackError(
+			fmt.Errorf("cannot restrict SSH authentication: no verified replacement access path is available"),
+			rollbackPrepare(ctx, journal),
+		)
+	}
+	confirmed, cperr := m.checkpoint(ctx, candidates)
+	if cperr != nil {
+		return joinSSHRollbackError(fmt.Errorf("SSH confirmation failed: %w", cperr), rollbackPrepare(ctx, journal))
+	}
+	if !confirmed {
 		return types.ErrSSHPendingConfirmation
+	}
+
+	// === FINALIZE PHASE ===
+	// Apply restrictive auth after operator confirmation.
+	log.Info("=== SSH Finalize Phase ===")
+	if err := finalizeSSHPhase(ctx, sys, cfg, log, port, journal); err != nil {
+		return joinSSHRollbackError(fmt.Errorf("SSH finalize failed: %w", err), rollbackPrepare(ctx, journal))
+	}
+	log.Success("SSH hardening complete — restrictive auth applied")
+
+	// Keep an existing fail2ban sshd jail aligned with the now-finalized
+	// listener. A synchronization failure must not roll SSH back after the
+	// operator has already verified and selected the new access path.
+	if err := syncExistingFail2banSSHDPort(ctx, port, log); err != nil {
+		return fmt.Errorf("SSH finalized, but fail2ban sync failed: %w", err)
 	}
 
 	return nil

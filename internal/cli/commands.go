@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -215,6 +216,9 @@ func RunCmd(ctx context.Context, registry *modules.Registry) error {
 	runner := app.NewRunner(registry, sys, log)
 	runner.SetSSHCheckpoint(ui.NewSSHCheckpointFunc())
 	if err := runner.Run(ctx, cfg, ordered); err != nil {
+		if errors.Is(err, types.ErrSSHPendingConfirmation) {
+			return nil
+		}
 		return err
 	}
 
@@ -487,6 +491,9 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 	runner.SetSSHCheckpoint(ui.NewSSHCheckpointFunc())
 	result, err := runner.RunWithResult(ctx, cfg, []string{moduleID})
 	if err != nil {
+		if errors.Is(err, types.ErrSSHPendingConfirmation) {
+			return nil
+		}
 		return err
 	}
 	if result.ModuleFailed(moduleID) {

@@ -134,7 +134,7 @@ func (m *pendingModule) Run(ctx context.Context, sys *system.Context, cfg *types
 	return nil
 }
 
-func TestRunnerSSHPendingConfirmationContinues(t *testing.T) {
+func TestRunnerSSHPendingConfirmationStopsFollowingModules(t *testing.T) {
 	registry := modules.NewRegistry()
 	base := &pendingModule{runnerTestModule: runnerTestModule{id: "base", satisfied: false}, returnPending: false}
 	sshMod := &pendingModule{
@@ -145,8 +145,10 @@ func TestRunnerSSHPendingConfirmationContinues(t *testing.T) {
 		},
 		returnPending: true,
 	}
+	following := &runnerTestModule{id: "node"}
 	registry.Register(base)
 	registry.Register(sshMod)
+	registry.Register(following)
 
 	log, err := logging.New(true)
 	if err != nil {
@@ -157,8 +159,7 @@ func TestRunnerSSHPendingConfirmationContinues(t *testing.T) {
 	runner := NewRunner(registry, &system.Context{}, log)
 	cfg := &types.Config{SSHPort: 22122}
 
-	// ssh returns pending but base should still run first
-	if err := runner.Run(context.Background(), cfg, []string{"base", "ssh"}); !errors.Is(err, types.ErrSSHPendingConfirmation) {
+	if err := runner.Run(context.Background(), cfg, []string{"base", "ssh", "node"}); !errors.Is(err, types.ErrSSHPendingConfirmation) {
 		t.Fatalf("Run() should preserve pending sentinel, got: %v", err)
 	}
 	if !base.runCalled {
@@ -167,9 +168,12 @@ func TestRunnerSSHPendingConfirmationContinues(t *testing.T) {
 	if !sshMod.runCalled {
 		t.Fatal("expected ssh module Run() to be called")
 	}
+	if following.runCalled {
+		t.Fatal("module after pending SSH must not run")
+	}
 }
 
-func TestRunnerPreservesSSHPendingWhenLaterModuleFailsFatally(t *testing.T) {
+func TestRunnerDoesNotCombinePendingSSHWithLaterFailure(t *testing.T) {
 	registry := modules.NewRegistry()
 	sshMod := &pendingModule{
 		runnerTestModule: runnerTestModule{
@@ -191,11 +195,14 @@ func TestRunnerPreservesSSHPendingWhenLaterModuleFailsFatally(t *testing.T) {
 
 	runner := NewRunner(registry, &system.Context{}, log)
 	err = runner.Run(context.Background(), &types.Config{SSHPort: 22122}, []string{"ssh", "base"})
-	if !errors.Is(err, fatalErr) {
-		t.Fatalf("Run() error = %v, want later fatal failure", err)
-	}
 	if !errors.Is(err, types.ErrSSHPendingConfirmation) {
-		t.Fatalf("Run() error = %v, want SSH pending state preserved", err)
+		t.Fatalf("Run() error = %v, want SSH pending sentinel", err)
+	}
+	if errors.Is(err, fatalErr) {
+		t.Fatalf("Run() error = %v, must not include an unexecuted later failure", err)
+	}
+	if base.runCalled {
+		t.Fatal("later fatal module must not run after SSH becomes pending")
 	}
 }
 
