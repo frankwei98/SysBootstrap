@@ -100,6 +100,7 @@ func TestSSHCheckSatisfiedForConfiguredPortAndService(t *testing.T) {
 	}
 	sshConfigPath = tmpFile
 	sshServiceReadyFn = func() bool { return true }
+	useFakeSSHEffectiveOutput(t, "port 22333\npermitrootlogin yes\npasswordauthentication yes\nkbdinteractiveauthentication yes")
 	t.Cleanup(func() {
 		sshConfigPath = origPath
 		sshServiceReadyFn = origService
@@ -112,6 +113,29 @@ func TestSSHCheckSatisfiedForConfiguredPortAndService(t *testing.T) {
 	}
 	if !strings.Contains(result.Message, "port 22333") {
 		t.Fatalf("message = %q, want current port detail", result.Message)
+	}
+}
+
+func TestSSHCheckReportsMultipleEffectivePortsAsUnsatisfied(t *testing.T) {
+	origPath := sshConfigPath
+	origService := sshServiceReadyFn
+	sshConfigPath = filepath.Join(t.TempDir(), "sshd_config")
+	if err := os.WriteFile(sshConfigPath, []byte("Port 22122\n"), 0o644); err != nil {
+		t.Fatalf("write sshd_config: %v", err)
+	}
+	sshServiceReadyFn = func() bool { return true }
+	useFakeSSHEffectiveOutput(t, "port 22\nport 22122\npermitrootlogin no\npasswordauthentication no\nkbdinteractiveauthentication no")
+	t.Cleanup(func() {
+		sshConfigPath = origPath
+		sshServiceReadyFn = origService
+	})
+
+	result := NewSSHModule().Check(context.Background(), &system.Context{HasSSHD: true})
+	if result.Satisfied {
+		t.Fatalf("multiple effective SSH ports should be unsatisfied: %#v", result)
+	}
+	if !strings.Contains(result.Message, "ports [22 22122]") {
+		t.Fatalf("message = %q, want all effective ports", result.Message)
 	}
 }
 
@@ -195,6 +219,13 @@ func newQuietLogger(t *testing.T) *logging.Logger {
 	}
 	t.Cleanup(func() { log.Close() })
 	return log
+}
+
+func useFakeSSHEffectiveOutput(t *testing.T, output string) {
+	t.Helper()
+	tempBin := t.TempDir()
+	writeFakeCommand(t, tempBin, "sshd", "#!/bin/sh\ncat <<'EOF'\n"+output+"\nEOF\n")
+	t.Setenv("PATH", tempBin+":"+os.Getenv("PATH"))
 }
 
 func TestSSHGuardDisableRootPassWithoutKey(t *testing.T) {
@@ -375,6 +406,7 @@ func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 	sshConfigPath = tmpFile
 	sshServiceReadyFn = func() bool { return true }
 	sshUFWAllowsPortFn = func(int) bool { return true }
+	useFakeSSHEffectiveOutput(t, "port 22122\npermitrootlogin no\npasswordauthentication no\nkbdinteractiveauthentication no")
 	t.Cleanup(func() {
 		sshConfigPath = origPath
 		managedSSHDropIn = origDropIn
@@ -406,6 +438,113 @@ func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 	if !strings.Contains(check.Message, "port 22122") {
 		t.Fatalf("Check message = %q, want managed SSH port", check.Message)
 	}
+}
+
+func TestSSHPlanUsesEffectiveDaemonState(t *testing.T) {
+	origPath := os.Getenv("PATH")
+	origConfigPath := sshConfigPath
+	origDropIn := managedSSHDropIn
+	origService := sshServiceReadyFn
+	sshDir := filepath.Join(t.TempDir(), "etc", "ssh")
+	dropInDir := filepath.Join(sshDir, "sshd_config.d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatalf("create SSH config directories: %v", err)
+	}
+	sshConfigPath = filepath.Join(sshDir, "sshd_config")
+	managedSSHDropIn = filepath.Join(dropInDir, "00-sys-bootstrap.conf")
+	if err := os.WriteFile(sshConfigPath, []byte("Include "+dropInDir+"/*.conf\n"), 0o644); err != nil {
+		t.Fatalf("write sshd_config: %v", err)
+	}
+	if err := os.WriteFile(managedSSHDropIn, []byte("Port 22122\nPermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n"), 0o644); err != nil {
+		t.Fatalf("write managed SSH drop-in: %v", err)
+	}
+	tempBin := t.TempDir()
+	writeFakeCommand(t, tempBin, "sshd", "#!/bin/sh\nprintf '%s\\n' 'port 22' 'port 22122' 'permitrootlogin yes' 'passwordauthentication yes' 'kbdinteractiveauthentication yes'\n")
+	t.Setenv("PATH", tempBin+":"+origPath)
+	sshServiceReadyFn = func() bool { return true }
+	t.Cleanup(func() {
+		sshConfigPath = origConfigPath
+		managedSSHDropIn = origDropIn
+		sshServiceReadyFn = origService
+	})
+
+	steps, err := NewSSHModule().Plan(context.Background(), &system.Context{
+		HasSSHD:        true,
+		HasSSHDService: true,
+	}, &types.Config{SSHPort: 22122, SSHDisableRoot: true, SSHDisablePass: true})
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	wantTitles := map[string]bool{
+		"Configure SSH port":    false,
+		"Disable root login":    false,
+		"Disable password auth": false,
+	}
+	for _, step := range steps {
+		if _, ok := wantTitles[step.Title]; ok {
+			wantTitles[step.Title] = true
+		}
+	}
+	for title, found := range wantTitles {
+		if !found {
+			t.Errorf("effective daemon state did not produce %q step: %#v", title, steps)
+		}
+	}
+}
+
+func TestSSHPlanAppliesConnectionContextToEffectiveState(t *testing.T) {
+	origConfigPath := sshConfigPath
+	origDropIn := managedSSHDropIn
+	origService := sshServiceReadyFn
+	sshDir := filepath.Join(t.TempDir(), "etc", "ssh")
+	dropInDir := filepath.Join(sshDir, "sshd_config.d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		t.Fatalf("create SSH config directories: %v", err)
+	}
+	sshConfigPath = filepath.Join(sshDir, "sshd_config")
+	managedSSHDropIn = filepath.Join(dropInDir, "00-sys-bootstrap.conf")
+	if err := os.WriteFile(sshConfigPath, []byte("Include "+dropInDir+"/*.conf\n"), 0o644); err != nil {
+		t.Fatalf("write sshd_config: %v", err)
+	}
+	if err := os.WriteFile(managedSSHDropIn, []byte("Port 22122\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n"), 0o644); err != nil {
+		t.Fatalf("write managed SSH drop-in: %v", err)
+	}
+	tempBin := t.TempDir()
+	writeFakeCommand(t, tempBin, "sshd", `#!/bin/sh
+echo "port 22122"
+echo "permitrootlogin no"
+case " $* " in
+  *"lport=22122"*)
+    echo "passwordauthentication yes"
+    echo "kbdinteractiveauthentication yes"
+    ;;
+  *)
+    echo "passwordauthentication no"
+    echo "kbdinteractiveauthentication no"
+    ;;
+esac
+`)
+	t.Setenv("PATH", tempBin+":"+os.Getenv("PATH"))
+	sshServiceReadyFn = func() bool { return true }
+	t.Cleanup(func() {
+		sshConfigPath = origConfigPath
+		managedSSHDropIn = origDropIn
+		sshServiceReadyFn = origService
+	})
+
+	steps, err := NewSSHModule().Plan(context.Background(), &system.Context{
+		HasSSHD:        true,
+		HasSSHDService: true,
+	}, &types.Config{SSHPort: 22122, SSHDisablePass: true})
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	for _, step := range steps {
+		if step.Title == "Disable password auth" {
+			return
+		}
+	}
+	t.Fatalf("expected Match LocalPort policy to keep password hardening pending: %#v", steps)
 }
 
 func TestSSHPlanDisablesKeyboardInteractiveAuthenticationWithPassword(t *testing.T) {
@@ -657,6 +796,14 @@ case "$1" in
     if [ "$SYSBOOTSTRAP_TEST_FORCE_KBD_INTERACTIVE" = "yes" ]; then
       echo "kbdinteractiveauthentication yes"
     fi
+    case " $* " in
+      *"lport=$SYSBOOTSTRAP_TEST_FORCE_PASSWORD_LOCAL_PORT"*)
+        if [ -n "$SYSBOOTSTRAP_TEST_FORCE_PASSWORD_LOCAL_PORT" ]; then
+          echo "passwordauthentication yes"
+          echo "kbdinteractiveauthentication yes"
+        fi
+        ;;
+    esac
     exit 0
     ;;
 esac
@@ -866,6 +1013,23 @@ func TestSSHRunRejectsEffectiveKeyboardInteractiveAuthentication(t *testing.T) {
 		t.Fatal("expected effective keyboard-interactive authentication to fail final verification")
 	}
 	if !strings.Contains(err.Error(), "KbdInteractiveAuthentication") {
+		t.Fatalf("unexpected final verification error: %v", err)
+	}
+}
+
+func TestSSHRunRejectsPasswordAuthenticationMatchedByFinalPort(t *testing.T) {
+	newSSHRunTestEnvironment(t)
+	t.Setenv("SYSBOOTSTRAP_TEST_FORCE_PASSWORD_LOCAL_PORT", "22122")
+	m := NewSSHModule()
+	m.SetCheckpoint(func(context.Context, []types.AccessPath) (bool, error) { return true, nil })
+	err := m.Run(context.Background(), newSSHRunTestAccessPath(t), &types.Config{
+		SSHPort:        22122,
+		SSHDisablePass: true,
+	}, newQuietLogger(t))
+	if err == nil {
+		t.Fatal("expected Match LocalPort password authentication to fail final verification")
+	}
+	if !strings.Contains(err.Error(), "PasswordAuthentication") {
 		t.Fatalf("unexpected final verification error: %v", err)
 	}
 }

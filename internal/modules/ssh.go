@@ -38,11 +38,12 @@ var supportedPublicKeyTypes = map[string]bool{
 }
 
 type sshConfigState struct {
-	port                         int
-	portSet                      bool
+	ports                        []int
 	permitRootLogin              string
 	passwordAuthentication       string
 	kbdInteractiveAuthentication string
+	effectiveKnown               bool
+	effectiveError               string
 }
 
 type SSHModule struct {
@@ -68,14 +69,17 @@ func (m *SSHModule) Check(ctx context.Context, sys *system.Context) CheckResult 
 		return CheckResult{Satisfied: false, Message: "sshd_config not found"}
 	}
 
-	state, err := readSSHConfigState()
+	state, err := readSSHConfigState(ctx, sys, nil)
 	if err != nil {
 		return CheckResult{Satisfied: false, Message: fmt.Sprintf("failed to parse sshd_config: %v", err)}
+	}
+	if !state.effectiveKnown {
+		return CheckResult{Satisfied: false, Message: "effective sshd configuration unavailable: " + state.effectiveError}
 	}
 
 	serviceReady := sshServiceReadyFn()
 	parts := []string{
-		fmt.Sprintf("port %d", currentSSHPort(state)),
+		describeSSHPorts(state),
 		fmt.Sprintf("service %s", boolWord(serviceReady, "ready", "not ready")),
 	}
 	if state.permitRootLogin != "" {
@@ -89,7 +93,7 @@ func (m *SSHModule) Check(ctx context.Context, sys *system.Context) CheckResult 
 	}
 
 	return CheckResult{
-		Satisfied: currentSSHPort(state) > 0 && serviceReady,
+		Satisfied: len(state.ports) == 1 && serviceReady,
 		Message:   strings.Join(parts, ". "),
 	}
 }
@@ -103,7 +107,7 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 		return nil, fmt.Errorf("SSH port %d must be between 1 and 65535", port)
 	}
 
-	state, err := readSSHConfigState()
+	state, err := readSSHConfigState(ctx, sys, cfg)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -115,15 +119,15 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 	}
 
 	needsReload := false
-	if currentSSHPort(state) != port {
+	if !sshStateUsesOnlyPort(state, port) {
 		steps = append(steps, types.Step{Module: "ssh", Title: "Configure SSH port", Detail: fmt.Sprintf("Set port to %d", port), Risk: "high"})
 		needsReload = true
 	}
-	if cfg.SSHDisableRoot && !strings.EqualFold(state.permitRootLogin, "no") {
+	if cfg.SSHDisableRoot && (!state.effectiveKnown || !strings.EqualFold(state.permitRootLogin, "no")) {
 		steps = append(steps, types.Step{Module: "ssh", Title: "Disable root login", Detail: "PermitRootLogin no", Risk: "high"})
 		needsReload = true
 	}
-	if cfg.SSHDisablePass && (!strings.EqualFold(state.passwordAuthentication, "no") || !strings.EqualFold(state.kbdInteractiveAuthentication, "no")) {
+	if cfg.SSHDisablePass && (!state.effectiveKnown || !strings.EqualFold(state.passwordAuthentication, "no") || !strings.EqualFold(state.kbdInteractiveAuthentication, "no")) {
 		steps = append(steps, types.Step{Module: "ssh", Title: "Disable password auth", Detail: "PasswordAuthentication no; KbdInteractiveAuthentication no", Risk: "high"})
 		needsReload = true
 	}
@@ -296,7 +300,7 @@ func (m *SSHModule) writeAuthorizedKeys(ctx context.Context, sys *system.Context
 	return nil
 }
 
-func readSSHConfigState() (sshConfigState, error) {
+func readSSHConfigState(ctx context.Context, sys *system.Context, cfg *types.Config) (sshConfigState, error) {
 	content, err := os.ReadFile(sshConfigPath)
 	if err != nil {
 		return sshConfigState{}, err
@@ -309,15 +313,114 @@ func readSSHConfigState() (sshConfigState, error) {
 
 	managedContent, err := os.ReadFile(managedSSHDropIn)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return state, nil
+		if !os.IsNotExist(err) {
+			return sshConfigState{}, err
 		}
+	} else if err := mergeSSHConfigState(&state, managedContent); err != nil {
 		return sshConfigState{}, err
 	}
-	if err := mergeSSHConfigState(&state, managedContent); err != nil {
+
+	effective, effectiveErr := readEffectiveSSHConfigState(ctx, sys, cfg)
+	if effectiveErr != nil {
+		state.effectiveError = effectiveErr.Error()
+		return state, nil
+	}
+	return effective, nil
+}
+
+func readEffectiveSSHConfigState(ctx context.Context, sys *system.Context, cfg *types.Config) (sshConfigState, error) {
+	if sys == nil || !sys.HasSSHD {
+		return sshConfigState{}, fmt.Errorf("openssh-server is not available")
+	}
+	users := []string{"root"}
+	seenUsers := map[string]bool{"root": true}
+	for _, username := range []string{system.TargetUsername(sys), configuredSSHUsername(cfg)} {
+		if username != "" && !seenUsers[username] {
+			seenUsers[username] = true
+			users = append(users, username)
+		}
+	}
+
+	output, err := querySSHEffectiveOutput(ctx, "", 0)
+	if err != nil {
 		return sshConfigState{}, err
 	}
-	return state, nil
+	var effective sshConfigState
+	if err := mergeSSHConfigState(&effective, []byte(output)); err != nil {
+		return sshConfigState{}, fmt.Errorf("cannot parse global effective sshd configuration: %w", err)
+	}
+	if len(effective.ports) == 0 {
+		return sshConfigState{}, fmt.Errorf("sshd -T returned no effective ports")
+	}
+	ports := append([]int{}, effective.ports...)
+	if cfg != nil && cfg.SSHPort > 0 && !containsSSHPort(ports, cfg.SSHPort) {
+		ports = append(ports, cfg.SSHPort)
+	}
+	effective.permitRootLogin = ""
+	effective.passwordAuthentication = ""
+	effective.kbdInteractiveAuthentication = ""
+	for _, username := range users {
+		for _, port := range ports {
+			output, err := querySSHEffectiveOutput(ctx, username, port)
+			if err != nil {
+				return sshConfigState{}, err
+			}
+			var userState sshConfigState
+			if err := mergeSSHConfigState(&userState, []byte(output)); err != nil {
+				return sshConfigState{}, fmt.Errorf("cannot parse effective sshd configuration for %s on port %d: %w", username, port, err)
+			}
+			if len(userState.ports) == 0 {
+				return sshConfigState{}, fmt.Errorf("sshd -T returned no effective ports for %s on port %d", username, port)
+			}
+			if username == "root" {
+				effective.permitRootLogin = lessRestrictiveSSHSetting(effective.permitRootLogin, userState.permitRootLogin)
+			}
+			effective.passwordAuthentication = lessRestrictiveSSHSetting(effective.passwordAuthentication, userState.passwordAuthentication)
+			effective.kbdInteractiveAuthentication = lessRestrictiveSSHSetting(effective.kbdInteractiveAuthentication, userState.kbdInteractiveAuthentication)
+		}
+	}
+	effective.effectiveKnown = true
+	return effective, nil
+}
+
+func configuredSSHUsername(cfg *types.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.NewUsername)
+}
+
+func lessRestrictiveSSHSetting(current, candidate string) string {
+	if current == "" {
+		return candidate
+	}
+	if candidate == "" || !strings.EqualFold(current, "no") {
+		return current
+	}
+	if !strings.EqualFold(candidate, "no") {
+		return candidate
+	}
+	return current
+}
+
+func sshStateUsesOnlyPort(state sshConfigState, wanted int) bool {
+	return state.effectiveKnown && len(state.ports) == 1 && state.ports[0] == wanted
+}
+
+func describeSSHPorts(state sshConfigState) string {
+	if len(state.ports) == 1 {
+		return fmt.Sprintf("port %d", state.ports[0])
+	}
+	return fmt.Sprintf("ports %v", state.ports)
+}
+
+func containsSSHPort(ports []int, wanted int) bool {
+	for _, port := range ports {
+		if port == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeSSHConfigState(state *sshConfigState, content []byte) error {
@@ -338,8 +441,9 @@ func mergeSSHConfigState(state *sshConfigState, content []byte) error {
 			if convErr != nil || port < 1 || port > 65535 {
 				return fmt.Errorf("invalid Port value %q", fields[1])
 			}
-			state.port = port
-			state.portSet = true
+			if !containsSSHPort(state.ports, port) {
+				state.ports = append(state.ports, port)
+			}
 		case "permitrootlogin":
 			state.permitRootLogin = value
 		case "passwordauthentication":
@@ -349,13 +453,6 @@ func mergeSSHConfigState(state *sshConfigState, content []byte) error {
 		}
 	}
 	return nil
-}
-
-func currentSSHPort(state sshConfigState) int {
-	if state.portSet && state.port > 0 {
-		return state.port
-	}
-	return 22
 }
 
 func sshServiceReady() bool {

@@ -213,18 +213,35 @@ func effectiveSSHPorts(ctx context.Context) ([]int, error) {
 	if err := ensureSSHDRunDir(); err != nil {
 		return nil, err
 	}
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	res, err := system.RunWithContext(opCtx, "sshd", "-T")
+	output, err := querySSHEffectiveOutput(ctx, "", 0)
 	if err != nil {
 		return nil, err
 	}
-	if res == nil || res.ExitCode != 0 {
-		return nil, fmt.Errorf("sshd -T failed: %s", resultStderr(res))
+	return parseEffectiveSSHPorts(output)
+}
+
+func querySSHEffectiveOutput(ctx context.Context, username string, localPort int) (string, error) {
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	args := []string{"-T", "-f", sshConfigPath}
+	if username != "" {
+		connection := "user=" + username + ",host=localhost,addr=127.0.0.1"
+		if localPort > 0 {
+			connection += fmt.Sprintf(",laddr=127.0.0.1,lport=%d", localPort)
+		}
+		args = append(args, "-C", connection)
 	}
+	res, err := system.RunWithContext(opCtx, "sshd", args...)
+	if err != nil || res == nil || res.ExitCode != 0 {
+		return "", fmt.Errorf("sshd effective-configuration query failed for %q: %v (%s)", username, err, resultStderr(res))
+	}
+	return res.Stdout, nil
+}
+
+func parseEffectiveSSHPorts(output string) ([]int, error) {
 	var ports []int
 	seen := make(map[int]bool)
-	for _, line := range strings.Split(res.Stdout, "\n") {
+	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 || !strings.EqualFold(fields[0], "port") {
 			continue
@@ -292,21 +309,19 @@ func verifyOnlyEffectivePorts(ctx context.Context, wanted []int) error {
 }
 
 func effectiveSSHSettings(ctx context.Context, username string) (map[string]string, error) {
+	return effectiveSSHSettingsForPort(ctx, username, 0)
+}
+
+func effectiveSSHSettingsForPort(ctx context.Context, username string, localPort int) (map[string]string, error) {
 	if err := ensureSSHDRunDir(); err != nil {
 		return nil, err
 	}
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	args := []string{"-T"}
-	if username != "" {
-		args = append(args, "-C", "user="+username+",host=localhost,addr=127.0.0.1")
-	}
-	res, err := system.RunWithContext(opCtx, "sshd", args...)
-	if err != nil || res == nil || res.ExitCode != 0 {
-		return nil, fmt.Errorf("sshd effective-policy query failed for %q: %v (%s)", username, err, resultStderr(res))
+	output, err := querySSHEffectiveOutput(ctx, username, localPort)
+	if err != nil {
+		return nil, err
 	}
 	settings := make(map[string]string)
-	for _, line := range strings.Split(res.Stdout, "\n") {
+	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) >= 2 {
 			settings[strings.ToLower(fields[0])] = strings.ToLower(fields[1])
@@ -316,6 +331,10 @@ func effectiveSSHSettings(ctx context.Context, username string) (map[string]stri
 }
 
 func verifyFinalAuthPolicy(ctx context.Context, sys *system.Context, cfg *types.Config) error {
+	ports, err := effectiveSSHPortsFunc(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot inspect effective SSH ports for authentication policy: %w", err)
+	}
 	users := []string{"root"}
 	if username := system.TargetUsername(sys); username != "" && username != "root" {
 		users = append(users, username)
@@ -324,18 +343,20 @@ func verifyFinalAuthPolicy(ctx context.Context, sys *system.Context, cfg *types.
 		users = append(users, cfg.NewUsername)
 	}
 	for _, username := range users {
-		settings, err := effectiveSSHSettings(ctx, username)
-		if err != nil {
-			return err
-		}
-		if cfg.SSHDisableRoot && username == "root" && settings["permitrootlogin"] != "no" {
-			return fmt.Errorf("effective PermitRootLogin for root is %q, want no", settings["permitrootlogin"])
-		}
-		if cfg.SSHDisablePass && settings["passwordauthentication"] != "no" {
-			return fmt.Errorf("effective PasswordAuthentication for %s is %q, want no", username, settings["passwordauthentication"])
-		}
-		if cfg.SSHDisablePass && settings["kbdinteractiveauthentication"] != "no" {
-			return fmt.Errorf("effective KbdInteractiveAuthentication for %s is %q, want no", username, settings["kbdinteractiveauthentication"])
+		for _, port := range ports {
+			settings, err := effectiveSSHSettingsForPort(ctx, username, port)
+			if err != nil {
+				return err
+			}
+			if cfg.SSHDisableRoot && username == "root" && settings["permitrootlogin"] != "no" {
+				return fmt.Errorf("effective PermitRootLogin for root on port %d is %q, want no", port, settings["permitrootlogin"])
+			}
+			if cfg.SSHDisablePass && settings["passwordauthentication"] != "no" {
+				return fmt.Errorf("effective PasswordAuthentication for %s on port %d is %q, want no", username, port, settings["passwordauthentication"])
+			}
+			if cfg.SSHDisablePass && settings["kbdinteractiveauthentication"] != "no" {
+				return fmt.Errorf("effective KbdInteractiveAuthentication for %s on port %d is %q, want no", username, port, settings["kbdinteractiveauthentication"])
+			}
 		}
 	}
 	return nil
