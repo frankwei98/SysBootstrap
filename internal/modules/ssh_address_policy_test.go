@@ -163,6 +163,32 @@ func TestSSHPlanRejectsAddressDependentSKeyAlias(t *testing.T) {
 	}
 }
 
+func TestSSHPlanRejectsAddressPolicyWithInvalidUserCriterion(t *testing.T) {
+	for _, matchLine := range []string{
+		"Match Address 192.0.2.0/24 Invalid-User",
+		"Match Invalid-User Address 192.0.2.0/24",
+	} {
+		t.Run(matchLine, func(t *testing.T) {
+			env := newSSHAddressPlanEnvironment(t)
+			policyPath := filepath.Join(env.dropInDir, "10-address-policy.conf")
+			content := matchLine + "\n  PasswordAuthentication yes\n"
+			if err := os.WriteFile(policyPath, []byte(content), 0o644); err != nil {
+				t.Fatalf("write invalid-user address policy: %v", err)
+			}
+
+			_, err := env.plan(&types.Config{SSHPort: 22122, SSHDisablePass: true})
+			if err == nil {
+				t.Fatal("expected address-dependent policy with invalid-user criterion to be rejected")
+			}
+			for _, want := range []string{"Match Address", "PasswordAuthentication", policyPath} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Plan error = %q, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestSSHPlanFailsClosedWhenIncludedPolicyCannotBeRead(t *testing.T) {
 	env := newSSHAddressPlanEnvironment(t)
 	brokenPath := filepath.Join(env.dropInDir, "10-broken-policy.conf")

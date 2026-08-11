@@ -179,8 +179,12 @@ func sshMatchDependsOnAddress(fields []string) (bool, error) {
 		return false, nil
 	}
 	addressDependent := false
-	for index := 1; index < len(fields); index += 2 {
+	for index := 1; index < len(fields); {
 		criterion := strings.ToLower(fields[index])
+		if criterion == "invalid-user" {
+			index++
+			continue
+		}
 		if index+1 >= len(fields) {
 			return false, fmt.Errorf("Match criterion %s requires a pattern", fields[index])
 		}
@@ -191,6 +195,7 @@ func sshMatchDependsOnAddress(fields []string) (bool, error) {
 		default:
 			return false, fmt.Errorf("unsupported Match criterion %s", fields[index])
 		}
+		index += 2
 	}
 	return addressDependent, nil
 }
