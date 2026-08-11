@@ -22,17 +22,14 @@ func TestTimezoneModuleInterface(t *testing.T) {
 	}
 }
 
-func TestTimezonePlanDefaultsToUTC(t *testing.T) {
+func TestTimezonePlanRejectsMissingTarget(t *testing.T) {
 	m := NewTimezoneModule()
 	steps, err := m.Plan(context.Background(), &system.Context{}, &types.Config{})
-	if err != nil {
-		t.Fatalf("Plan failed: %v", err)
+	if err == nil {
+		t.Fatalf("Plan() = %#v, nil; want an explicit-target error", steps)
 	}
-	if len(steps) > 1 {
-		t.Fatalf("steps len = %d, want 0 or 1 depending on current timezone", len(steps))
-	}
-	if len(steps) == 1 && steps[0].Detail != "Etc/UTC" {
-		t.Fatalf("timezone detail = %q, want Etc/UTC", steps[0].Detail)
+	if !strings.Contains(err.Error(), "timezone must be selected explicitly") {
+		t.Fatalf("Plan() error = %q, want explicit-target guidance", err)
 	}
 }
 
@@ -52,6 +49,19 @@ func TestTimezonePlanNoStepsWhenAlreadyTarget(t *testing.T) {
 	}
 	if len(steps) != 0 {
 		t.Fatalf("steps len = %d, want 0 when target equals current timezone", len(steps))
+	}
+}
+
+func TestTimezoneRunRejectsMissingTargetBeforeSystemMutation(t *testing.T) {
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New failed: %v", err)
+	}
+	defer log.Close()
+
+	err = NewTimezoneModule().Run(context.Background(), &system.Context{}, &types.Config{}, log)
+	if err == nil || !strings.Contains(err.Error(), "timezone must be selected explicitly") {
+		t.Fatalf("Run() error = %v, want explicit-target guidance", err)
 	}
 }
 
