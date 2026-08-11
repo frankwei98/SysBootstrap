@@ -30,7 +30,7 @@ func (m *NodeModule) DefaultEnabled() bool   { return false }
 func (m *NodeModule) RequiresRoot() bool     { return false }
 func (m *NodeModule) Dependencies() []string { return nil }
 
-func (m *NodeModule) Check(ctx context.Context, sys *system.Context) CheckResult {
+func (m *NodeModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
 	nvmScript := filepath.Join(system.NvmDirForContext(sys), "nvm.sh")
 
 	msg := ""

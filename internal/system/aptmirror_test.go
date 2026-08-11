@@ -7,6 +7,33 @@ import (
 	"testing"
 )
 
+func TestAPTMirrorNeedsSwitchInFiles(t *testing.T) {
+	official := filepath.Join(t.TempDir(), "debian.list")
+	if err := os.WriteFile(official, []byte("deb https://deb.debian.org/debian bookworm main\n"), 0o644); err != nil {
+		t.Fatalf("write official source: %v", err)
+	}
+	needsSwitch, err := aptMirrorNeedsSwitchInFiles([]string{official})
+	if err != nil {
+		t.Fatalf("aptMirrorNeedsSwitchInFiles() failed: %v", err)
+	}
+	if !needsSwitch {
+		t.Fatal("official Debian source should require a CERNET switch")
+	}
+
+	configured := filepath.Join(t.TempDir(), "ubuntu.sources")
+	content := "Types: deb\nURIs: https://mirrors.cernet.edu.cn/ubuntu\nSuites: jammy\nComponents: main\n"
+	if err := os.WriteFile(configured, []byte(content), 0o644); err != nil {
+		t.Fatalf("write configured source: %v", err)
+	}
+	needsSwitch, err = aptMirrorNeedsSwitchInFiles([]string{configured})
+	if err != nil {
+		t.Fatalf("aptMirrorNeedsSwitchInFiles() failed: %v", err)
+	}
+	if needsSwitch {
+		t.Fatal("configured CERNET source should already satisfy the target")
+	}
+}
+
 func TestRewriteListLine_Debian(t *testing.T) {
 	tests := []struct {
 		name  string

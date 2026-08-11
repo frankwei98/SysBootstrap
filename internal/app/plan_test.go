@@ -30,7 +30,7 @@ func (m *stubModule) Description() string    { return m.name }
 func (m *stubModule) DefaultEnabled() bool   { return false }
 func (m *stubModule) RequiresRoot() bool     { return false }
 func (m *stubModule) Dependencies() []string { return m.deps }
-func (m *stubModule) Check(_ context.Context, _ *system.Context) modules.CheckResult {
+func (m *stubModule) Check(_ context.Context, _ *system.Context, _ *types.Config) modules.CheckResult {
 	return modules.CheckResult{Satisfied: m.satisfied, Message: m.checkMsg}
 }
 func (m *stubModule) Plan(_ context.Context, _ *system.Context, _ *types.Config) ([]types.Step, error) {
@@ -44,7 +44,7 @@ func TestPlanJSONStructure(t *testing.T) {
 	r := modules.NewRegistry()
 	r.Register(&stubModule{
 		id: "base", name: "Base Environment",
-		satisfied: true, checkMsg: "all installed",
+		satisfied: false, checkMsg: "base packages missing",
 		steps: []types.Step{{Module: "base", Title: "apt update", Detail: "update packages"}},
 	})
 	r.Register(&stubModule{
@@ -210,15 +210,15 @@ func TestPlanTextLocalizesEmptyModuleGuidance(t *testing.T) {
 	}
 }
 
-func TestPlanDerivesPendingStatusFromPlannedActions(t *testing.T) {
+func TestPlanReportsUnsatisfiedCheckWithPlannedActionsAsPending(t *testing.T) {
 	i18n.SetLang(i18n.LangEN)
 
 	r := modules.NewRegistry()
 	r.Register(&stubModule{
 		id:        "base",
 		name:      "Base Environment",
-		satisfied: true,
-		checkMsg:  "all packages installed",
+		satisfied: false,
+		checkMsg:  "CERNET mirror pending",
 		steps: []types.Step{{
 			Module: "base",
 			Title:  "Switch APT mirror to CERNET",
@@ -326,7 +326,7 @@ func TestPlanMarksConfiguredUserModuleSatisfiedWhenNoStepsRemain(t *testing.T) {
 	}
 }
 
-func TestPlanUsesStepsForConfigSensitiveModules(t *testing.T) {
+func TestPlanReportsSatisfiedCheckWithStepsAsContractError(t *testing.T) {
 	i18n.SetLang(i18n.LangEN)
 
 	r := modules.NewRegistry()
@@ -345,12 +345,15 @@ func TestPlanUsesStepsForConfigSensitiveModules(t *testing.T) {
 	if len(plan.Modules) != 1 {
 		t.Fatalf("module count = %d, want 1", len(plan.Modules))
 	}
-	if plan.Modules[0].Status != "pending" {
-		t.Fatalf("timezone status = %q, want pending when plan still has actions", plan.Modules[0].Status)
+	if plan.Modules[0].Status != "error" {
+		t.Fatalf("timezone status = %q, want module contract error", plan.Modules[0].Status)
+	}
+	if !strings.Contains(plan.Modules[0].Warning, "reported satisfied but planned 1 action") {
+		t.Fatalf("timezone warning = %q, want module contract guidance", plan.Modules[0].Warning)
 	}
 }
 
-func TestPlanMarksConfigSensitiveModuleSatisfiedWhenNoStepsRemain(t *testing.T) {
+func TestPlanPreservesAuthoritativeUnsatisfiedCheckWhenNoStepsRemain(t *testing.T) {
 	i18n.SetLang(i18n.LangEN)
 
 	r := modules.NewRegistry()
@@ -376,17 +379,17 @@ func TestPlanMarksConfigSensitiveModuleSatisfiedWhenNoStepsRemain(t *testing.T) 
 	if len(plan.Modules) != 2 {
 		t.Fatalf("module count = %d, want 2", len(plan.Modules))
 	}
-	if plan.Modules[0].Status != "satisfied" {
-		t.Fatalf("ssh status = %q, want satisfied when no config-sensitive steps remain", plan.Modules[0].Status)
+	if plan.Modules[0].Status != "pending" {
+		t.Fatalf("ssh status = %q, want pending from the module's authoritative check", plan.Modules[0].Status)
 	}
-	if plan.Modules[0].Warning != "" {
-		t.Fatalf("ssh warning = %q, want empty", plan.Modules[0].Warning)
+	if plan.Modules[0].Warning != plan.Modules[0].CheckMessage {
+		t.Fatalf("ssh warning = %q, want authoritative check message", plan.Modules[0].Warning)
 	}
-	if plan.Modules[1].Status != "satisfied" {
-		t.Fatalf("docker status = %q, want satisfied when no config-sensitive steps remain", plan.Modules[1].Status)
+	if plan.Modules[1].Status != "pending" {
+		t.Fatalf("docker status = %q, want pending from the module's authoritative check", plan.Modules[1].Status)
 	}
-	if plan.Modules[1].Warning != "" {
-		t.Fatalf("docker warning = %q, want empty", plan.Modules[1].Warning)
+	if plan.Modules[1].Warning != plan.Modules[1].CheckMessage {
+		t.Fatalf("docker warning = %q, want authoritative check message", plan.Modules[1].Warning)
 	}
 }
 

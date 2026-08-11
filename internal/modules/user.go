@@ -64,31 +64,16 @@ func (m *UserModule) DefaultEnabled() bool   { return false }
 func (m *UserModule) RequiresRoot() bool     { return true }
 func (m *UserModule) Dependencies() []string { return nil }
 
-func (m *UserModule) Check(ctx context.Context, sys *system.Context) CheckResult {
-	username := ""
-	if sys != nil && sys.InvokingUser != nil {
-		username = sys.InvokingUser.Username
-	}
-	if username == "" {
-		return CheckResult{Satisfied: false, Message: "No target username configured yet"}
-	}
-
-	cfg := &types.Config{
-		NewUsername:          username,
-		UserShell:            "bash",
-		UserAddSudo:          true,
-		UserPasswordlessSudo: false,
-	}
-	state, err := inspectUserStateFn(username)
+func (m *UserModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
+	check, err := DescribeUserCheckForConfig(cfg)
 	if err != nil {
+		username := ""
+		if cfg != nil {
+			username = cfg.NewUsername
+		}
 		return CheckResult{Satisfied: false, Message: fmt.Sprintf("failed to inspect user %s: %v", username, err)}
 	}
-	desired := evaluateUserDesiredState(cfg, state)
-	satisfied := state.Exists && !desired.NeedsCreate && !desired.NeedsShellUpdate && !desired.NeedsSudoGroup && !desired.NeedsDisableNOPASSWD && !desired.NeedsPassword
-	return CheckResult{
-		Satisfied: satisfied,
-		Message:   describeUserTargetState(cfg, state, desired),
-	}
+	return check
 }
 
 func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {

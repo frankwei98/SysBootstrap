@@ -91,7 +91,7 @@ type Module interface {
     DefaultEnabled() bool
     RequiresRoot() bool
     Dependencies() []string
-    Check(ctx context.Context, sys *system.Context) CheckResult
+    Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult
     Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error)
     Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error
 }
@@ -99,7 +99,8 @@ type Module interface {
 
 ## Module Conventions
 
-- **Idempotency** is required — `Check()` should return `Satisfied: true` when already configured
+- **Idempotency** is required — `Check()` is the authoritative desired-state check and should return `Satisfied: true` only when the supplied configuration is already satisfied. Callers may pass `nil` only when no explicit target configuration exists; implementations must handle that case without inventing a mutating default.
+- **Check/Plan consistency** is required — a satisfied `Check()` must pair with an empty `Plan()`; the app reports a module contract error instead of guessing when they disagree.
 - **Dependencies** — declare in `Dependencies()`, registry resolves topological order
 - **Root check** — set `RequiresRoot() bool`; runner enforces before execution
 - **Error handling** — return descriptive errors with context; base failures are fatal, while optional software installation failures are logged as warnings and their dependents are skipped

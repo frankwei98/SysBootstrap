@@ -29,7 +29,11 @@ func (m *AIModule) DefaultEnabled() bool   { return false }
 func (m *AIModule) RequiresRoot() bool     { return false }
 func (m *AIModule) Dependencies() []string { return []string{"node"} }
 
-func (m *AIModule) Check(ctx context.Context, sys *system.Context) CheckResult {
+func (m *AIModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
+	installClaude, installCodex := requestedAITools(cfg)
+	if !installClaude && !installCodex {
+		return CheckResult{Satisfied: true, Message: "No AI CLI tools requested"}
+	}
 	if _, err := os.Stat(filepath.Join(system.NvmDirForContext(sys), "nvm.sh")); err != nil {
 		return CheckResult{Satisfied: false, Message: "Node.js not installed (run node module first)"}
 	}
@@ -39,18 +43,26 @@ func (m *AIModule) Check(ctx context.Context, sys *system.Context) CheckResult {
 
 	hasClaude := aiToolWorksForCheck(sys, "claude")
 	hasCodex := aiToolWorksForCheck(sys, "codex")
-	if hasClaude && hasCodex {
+	requestedToolsReady := (!installClaude || hasClaude) && (!installCodex || hasCodex)
+	if requestedToolsReady {
 		// Only require pnpm shell path if pnpm is actually installed
 		if nvmCommandExistsForAICheck(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
-			return CheckResult{Satisfied: false, Message: "AI tools installed, but pnpm global bin is missing from shell startup files"}
+			return CheckResult{Satisfied: false, Message: "Requested AI tools installed, but pnpm global bin is missing from shell startup files"}
 		}
-		return CheckResult{Satisfied: true, Message: "Claude Code and Codex installed"}
+		return CheckResult{Satisfied: true, Message: requestedAIToolsMessage(installClaude, installCodex, "installed")}
 	}
-	if hasClaude || hasCodex {
-		return CheckResult{Satisfied: false, Message: "Only part of the AI toolchain is installed"}
-	}
+	return CheckResult{Satisfied: false, Message: requestedAIToolsMessage(installClaude && !hasClaude, installCodex && !hasCodex, "missing")}
+}
 
-	return CheckResult{Satisfied: false, Message: "AI tools not yet installed"}
+func requestedAIToolsMessage(claude, codex bool, state string) string {
+	var tools []string
+	if claude {
+		tools = append(tools, "Claude Code")
+	}
+	if codex {
+		tools = append(tools, "Codex")
+	}
+	return fmt.Sprintf("%s %s", strings.Join(tools, " and "), state)
 }
 
 func (m *AIModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {

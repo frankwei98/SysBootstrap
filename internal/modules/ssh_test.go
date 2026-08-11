@@ -82,7 +82,7 @@ func TestSSHCheckMissingConfig(t *testing.T) {
 	})
 
 	m := NewSSHModule()
-	result := m.Check(context.Background(), &system.Context{HasSSHD: true})
+	result := m.Check(context.Background(), &system.Context{HasSSHD: true}, nil)
 	if result.Satisfied {
 		t.Fatal("expected missing sshd_config to be unsatisfied")
 	}
@@ -107,12 +107,32 @@ func TestSSHCheckSatisfiedForConfiguredPortAndService(t *testing.T) {
 	})
 
 	m := NewSSHModule()
-	result := m.Check(context.Background(), &system.Context{HasSSHD: true})
+	result := m.Check(context.Background(), &system.Context{HasSSHD: true}, nil)
 	if !result.Satisfied {
 		t.Fatalf("expected configured ssh to be satisfied, got %#v", result)
 	}
 	if !strings.Contains(result.Message, "port 22333") {
 		t.Fatalf("message = %q, want current port detail", result.Message)
+	}
+}
+
+func TestSSHCheckComparesRequestedPort(t *testing.T) {
+	origPath := sshConfigPath
+	sshConfigPath = filepath.Join(t.TempDir(), "sshd_config")
+	if err := os.WriteFile(sshConfigPath, []byte("Port 22122\n"), 0o644); err != nil {
+		t.Fatalf("write sshd_config: %v", err)
+	}
+	originalServiceReady := sshServiceReadyFn
+	sshServiceReadyFn = func() bool { return true }
+	useFakeSSHEffectiveOutput(t, "port 22122\npermitrootlogin yes\npasswordauthentication yes\nkbdinteractiveauthentication yes")
+	t.Cleanup(func() {
+		sshConfigPath = origPath
+		sshServiceReadyFn = originalServiceReady
+	})
+
+	check := NewSSHModule().Check(context.Background(), &system.Context{HasSSHD: true}, &types.Config{SSHPort: 22123})
+	if check.Satisfied {
+		t.Fatalf("Check() = %#v, want requested port mismatch to be unsatisfied", check)
 	}
 }
 
@@ -130,7 +150,7 @@ func TestSSHCheckReportsMultipleEffectivePortsAsUnsatisfied(t *testing.T) {
 		sshServiceReadyFn = origService
 	})
 
-	result := NewSSHModule().Check(context.Background(), &system.Context{HasSSHD: true})
+	result := NewSSHModule().Check(context.Background(), &system.Context{HasSSHD: true}, nil)
 	if result.Satisfied {
 		t.Fatalf("multiple effective SSH ports should be unsatisfied: %#v", result)
 	}
@@ -443,7 +463,7 @@ func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 	if len(steps) != 0 {
 		t.Fatalf("unexpected steps when managed SSH config is already satisfied: %#v", steps)
 	}
-	check := m.Check(context.Background(), sys)
+	check := m.Check(context.Background(), sys, nil)
 	if !strings.Contains(check.Message, "port 22122") {
 		t.Fatalf("Check message = %q, want managed SSH port", check.Message)
 	}

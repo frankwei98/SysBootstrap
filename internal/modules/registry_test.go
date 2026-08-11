@@ -22,7 +22,7 @@ func (m *mockModule) Description() string    { return m.id }
 func (m *mockModule) DefaultEnabled() bool   { return m.defaultOn }
 func (m *mockModule) RequiresRoot() bool     { return m.needsRoot }
 func (m *mockModule) Dependencies() []string { return m.deps }
-func (m *mockModule) Check(ctx context.Context, sys *system.Context) CheckResult {
+func (m *mockModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
 	return CheckResult{Satisfied: false}
 }
 func (m *mockModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {

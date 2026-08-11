@@ -36,10 +36,10 @@ func (m *Fail2banModule) DefaultEnabled() bool   { return false }
 func (m *Fail2banModule) RequiresRoot() bool     { return true }
 func (m *Fail2banModule) Dependencies() []string { return nil }
 
-func (m *Fail2banModule) Check(ctx context.Context, sys *system.Context) CheckResult {
+func (m *Fail2banModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
 	installed := system.DpkgInstalled("fail2ban")
 	serviceEnabled := fail2banServiceEnabled()
-	jailConfigured, summary := fail2banSSHDJailMatchesConfig(nil)
+	jailConfigured, summary := fail2banSSHDJailMatchesConfig(cfg)
 	if installed && serviceEnabled && jailConfigured {
 		return CheckResult{Satisfied: true, Message: "fail2ban installed. service enabled. " + summary}
 	}

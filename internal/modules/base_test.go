@@ -97,7 +97,7 @@ func TestBasePlanIncludesMissingPackagesOnly(t *testing.T) {
 }
 
 func TestBaseCheckDoesNotMentionZellij(t *testing.T) {
-	result := NewBaseModule().Check(context.Background(), &system.Context{})
+	result := NewBaseModule().Check(context.Background(), &system.Context{}, nil)
 	if strings.Contains(result.Message, "zellij") {
 		t.Fatalf("base check should not include zellij state, got: %q", result.Message)
 	}

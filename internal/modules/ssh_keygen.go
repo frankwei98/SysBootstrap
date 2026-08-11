@@ -24,11 +24,22 @@ func (m *SSHKeygenModule) DefaultEnabled() bool   { return false }
 func (m *SSHKeygenModule) RequiresRoot() bool     { return false }
 func (m *SSHKeygenModule) Dependencies() []string { return nil }
 
-func (m *SSHKeygenModule) Check(ctx context.Context, sys *system.Context) CheckResult {
+func (m *SSHKeygenModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
 	home := system.TargetHomeDir(sys)
-	keyFile := filepath.Join(home, ".ssh", "id_ed25519")
+	keyType := "ed25519"
+	overwrite := false
+	if cfg != nil {
+		if cfg.KeygenType != "" {
+			keyType = cfg.KeygenType
+		}
+		overwrite = cfg.KeygenOverwrite
+	}
+	keyFile := filepath.Join(home, ".ssh", "id_"+keyType)
 	if _, err := os.Stat(keyFile); err == nil {
-		return CheckResult{Satisfied: true, Message: "ed25519 key already exists"}
+		if overwrite {
+			return CheckResult{Satisfied: false, Message: fmt.Sprintf("%s key exists and overwrite was requested", keyType)}
+		}
+		return CheckResult{Satisfied: true, Message: fmt.Sprintf("%s key already exists", keyType)}
 	}
 	return CheckResult{Satisfied: false, Message: "No SSH key found"}
 }

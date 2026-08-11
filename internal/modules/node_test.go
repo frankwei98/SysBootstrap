@@ -30,7 +30,7 @@ func TestNodeModuleCheckNoNvm(t *testing.T) {
 		t.Errorf("Dependencies() = %v, want nil", m.Dependencies())
 	}
 
-	result := m.Check(context.Background(), &system.Context{})
+	result := m.Check(context.Background(), &system.Context{}, nil)
 	// In test env without nvm, should not be satisfied
 	if result.Satisfied {
 		t.Log("nvm is installed in test environment — skipping unsatisfied check")
@@ -129,7 +129,7 @@ func TestAIModuleCheckRequiresNode(t *testing.T) {
 	t.Setenv("NVM_DIR", filepath.Join(t.TempDir(), ".nvm"))
 
 	m := NewAIModule()
-	result := m.Check(context.Background(), &system.Context{})
+	result := m.Check(context.Background(), &system.Context{}, nil)
 	if result.Satisfied {
 		t.Error("ai module should not be satisfied without node")
 	}
@@ -402,7 +402,7 @@ func TestAIModuleCheckSatisfiedWithoutPnpm(t *testing.T) {
 	m := NewAIModule()
 	result := m.Check(context.Background(), &system.Context{
 		CurrentUser: &user.User{Username: "testuser", HomeDir: home},
-	})
+	}, nil)
 	if !result.Satisfied {
 		t.Fatalf("AI tools installed without pnpm should be satisfied, got: %+v", result)
 	}
@@ -416,7 +416,7 @@ func TestAIModuleCheckRequiresPnpmShellPathWhenPnpmExists(t *testing.T) {
 	m := NewAIModule()
 	result := m.Check(context.Background(), &system.Context{
 		CurrentUser: &user.User{Username: "testuser", HomeDir: home},
-	})
+	}, nil)
 	if result.Satisfied {
 		t.Fatalf("AI tools with pnpm but missing startup files should be unsatisfied")
 	}

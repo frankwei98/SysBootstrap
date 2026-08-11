@@ -33,6 +33,20 @@ func TestTimezonePlanRejectsMissingTarget(t *testing.T) {
 	}
 }
 
+func TestTimezoneCheckComparesRequestedTarget(t *testing.T) {
+	tempBin := t.TempDir()
+	timedatectl := filepath.Join(tempBin, "timedatectl")
+	if err := os.WriteFile(timedatectl, []byte("#!/bin/sh\nprintf 'Asia/Singapore\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write timedatectl stub: %v", err)
+	}
+	t.Setenv("PATH", tempBin)
+
+	check := NewTimezoneModule().Check(context.Background(), &system.Context{}, &types.Config{Timezone: "Etc/UTC"})
+	if check.Satisfied {
+		t.Fatalf("Check() = %#v, want requested timezone mismatch to be unsatisfied", check)
+	}
+}
+
 func TestTimezonePlanNoStepsWhenAlreadyTarget(t *testing.T) {
 	if !system.CommandExists("timedatectl") {
 		t.Skip("timedatectl not available")

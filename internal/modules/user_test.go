@@ -26,6 +26,32 @@ func TestUserModuleInterface(t *testing.T) {
 	}
 }
 
+func TestUserCheckUsesRequestedConfig(t *testing.T) {
+	originalInspect := inspectUserStateFn
+	inspectUserStateFn = func(username string) (userState, error) {
+		if username != "alice" {
+			t.Fatalf("inspected username = %q, want alice", username)
+		}
+		return userState{
+			Exists:           true,
+			Shell:            "/bin/bash",
+			InSudoGroup:      true,
+			PasswordlessSudo: true,
+		}, nil
+	}
+	t.Cleanup(func() { inspectUserStateFn = originalInspect })
+
+	check := NewUserModule().Check(context.Background(), &system.Context{}, &types.Config{
+		NewUsername:          "alice",
+		UserShell:            "bash",
+		UserAddSudo:          true,
+		UserPasswordlessSudo: true,
+	})
+	if !check.Satisfied {
+		t.Fatalf("requested user configuration should be satisfied: %#v", check)
+	}
+}
+
 func TestUserRunRejectsUnavailableLoginShellBeforeCreatingAccount(t *testing.T) {
 	originalShellAvailable := loginShellAvailableFn
 	loginShellAvailableFn = func(path string) bool {

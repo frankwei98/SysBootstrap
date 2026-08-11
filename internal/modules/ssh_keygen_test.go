@@ -46,3 +46,20 @@ func TestSSHKeygenRunChecksCommandBeforeCreatingSSHDirectory(t *testing.T) {
 		t.Errorf(".ssh was created before ssh-keygen prerequisite check (stat error: %v)", statErr)
 	}
 }
+
+func TestSSHKeygenCheckTreatsOverwriteAsUnsatisfied(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("mkdir .ssh: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519"), []byte("private"), 0o600); err != nil {
+		t.Fatalf("write existing key: %v", err)
+	}
+	sys := &system.Context{CurrentUser: &user.User{HomeDir: home}}
+
+	check := NewSSHKeygenModule().Check(context.Background(), sys, &types.Config{KeygenType: "ed25519", KeygenOverwrite: true})
+	if check.Satisfied {
+		t.Fatalf("Check() = %#v, want overwrite request to remain actionable", check)
+	}
+}

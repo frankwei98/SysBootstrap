@@ -25,7 +25,7 @@ func (m *ZellijModule) DefaultEnabled() bool   { return true }
 func (m *ZellijModule) RequiresRoot() bool     { return true }
 func (m *ZellijModule) Dependencies() []string { return []string{"base"} }
 
-func (m *ZellijModule) Check(ctx context.Context, sys *system.Context) CheckResult {
+func (m *ZellijModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
 	if system.CommandExists("zellij") {
 		return CheckResult{Satisfied: true, Message: "zellij installed"}
 	}
