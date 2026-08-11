@@ -69,8 +69,15 @@ func TestSSHPlanInstallsOpenSSHServerWhenMissing(t *testing.T) {
 		t.Fatalf("Plan failed: %v", err)
 	}
 
-	if len(steps) == 0 || steps[0].Title != "Install OpenSSH server" {
-		t.Fatalf("first step = %#v, want Install OpenSSH server", steps)
+	found := false
+	for _, step := range steps {
+		if step.Title == "Install OpenSSH server" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("steps = %#v, want Install OpenSSH server", steps)
 	}
 }
 
@@ -351,8 +358,15 @@ func TestSSHPlanDefaultPort(t *testing.T) {
 		t.Fatal("expected plan steps when current ssh port differs from default preview port")
 	}
 	wantDetail := "Set exclusive port to 22122; comment explicit non-target Port directives during finalization"
-	if steps[0].Detail != wantDetail {
-		t.Errorf("default port detail = %q, want %q", steps[0].Detail, wantDetail)
+	found := false
+	for _, step := range steps {
+		if step.Title == "Configure SSH port" && step.Detail == wantDetail {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("default port steps = %#v, want Configure SSH port detail %q", steps, wantDetail)
 	}
 }
 
@@ -419,6 +433,7 @@ func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 	origDropIn := managedSSHDropIn
 	origService := sshServiceReadyFn
 	origUFW := sshUFWAllowsPortFn
+	origCommandExists := sshCommandExistsFn
 	sshDir := filepath.Join(t.TempDir(), "etc", "ssh")
 	dropInDir := filepath.Join(sshDir, "sshd_config.d")
 	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
@@ -435,12 +450,16 @@ func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 	sshConfigPath = tmpFile
 	sshServiceReadyFn = func() bool { return true }
 	sshUFWAllowsPortFn = func(int) bool { return true }
+	sshCommandExistsFn = func(name string) bool {
+		return name == "ss" || origCommandExists(name)
+	}
 	useFakeSSHEffectiveOutput(t, "port 22122\npermitrootlogin no\npasswordauthentication no\nkbdinteractiveauthentication no")
 	t.Cleanup(func() {
 		sshConfigPath = origPath
 		managedSSHDropIn = origDropIn
 		sshServiceReadyFn = origService
 		sshUFWAllowsPortFn = origUFW
+		sshCommandExistsFn = origCommandExists
 	})
 
 	m := NewSSHModule()
@@ -1137,6 +1156,39 @@ func TestSSHRunRequiresSSBeforeManagedConfigMutation(t *testing.T) {
 				t.Fatalf("managed drop-in changed before prerequisite rejection:\n%s", content)
 			}
 		})
+	}
+}
+
+func TestSSHRunInstallsMissingListenerInspectionPrerequisite(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	marker := filepath.Join(t.TempDir(), "iproute2-installed")
+	pathEntries := filepath.SplitList(os.Getenv("PATH"))
+	if len(pathEntries) == 0 {
+		t.Fatal("test PATH is empty")
+	}
+	writeFakeCommand(t, pathEntries[0], "apt-get", `#!/bin/sh
+case " $* " in
+  *" install "*" iproute2 "*) : > "$SYSBOOTSTRAP_TEST_IPROUTE2_MARKER" ;;
+esac
+exit 0
+`)
+	t.Setenv("SYSBOOTSTRAP_TEST_IPROUTE2_MARKER", marker)
+
+	originalCommandExists := sshCommandExistsFn
+	sshCommandExistsFn = func(name string) bool {
+		if name != "ss" {
+			return originalCommandExists(name)
+		}
+		_, err := os.Stat(marker)
+		return err == nil
+	}
+	t.Cleanup(func() { sshCommandExistsFn = originalCommandExists })
+
+	if err := env.run(t); err != nil {
+		t.Fatalf("SSH hardening should install iproute2 when ss is missing: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("iproute2 install was not attempted: %v", err)
 	}
 }
 
