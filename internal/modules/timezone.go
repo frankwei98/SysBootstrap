@@ -11,8 +11,6 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
-const defaultTimezone = "Etc/UTC"
-
 type TimezoneModule struct{}
 
 func NewTimezoneModule() *TimezoneModule { return &TimezoneModule{} }
@@ -39,9 +37,9 @@ func (m *TimezoneModule) Check(ctx context.Context, sys *system.Context) CheckRe
 }
 
 func (m *TimezoneModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
-	target := cfg.Timezone
-	if target == "" {
-		target = defaultTimezone
+	target, err := requestedTimezone(cfg)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := time.LoadLocation(target); err != nil {
 		return nil, fmt.Errorf("invalid timezone %q: %w", target, err)
@@ -56,12 +54,12 @@ func (m *TimezoneModule) Plan(ctx context.Context, sys *system.Context, cfg *typ
 }
 
 func (m *TimezoneModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+	target, err := requestedTimezone(cfg)
+	if err != nil {
+		return err
+	}
 	if !system.CommandExists("timedatectl") {
 		return fmt.Errorf("timedatectl is not available on this system")
-	}
-	target := cfg.Timezone
-	if target == "" {
-		target = defaultTimezone
 	}
 	if _, err := time.LoadLocation(target); err != nil {
 		return fmt.Errorf("invalid timezone %q: %w", target, err)
@@ -77,6 +75,13 @@ func (m *TimezoneModule) Run(ctx context.Context, sys *system.Context, cfg *type
 	}
 	log.Successf("Timezone set to %s", target)
 	return nil
+}
+
+func requestedTimezone(cfg *types.Config) (string, error) {
+	if cfg == nil || strings.TrimSpace(cfg.Timezone) == "" {
+		return "", fmt.Errorf("timezone must be selected explicitly")
+	}
+	return strings.TrimSpace(cfg.Timezone), nil
 }
 
 func currentTimezone() (string, bool) {
