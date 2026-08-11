@@ -130,6 +130,9 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 	serviceReady := sshServiceReadyFn()
 
 	var steps []types.Step
+	if !sshCommandExistsFn("ss") {
+		steps = append(steps, types.Step{Module: "ssh", Title: "Install SSH listener inspection", Detail: "apt-get install iproute2"})
+	}
 	if !sys.HasSSHD || !sys.HasSSHDService || os.IsNotExist(err) {
 		steps = append(steps, types.Step{Module: "ssh", Title: "Install OpenSSH server", Detail: "apt-get install openssh-server"})
 	}
@@ -196,11 +199,11 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	if err := rejectAddressDependentSSHAuthPolicy(cfg); err != nil {
 		return err
 	}
-	if err := requireSSHListenerInspection(); err != nil {
-		return err
-	}
 	if m.checkpoint == nil {
 		return fmt.Errorf("SSH confirmation checkpoint is required before hardening")
+	}
+	if err := ensureSSHListenerInspection(ctx, log); err != nil {
+		return err
 	}
 
 	if err := ensureOpenSSHServer(ctx, log); err != nil {
@@ -276,6 +279,25 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 		return fmt.Errorf("SSH finalized, but fail2ban sync failed: %w", err)
 	}
 
+	return nil
+}
+
+func ensureSSHListenerInspection(ctx context.Context, log *logging.Logger) error {
+	if requireSSHListenerInspection() == nil {
+		return nil
+	}
+
+	log.Info("Installing iproute2 for SSH listener inspection...")
+	if res, err := system.RunApt(ctx, "update", "-y"); err != nil || res == nil || res.ExitCode != 0 {
+		return system.FormatCommandError("required command ss is unavailable; apt-get update before install iproute2 failed", res, err)
+	}
+	if res, err := system.RunApt(ctx, "install", "-y", "iproute2"); err != nil || res == nil || res.ExitCode != 0 {
+		return system.FormatCommandError("required command ss is unavailable; iproute2 installation failed", res, err)
+	}
+	if err := requireSSHListenerInspection(); err != nil {
+		return fmt.Errorf("iproute2 installation completed but SSH listener inspection is still unavailable: %w", err)
+	}
+	log.Success("iproute2 installed for SSH listener inspection")
 	return nil
 }
 
