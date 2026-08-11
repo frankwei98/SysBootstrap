@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
@@ -86,6 +87,11 @@ func (r *Runner) RunWithResult(ctx context.Context, cfg *types.Config, ids []str
 		r.log.Infof(i18n.T("runner_starting"), m.Name())
 
 		check := m.Check(ctx, r.sys, cfg)
+		for _, warning := range check.Warnings {
+			if warning = strings.TrimSpace(warning); warning != "" {
+				r.log.Warn(warning)
+			}
+		}
 		steps, planErr := m.Plan(ctx, r.sys, cfg)
 		if planErr != nil {
 			if err := ctx.Err(); err != nil {

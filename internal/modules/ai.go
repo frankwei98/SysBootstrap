@@ -17,9 +17,9 @@ type AIModule struct{}
 func NewAIModule() *AIModule { return &AIModule{} }
 
 var (
-	aiToolWorksForCheck        = aiToolWorks
-	nvmCommandExistsForAICheck = system.NvmCommandExistsForContext
-	runAIShellForContext       = system.RunInNvmShellForContextInHome
+	aiToolWorksForCheck   = aiToolWorks
+	nvmCommandExistsForAI = system.NvmCommandExistsForContext
+	runAIShellForContext  = system.RunInNvmShellForContextInHome
 )
 
 func (m *AIModule) ID() string             { return "ai" }
@@ -37,7 +37,7 @@ func (m *AIModule) Check(ctx context.Context, sys *system.Context, cfg *types.Co
 	if _, err := os.Stat(filepath.Join(system.NvmDirForContext(sys), "nvm.sh")); err != nil {
 		return CheckResult{Satisfied: false, Message: "Node.js not installed (run node module first)"}
 	}
-	if !nvmCommandExistsForAICheck(sys, "node") {
+	if !nvmCommandExistsForAI(sys, "node") {
 		return CheckResult{Satisfied: false, Message: "Node.js not installed (run node module first)"}
 	}
 
@@ -46,7 +46,7 @@ func (m *AIModule) Check(ctx context.Context, sys *system.Context, cfg *types.Co
 	requestedToolsReady := (!installClaude || hasClaude) && (!installCodex || hasCodex)
 	if requestedToolsReady {
 		// Only require pnpm shell path if pnpm is actually installed
-		if nvmCommandExistsForAICheck(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
+		if nvmCommandExistsForAI(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
 			return CheckResult{Satisfied: false, Message: "Requested AI tools installed, but pnpm global bin is missing from shell startup files"}
 		}
 		return CheckResult{Satisfied: true, Message: requestedAIToolsMessage(installClaude, installCodex, "installed")}
@@ -76,7 +76,7 @@ func (m *AIModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Con
 	if installCodex && !aiToolWorksForCheck(sys, "codex") {
 		steps = append(steps, types.Step{Module: "ai", Title: "Install Codex", Detail: "@openai/codex — " + pmDetail})
 	}
-	if (installClaude || installCodex) && nvmCommandExistsForAICheck(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
+	if (installClaude || installCodex) && nvmCommandExistsForAI(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
 		steps = append(steps, types.Step{Module: "ai", Title: "Update shell startup", Detail: "Add PNPM_HOME to shell rc files"})
 	}
 	return steps, nil
@@ -91,13 +91,13 @@ func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Conf
 	if _, err := os.Stat(filepath.Join(system.NvmDirForContext(sys), "nvm.sh")); err != nil {
 		return fmt.Errorf("Node.js is not installed — please run the node module first")
 	}
-	if !system.NvmCommandExistsForContext(sys, "node") {
+	if !nvmCommandExistsForAI(sys, "node") {
 		return fmt.Errorf("Node.js is not installed — please run the node module first")
 	}
 
 	// Detect package manager inside nvm-aware shell
 	pm := "npm"
-	if system.NvmCommandExistsForContext(sys, "pnpm") {
+	if nvmCommandExistsForAI(sys, "pnpm") {
 		pm = "pnpm"
 	} else {
 		log.Warn("pnpm not found in nvm environment, falling back to npm")

@@ -348,13 +348,16 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 		return fmt.Errorf(i18n.T("module_requires_root"), m.Name())
 	}
 
+	// Resolve one execution config before dependency checks. The same config is
+	// used for dependency inspection, dependency execution, target forms, and
+	// final execution so requested settings cannot drift between phases.
+	cfg := moduleDefaultConfig(moduleID, sys)
+	st := settings.Load()
+	resolveAptMirror(cfg, st, false)
+
 	// Ask for the AI selection before resolving its Node dependency. An explicit
 	// empty selection must be a no-op rather than installing Node unnecessarily.
-	var cfg *types.Config
 	if moduleID == "ai" && isInteractiveTerminal() {
-		cfg = moduleDefaultConfig(moduleID, sys)
-		st := settings.Load()
-		resolveAptMirror(cfg, st, false)
 		if err := ui.AIConfigForm(cfg); err != nil {
 			return err
 		}
@@ -366,20 +369,7 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 
 	// Check dependencies first so root user install covers both the target
 	// module and any dependencies that will be auto-run.
-	deps := m.Dependencies()
-	var missing []string
-	if len(deps) > 0 {
-		for _, dep := range deps {
-			dm, err := registry.Get(dep)
-			if err != nil {
-				continue
-			}
-			check := dm.Check(ctx, sys, cfg)
-			if !check.Satisfied {
-				missing = append(missing, dep)
-			}
-		}
-	}
+	missing := missingDependenciesForModule(ctx, registry, m, sys, cfg)
 
 	// Root user install protection: covers target module + missing deps
 	modsToCheck := append([]string{moduleID}, missing...)
@@ -407,7 +397,7 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 			return fmt.Errorf(i18n.T("module_cannot_run_without"), m.Name(), strings.Join(missing, ", "))
 		}
 		runner := app.NewRunner(registry, sys, log)
-		result, err := runner.RunWithResult(ctx, &types.Config{SSHPort: modules.DefaultSSHPort}, missing)
+		result, err := runner.RunWithResult(ctx, cfg, missing)
 		if err != nil {
 			return fmt.Errorf("dependency %s failed: %w", strings.Join(missing, ", "), err)
 		}
@@ -424,12 +414,7 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 		}
 	}
 
-	// Collect config
-	if cfg == nil {
-		cfg = moduleDefaultConfig(moduleID, sys)
-		st := settings.Load()
-		resolveAptMirror(cfg, st, false)
-	}
+	// Collect module-specific config.
 	switch moduleID {
 	case "ssh":
 		if !isInteractiveTerminal() {
@@ -504,6 +489,26 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 		log.Warnf(i18n.T("shell_reload_hint"), shellReloadCommand())
 	}
 	return nil
+}
+
+func missingDependenciesForModule(
+	ctx context.Context,
+	registry *modules.Registry,
+	target modules.Module,
+	sys *system.Context,
+	cfg *types.Config,
+) []string {
+	var missing []string
+	for _, dependencyID := range target.Dependencies() {
+		dependency, err := registry.Get(dependencyID)
+		if err != nil {
+			continue
+		}
+		if check := dependency.Check(ctx, sys, cfg); !check.Satisfied {
+			missing = append(missing, dependencyID)
+		}
+	}
+	return missing
 }
 
 func needsShellReloadHint(moduleIDs []string) bool {
