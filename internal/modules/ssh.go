@@ -107,7 +107,9 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 		return nil, fmt.Errorf("SSH port %d must be between 1 and 65535", port)
 	}
 
-	state, err := readSSHConfigState(ctx, sys, cfg)
+	normalizedCfg := *cfg
+	normalizedCfg.SSHPort = port
+	state, err := readSSHConfigState(ctx, sys, &normalizedCfg)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
