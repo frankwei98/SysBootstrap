@@ -592,12 +592,13 @@ func TestSSHPlanChecksDefaultRequestedPortConnectionContext(t *testing.T) {
 		t.Fatalf("write sshd_config: %v", err)
 	}
 	tempBin := t.TempDir()
+	t.Setenv("SYSBOOTSTRAP_TEST_DEFAULT_PORT", strconv.Itoa(DefaultSSHPort))
 	writeFakeCommand(t, tempBin, "sshd", `#!/bin/sh
 echo "port 22"
 echo "permitrootlogin no"
 if [ "$SYSBOOTSTRAP_TEST_MATCH_PASSWORD_LOCAL_PORT" = "yes" ]; then
   case " $* " in
-    *"lport=22122"*)
+    *"lport=$SYSBOOTSTRAP_TEST_DEFAULT_PORT"*)
       echo "passwordauthentication yes"
       echo "kbdinteractiveauthentication yes"
       exit 0

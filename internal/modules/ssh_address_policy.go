@@ -223,9 +223,7 @@ func splitSSHConfigFields(line string) ([]string, error) {
 		arguments = arguments[1:]
 	} else if separator != 0 {
 		arguments = strings.TrimLeftFunc(arguments, unicode.IsSpace)
-		if strings.HasPrefix(arguments, "=") {
-			arguments = arguments[1:]
-		}
+		arguments = strings.TrimPrefix(arguments, "=")
 	}
 	arguments = strings.TrimLeftFunc(arguments, unicode.IsSpace)
 
