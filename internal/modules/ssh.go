@@ -61,7 +61,7 @@ func (m *SSHModule) DefaultEnabled() bool   { return false }
 func (m *SSHModule) RequiresRoot() bool     { return true }
 func (m *SSHModule) Dependencies() []string { return nil }
 
-func (m *SSHModule) Check(ctx context.Context, sys *system.Context) CheckResult {
+func (m *SSHModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
 	if !sys.HasSSHD {
 		return CheckResult{Satisfied: false, Message: "openssh-server not installed"}
 	}
@@ -92,10 +92,21 @@ func (m *SSHModule) Check(ctx context.Context, sys *system.Context) CheckResult 
 		parts = append(parts, "KbdInteractiveAuthentication "+state.kbdInteractiveAuthentication)
 	}
 
-	return CheckResult{
+	result := CheckResult{
 		Satisfied: len(state.ports) == 1 && serviceReady,
 		Message:   strings.Join(parts, ". "),
 	}
+	if cfg == nil {
+		return result
+	}
+	steps, planErr := m.Plan(ctx, sys, cfg)
+	if planErr != nil {
+		result.Satisfied = false
+		result.Message += ". requested configuration invalid: " + planErr.Error()
+		return result
+	}
+	result.Satisfied = len(steps) == 0
+	return result
 }
 
 func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {

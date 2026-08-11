@@ -86,7 +86,7 @@ func (r *Runner) RunWithResult(ctx context.Context, cfg *types.Config, ids []str
 		}
 		r.log.Infof(i18n.T("runner_starting"), m.Name())
 
-		check := m.Check(ctx, r.sys)
+		check := m.Check(ctx, r.sys, cfg)
 		steps, planErr := m.Plan(ctx, r.sys, cfg)
 		if planErr != nil {
 			if err := ctx.Err(); err != nil {
@@ -94,13 +94,10 @@ func (r *Runner) RunWithResult(ctx context.Context, cfg *types.Config, ids []str
 			}
 			return result, withSSHPending(fmt.Errorf("module %s plan failed: %w", m.Name(), planErr), pendingSSH)
 		}
-		if m.ID() == "user" {
-			if userCheck, err := modules.DescribeUserCheckForConfig(cfg); err == nil {
-				check = userCheck
-			}
+		if contractErr := moduleStateContractError(m.Name(), check, steps); contractErr != nil {
+			return result, contractErr
 		}
-		check = ApplyConfigSensitiveModuleState(m.ID(), check, steps)
-		if ShouldSkipSatisfiedForModule(m.ID(), cfg, check) {
+		if check.Satisfied {
 			r.log.Successf(i18n.T("runner_skipping"), m.Name())
 			if check.Message != "" {
 				r.log.Info(check.Message)
@@ -174,33 +171,4 @@ func ShouldWarnOnModuleFailure(moduleID string, ctx context.Context, err error) 
 	default:
 		return false
 	}
-}
-
-func ApplyConfigSensitiveModuleState(moduleID string, check modules.CheckResult, steps []types.Step) modules.CheckResult {
-	if !isConfigSensitivePlanModule(moduleID) {
-		return check
-	}
-	if len(steps) > 0 {
-		check.Satisfied = false
-	} else {
-		check.Satisfied = true
-	}
-	return check
-}
-
-func ShouldSkipSatisfiedForModule(moduleID string, cfg *types.Config, check modules.CheckResult) bool {
-	if !check.Satisfied {
-		return false
-	}
-
-	switch moduleID {
-	case "ssh_keygen":
-		return false
-	case "base":
-		if cfg.AptMirror != "" {
-			return false
-		}
-	}
-
-	return true
 }

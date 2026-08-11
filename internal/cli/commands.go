@@ -370,7 +370,7 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 			if err != nil {
 				continue
 			}
-			check := dm.Check(ctx, sys)
+			check := dm.Check(ctx, sys, cfg)
 			if !check.Satisfied {
 				missing = append(missing, dep)
 			}

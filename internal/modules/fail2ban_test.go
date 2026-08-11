@@ -155,7 +155,7 @@ esac
 		t.Fatalf("write managed jail: %v", err)
 	}
 
-	result := NewFail2banModule().Check(context.Background(), &system.Context{})
+	result := NewFail2banModule().Check(context.Background(), &system.Context{}, nil)
 	if !result.Satisfied {
 		t.Fatalf("expected matching jail to satisfy check, got %#v", result)
 	}

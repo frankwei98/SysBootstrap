@@ -33,11 +33,11 @@ func (m *DockerModule) DefaultEnabled() bool   { return false }
 func (m *DockerModule) RequiresRoot() bool     { return true }
 func (m *DockerModule) Dependencies() []string { return []string{"base"} }
 
-func (m *DockerModule) Check(ctx context.Context, sys *system.Context) CheckResult {
+func (m *DockerModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
 	hasDocker := dockerInstalledFn()
 	hasCompose := dockerComposePluginInstalledFn()
 	serviceEnabled := dockerServiceEnabledFn()
-	groupReady, targetUser := dockerGroupSatisfied(sys)
+	groupReady, targetUser := dockerGroupSatisfiedWithConfigFn(sys, cfg)
 
 	if hasDocker && hasCompose && serviceEnabled && groupReady {
 		return CheckResult{Satisfied: true, Message: buildDockerCheckMessage(hasDocker, hasCompose, serviceEnabled, targetUser, true)}

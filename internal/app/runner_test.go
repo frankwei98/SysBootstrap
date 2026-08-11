@@ -32,7 +32,7 @@ func (m *runnerTestModule) Dependencies() []string { return m.deps }
 func (m *runnerTestModule) Plan(context.Context, *system.Context, *types.Config) ([]types.Step, error) {
 	return m.steps, nil
 }
-func (m *runnerTestModule) Check(context.Context, *system.Context) modules.CheckResult {
+func (m *runnerTestModule) Check(context.Context, *system.Context, *types.Config) modules.CheckResult {
 	return modules.CheckResult{Satisfied: m.satisfied, Message: "already exists"}
 }
 func (m *runnerTestModule) Run(context.Context, *system.Context, *types.Config, *logging.Logger) error {
@@ -96,23 +96,6 @@ func (c *capturedRunnerLog) Output() string {
 		c.t.Fatalf("closing captured output failed: %v", err)
 	}
 	return string(output)
-}
-
-func TestShouldSkipSatisfiedForModule(t *testing.T) {
-	check := modules.CheckResult{Satisfied: true}
-
-	if !ShouldSkipSatisfiedForModule("base", &types.Config{}, check) {
-		t.Fatal("expected satisfied base module to be skipped")
-	}
-	if ShouldSkipSatisfiedForModule("ssh_keygen", &types.Config{KeygenOverwrite: true}, check) {
-		t.Fatal("expected ssh_keygen overwrite to force execution")
-	}
-	if ShouldSkipSatisfiedForModule("ssh_keygen", &types.Config{KeygenOverwrite: false}, check) {
-		t.Fatal("expected ssh_keygen to always defer skip/overwrite behavior to Run()")
-	}
-	if !ShouldSkipSatisfiedForModule("timezone", &types.Config{Timezone: "Asia/Shanghai"}, check) {
-		t.Fatal("expected satisfied timezone module state to be skipped before config-sensitive plan adjustment")
-	}
 }
 
 func TestShouldWarnOnModuleFailure(t *testing.T) {
@@ -341,9 +324,9 @@ func TestRunnerStopsOnNonInstallationModuleFailure(t *testing.T) {
 	}
 }
 
-func TestRunnerDoesNotSkipSSHKeygenOverwrite(t *testing.T) {
+func TestRunnerExecutesSSHKeygenOverwriteWhenCheckIsUnsatisfied(t *testing.T) {
 	registry := modules.NewRegistry()
-	module := &runnerTestModule{id: "ssh_keygen", satisfied: true}
+	module := &runnerTestModule{id: "ssh_keygen", satisfied: false}
 	registry.Register(module)
 
 	log, err := logging.New(true)
@@ -363,7 +346,7 @@ func TestRunnerDoesNotSkipSSHKeygenOverwrite(t *testing.T) {
 	}
 }
 
-func TestRunnerExecutesConfigSensitiveModuleWhenPlanHasSteps(t *testing.T) {
+func TestRunnerRejectsSatisfiedCheckWithPlanSteps(t *testing.T) {
 	registry := modules.NewRegistry()
 	module := &runnerTestModule{
 		id:        "timezone",
@@ -381,15 +364,16 @@ func TestRunnerExecutesConfigSensitiveModuleWhenPlanHasSteps(t *testing.T) {
 	runner := NewRunner(registry, &system.Context{}, log)
 	cfg := &types.Config{Timezone: "Asia/Shanghai"}
 
-	if err := runner.Run(context.Background(), cfg, []string{"timezone"}); err != nil {
-		t.Fatalf("Run() failed: %v", err)
+	err = runner.Run(context.Background(), cfg, []string{"timezone"})
+	if err == nil || !strings.Contains(err.Error(), "reported satisfied but planned 1 action") {
+		t.Fatalf("Run() error = %v, want module contract error", err)
 	}
-	if !module.runCalled {
-		t.Fatal("expected config-sensitive module to run when plan still has steps")
+	if module.runCalled {
+		t.Fatal("module must not run after a Check/Plan contract error")
 	}
 }
 
-func TestRunnerSkipsConfigSensitiveSSHWhenNoStepsRemain(t *testing.T) {
+func TestRunnerTrustsUnsatisfiedCheckEvenWhenPlanHasNoSteps(t *testing.T) {
 	registry := modules.NewRegistry()
 	module := &runnerTestModule{
 		id:        "ssh",
@@ -408,7 +392,7 @@ func TestRunnerSkipsConfigSensitiveSSHWhenNoStepsRemain(t *testing.T) {
 	if err := runner.Run(context.Background(), &types.Config{}, []string{"ssh"}); err != nil {
 		t.Fatalf("Run() failed: %v", err)
 	}
-	if module.runCalled {
-		t.Fatal("expected satisfied ssh module to be skipped when no config-sensitive steps remain")
+	if !module.runCalled {
+		t.Fatal("expected authoritative unsatisfied check to run the module")
 	}
 }

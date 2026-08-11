@@ -68,7 +68,15 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			Dependencies: append([]string{}, m.Dependencies()...),
 		}
 
-		check := m.Check(ctx, sys)
+		moduleCfg := cfg
+		if m.ID() == "ssh" {
+			moduleCfg = cloneConfig(cfg)
+			if moduleCfg.SSHPort == 0 {
+				moduleCfg.SSHPort = modules.DefaultSSHPort
+			}
+		}
+
+		check := m.Check(ctx, sys, moduleCfg)
 		mp.CheckMessage = strings.TrimSpace(check.Message)
 		if check.Satisfied {
 			mp.Status = "satisfied"
@@ -78,42 +86,15 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			mp.Warning = strings.TrimSpace(check.Message)
 		}
 
-		moduleCfg := cfg
-		if m.ID() == "ssh" {
-			moduleCfg = cloneConfig(cfg)
-			if moduleCfg.SSHPort == 0 {
-				moduleCfg.SSHPort = modules.DefaultSSHPort
-			}
-		}
-		if m.ID() == "user" {
-			if userCheck, err := modules.DescribeUserCheckForConfig(moduleCfg); err == nil {
-				check = userCheck
-				mp.CheckMessage = userCheck.Message
-				if userCheck.Satisfied {
-					mp.Status = "satisfied"
-					mp.Warning = strings.Join(userCheck.Warnings, "; ")
-				} else {
-					mp.Status = "pending"
-					mp.Warning = userCheck.Message
-				}
-			}
-		}
-
 		steps, err := m.Plan(ctx, sys, moduleCfg)
 		if err != nil {
 			mp.Status = "error"
 			mp.Warning = err.Error()
 		} else {
 			mp.Steps = steps
-			if len(steps) > 0 {
-				mp.Status = "pending"
-				if check.Satisfied {
-					mp.CheckMessage = "current state differs from requested configuration"
-				}
-				mp.Warning = mp.CheckMessage
-			} else if isConfigSensitivePlanModule(m.ID()) {
-				mp.Status = "satisfied"
-				mp.Warning = ""
+			if contractErr := moduleStateContractError(m.Name(), check, steps); contractErr != nil {
+				mp.Status = "error"
+				mp.Warning = contractErr.Error()
 			}
 		}
 
@@ -171,13 +152,15 @@ func cloneConfig(cfg *types.Config) *types.Config {
 	return &copy
 }
 
-func isConfigSensitivePlanModule(id string) bool {
-	switch id {
-	case "ssh", "user", "docker", "timezone", "fail2ban", "ai":
-		return true
-	default:
-		return false
+func moduleStateContractError(moduleName string, check modules.CheckResult, steps []types.Step) error {
+	if !check.Satisfied || len(steps) == 0 {
+		return nil
 	}
+	noun := "actions"
+	if len(steps) == 1 {
+		noun = "action"
+	}
+	return fmt.Errorf("module %s reported satisfied but planned %d %s", moduleName, len(steps), noun)
 }
 
 // FormatPlanText formats a plan as human-readable text.

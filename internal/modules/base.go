@@ -26,16 +26,25 @@ func (m *BaseModule) DefaultEnabled() bool   { return true }
 func (m *BaseModule) RequiresRoot() bool     { return true }
 func (m *BaseModule) Dependencies() []string { return nil }
 
-func (m *BaseModule) Check(ctx context.Context, sys *system.Context) CheckResult {
+func (m *BaseModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
 	installedMap := detectBasePackages()
 	installed, missing := summarizeBasePackages(installedMap)
-
-	if len(missing) == 0 {
-		return CheckResult{Satisfied: true, Message: "All base packages installed"}
+	mirrorNeedsSwitch, err := requestedAPTMirrorNeedsSwitch(cfg)
+	if err != nil {
+		return CheckResult{Satisfied: false, Message: fmt.Sprintf("failed to inspect requested APT mirror state: %v", err)}
 	}
+
+	message := "All base packages installed"
+	if len(missing) > 0 {
+		message = buildBaseCheckMessage(installed, missing)
+	}
+	if cfg != nil && cfg.AptMirror == "cernet" {
+		message += ". CERNET mirror " + boolWord(!mirrorNeedsSwitch, "configured", "pending")
+	}
+
 	return CheckResult{
-		Satisfied: false,
-		Message:   buildBaseCheckMessage(installed, missing),
+		Satisfied: len(missing) == 0 && !mirrorNeedsSwitch,
+		Message:   message,
 	}
 }
 
@@ -43,15 +52,19 @@ func (m *BaseModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 	var steps []types.Step
 	installedMap := detectBasePackages()
 	_, missing := summarizeBasePackages(installedMap)
+	mirrorNeedsSwitch, err := requestedAPTMirrorNeedsSwitch(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect requested APT mirror state: %w", err)
+	}
 
-	if cfg.AptMirror == "cernet" {
+	if mirrorNeedsSwitch {
 		steps = append(steps, types.Step{
 			Module: "base",
 			Title:  "Switch APT mirror to CERNET",
 			Detail: "Rewrite Debian/Ubuntu official sources to mirrors.cernet.edu.cn (security sources unchanged)",
 		})
 	}
-	if len(missing) > 0 || cfg.AptMirror == "cernet" {
+	if len(missing) > 0 || mirrorNeedsSwitch {
 		steps = append(steps,
 			types.Step{Module: "base", Title: "Run apt update & upgrade", Detail: "Update package lists and upgrade installed packages"},
 		)
@@ -63,7 +76,7 @@ func (m *BaseModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
 	// Switch APT mirror to CERNET if requested (before apt-get update)
 	aptUpdateDone := false
-	if cfg.AptMirror == "cernet" {
+	if cfg != nil && cfg.AptMirror == "cernet" {
 		log.Info("Switching APT mirror to CERNET...")
 		result, restoreFunc, err := system.SwitchAPTMirrorToCernet()
 		if err != nil {
@@ -128,6 +141,13 @@ func (m *BaseModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 	}
 
 	return nil
+}
+
+func requestedAPTMirrorNeedsSwitch(cfg *types.Config) (bool, error) {
+	if cfg == nil || cfg.AptMirror != "cernet" {
+		return false, nil
+	}
+	return system.APTMirrorNeedsSwitchToCernet()
 }
 
 func detectBasePackages() map[string]bool {

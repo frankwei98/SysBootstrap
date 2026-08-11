@@ -49,7 +49,7 @@ printf '%s\n' \
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	sshServiceReadyFn = func() bool { return true }
 
-	result := NewSSHModule().Check(context.Background(), &system.Context{HasSSHD: true})
+	result := NewSSHModule().Check(context.Background(), &system.Context{HasSSHD: true}, nil)
 	if !result.Satisfied {
 		t.Fatalf("SSH Check should prepare the runtime directory before querying sshd: %#v", result)
 	}

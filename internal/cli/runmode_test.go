@@ -25,7 +25,7 @@ func (m *testModule) Description() string    { return m.id }
 func (m *testModule) DefaultEnabled() bool   { return m.defaultOn }
 func (m *testModule) RequiresRoot() bool     { return m.needsRoot }
 func (m *testModule) Dependencies() []string { return m.deps }
-func (m *testModule) Check(context.Context, *system.Context) modules.CheckResult {
+func (m *testModule) Check(context.Context, *system.Context, *types.Config) modules.CheckResult {
 	return modules.CheckResult{Satisfied: false}
 }
 func (m *testModule) Plan(context.Context, *system.Context, *types.Config) ([]types.Step, error) {

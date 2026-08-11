@@ -16,7 +16,7 @@ type Module interface {
 	DefaultEnabled() bool
 	RequiresRoot() bool
 	Dependencies() []string
-	Check(ctx context.Context, sys *system.Context) CheckResult
+	Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult
 	Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error)
 	Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error
 }

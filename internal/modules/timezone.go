@@ -22,18 +22,25 @@ func (m *TimezoneModule) DefaultEnabled() bool   { return false }
 func (m *TimezoneModule) RequiresRoot() bool     { return true }
 func (m *TimezoneModule) Dependencies() []string { return nil }
 
-func (m *TimezoneModule) Check(ctx context.Context, sys *system.Context) CheckResult {
-	current, ok := currentTimezone()
+func (m *TimezoneModule) Check(ctx context.Context, sys *system.Context, cfg *types.Config) CheckResult {
 	if !system.CommandExists("timedatectl") {
 		return CheckResult{Satisfied: false, Message: "timedatectl not available"}
 	}
-	if ok && current != "" {
-		// Check reports whether the system state is readable. Plan compares the
-		// configured target, so a healthy non-UTC host is not incorrectly shown
-		// as broken in doctor output.
-		return CheckResult{Satisfied: true, Message: fmt.Sprintf("current timezone: %s", current)}
+	target, err := requestedTimezone(cfg)
+	if err != nil {
+		return CheckResult{Satisfied: false, Message: err.Error()}
 	}
-	return CheckResult{Satisfied: false, Message: "timezone not detected"}
+	if _, err := time.LoadLocation(target); err != nil {
+		return CheckResult{Satisfied: false, Message: fmt.Sprintf("invalid timezone %q: %v", target, err)}
+	}
+	current, ok := currentTimezone()
+	if !ok || current == "" {
+		return CheckResult{Satisfied: false, Message: "timezone not detected"}
+	}
+	return CheckResult{
+		Satisfied: current == target,
+		Message:   fmt.Sprintf("current timezone: %s; requested: %s", current, target),
+	}
 }
 
 func (m *TimezoneModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {

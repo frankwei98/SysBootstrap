@@ -106,6 +106,51 @@ func SwitchAPTMirrorToCernet() (*SwitchResult, func() error, error) {
 	return result, restoreFunc, nil
 }
 
+// APTMirrorNeedsSwitchToCernet reports whether any supported official APT
+// source still points at Debian or Ubuntu upstream. It is read-only so module
+// Check and Plan can agree before Run performs the switch.
+func APTMirrorNeedsSwitchToCernet() (bool, error) {
+	paths := []string{"/etc/apt/sources.list"}
+	for _, pattern := range []string{
+		"/etc/apt/sources.list.d/*.list",
+		"/etc/apt/sources.list.d/*.sources",
+	} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return false, fmt.Errorf("listing APT sources with %s: %w", pattern, err)
+		}
+		paths = append(paths, matches...)
+	}
+	return aptMirrorNeedsSwitchInFiles(paths)
+}
+
+func aptMirrorNeedsSwitchInFiles(paths []string) (bool, error) {
+	for _, path := range paths {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return false, fmt.Errorf("reading %s: %w", path, err)
+		}
+
+		original := string(content)
+		if filepath.Ext(path) == ".sources" {
+			if rewriteSourcesContent(original) != original {
+				return true, nil
+			}
+			continue
+		}
+
+		for _, line := range strings.Split(original, "\n") {
+			if rewriteListLine(line) != line {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 type backupEntry struct {
 	path    string
 	content []byte
