@@ -150,10 +150,14 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 }
 
 // requestedAITools preserves the historical noninteractive default (install
-// both tools when no selection was supplied) while respecting an explicit
-// empty selection from the interactive form.
+// both tools when a non-nil config has no selection) while respecting an
+// explicit empty selection from the interactive form. A nil config means no
+// explicit target exists and must remain a no-op.
 func requestedAITools(cfg *types.Config) (installClaude, installCodex bool) {
-	if cfg != nil && cfg.AISelectionSet {
+	if cfg == nil {
+		return false, false
+	}
+	if cfg.AISelectionSet {
 		return cfg.InstallClaudeCode, cfg.InstallCodex
 	}
 	return true, true

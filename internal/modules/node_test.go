@@ -114,8 +114,13 @@ func TestAIModuleInterface(t *testing.T) {
 	}
 }
 
-func TestRequestedAIToolsHonorsExplicitEmptySelection(t *testing.T) {
-	claude, codex := requestedAITools(&types.Config{AISelectionSet: true})
+func TestRequestedAIToolsHonorsNilAndExplicitEmptySelection(t *testing.T) {
+	claude, codex := requestedAITools(nil)
+	if claude || codex {
+		t.Fatalf("nil selection = (%v, %v), want neither tool", claude, codex)
+	}
+
+	claude, codex = requestedAITools(&types.Config{AISelectionSet: true})
 	if claude || codex {
 		t.Fatalf("explicit empty selection = (%v, %v), want neither tool", claude, codex)
 	}
@@ -129,9 +134,37 @@ func TestAIModuleCheckRequiresNode(t *testing.T) {
 	t.Setenv("NVM_DIR", filepath.Join(t.TempDir(), ".nvm"))
 
 	m := NewAIModule()
-	result := m.Check(context.Background(), &system.Context{}, nil)
+	result := m.Check(context.Background(), &system.Context{}, &types.Config{})
 	if result.Satisfied {
 		t.Error("ai module should not be satisfied without node")
+	}
+}
+
+func TestAIModuleNilConfigIsNoOp(t *testing.T) {
+	m := NewAIModule()
+	sys := &system.Context{}
+	ctx := context.Background()
+
+	check := m.Check(ctx, sys, nil)
+	if !check.Satisfied {
+		t.Fatalf("nil config Check = %+v, want satisfied no-op", check)
+	}
+
+	steps, err := m.Plan(ctx, sys, nil)
+	if err != nil {
+		t.Fatalf("nil config Plan failed: %v", err)
+	}
+	if len(steps) != 0 {
+		t.Fatalf("nil config Plan = %v, want no steps", steps)
+	}
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New() failed: %v", err)
+	}
+	t.Cleanup(log.Close)
+	if err := m.Run(ctx, sys, nil, log); err != nil {
+		t.Fatalf("nil config Run failed: %v", err)
 	}
 }
 
@@ -402,7 +435,7 @@ func TestAIModuleCheckSatisfiedWithoutPnpm(t *testing.T) {
 	m := NewAIModule()
 	result := m.Check(context.Background(), &system.Context{
 		CurrentUser: &user.User{Username: "testuser", HomeDir: home},
-	}, nil)
+	}, &types.Config{})
 	if !result.Satisfied {
 		t.Fatalf("AI tools installed without pnpm should be satisfied, got: %+v", result)
 	}
@@ -416,7 +449,7 @@ func TestAIModuleCheckRequiresPnpmShellPathWhenPnpmExists(t *testing.T) {
 	m := NewAIModule()
 	result := m.Check(context.Background(), &system.Context{
 		CurrentUser: &user.User{Username: "testuser", HomeDir: home},
-	}, nil)
+	}, &types.Config{})
 	if result.Satisfied {
 		t.Fatalf("AI tools with pnpm but missing startup files should be unsatisfied")
 	}
