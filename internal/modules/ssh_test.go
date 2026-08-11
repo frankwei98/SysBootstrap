@@ -330,8 +330,9 @@ func TestSSHPlanDefaultPort(t *testing.T) {
 	if len(steps) == 0 {
 		t.Fatal("expected plan steps when current ssh port differs from default preview port")
 	}
-	if steps[0].Detail != "Set port to 22122" {
-		t.Errorf("default port detail = %q, want %q", steps[0].Detail, "Set port to 22122")
+	wantDetail := "Set exclusive port to 22122; comment explicit non-target Port directives during finalization"
+	if steps[0].Detail != wantDetail {
+		t.Errorf("default port detail = %q, want %q", steps[0].Detail, wantDetail)
 	}
 }
 
@@ -1360,6 +1361,21 @@ LISTEN 0 4096 127.0.0.1:8080 0.0.0.0:* users:(("other",pid=1,fd=1))`
 	}
 	if ports[8080] {
 		t.Fatal("non-SSH listener must not satisfy SSH listener verification")
+	}
+}
+
+func TestCommentLegacyPortDirectivesHandlesInlineComment(t *testing.T) {
+	content := "Port 22 # emergency fallback\nPort 22122 # managed target\n"
+	updated, ports := commentLegacyPortDirectives(content, 22122)
+
+	if len(ports) != 1 || ports[0] != 22 {
+		t.Fatalf("disabled ports = %v, want [22]", ports)
+	}
+	if !strings.Contains(updated, "# sys-bootstrap: disabled legacy SSH port during managed cutover: Port 22 # emergency fallback") {
+		t.Fatalf("legacy directive with inline comment was not disabled:\n%s", updated)
+	}
+	if !strings.Contains(updated, "Port 22122 # managed target") {
+		t.Fatalf("managed port directive should remain active:\n%s", updated)
 	}
 }
 

@@ -748,9 +748,8 @@ func commentLegacyPortDirectives(content string, managedPort int) (string, []int
 	lines := strings.Split(content, "\n")
 	seen := make(map[int]bool)
 	for index, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		fields := strings.Fields(trimmed)
-		if len(fields) != 2 || strings.HasPrefix(trimmed, "#") || !strings.EqualFold(fields[0], "port") {
+		fields, err := splitSSHConfigFields(line)
+		if err != nil || len(fields) != 2 || !strings.EqualFold(fields[0], "port") {
 			continue
 		}
 		port, err := strconv.Atoi(fields[1])
