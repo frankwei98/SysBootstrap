@@ -236,7 +236,7 @@ func FormatPlanText(plan *PlanResult) string {
 			fmt.Fprintf(&b, "    %s %s\n", i18n.T("plan_check_result"), mp.CheckMessage)
 		}
 		if mp.Status == "not_configured" {
-			fmt.Fprintf(&b, "    %s\n", "Awaiting interactive input")
+			fmt.Fprintf(&b, "    %s\n", i18n.T("plan_awaiting_interactive_input"))
 		} else if len(mp.Steps) > 0 {
 			for _, step := range mp.Steps {
 				riskTag := ""
@@ -249,7 +249,7 @@ func FormatPlanText(plan *PlanResult) string {
 				}
 			}
 		} else if mp.Status == "satisfied" {
-			fmt.Fprintf(&b, "    %s\n", "No actions required")
+			fmt.Fprintf(&b, "    %s\n", i18n.T("plan_no_actions_required"))
 		}
 		if mp.Warning != "" && mp.Warning != mp.CheckMessage {
 			fmt.Fprintf(&b, "    ⚠ %s\n", mp.Warning)

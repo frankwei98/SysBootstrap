@@ -128,12 +128,14 @@ var enMessages = map[string]string{
 	"form_fail2ban_ignoreip_desc": "Space-separated IPs or CIDRs to never ban",
 
 	// plan
-	"plan_title":        "Execution Plan",
-	"plan_pending":      "%d module(s) to execute, %d already satisfied",
-	"plan_support_tier": "Support tier",
-	"plan_checks":       "Environment checks",
-	"plan_dependencies": "Dependencies:",
-	"plan_check_result": "Check:",
+	"plan_title":                      "Execution Plan",
+	"plan_pending":                    "%d module(s) to execute, %d already satisfied",
+	"plan_support_tier":               "Support tier",
+	"plan_checks":                     "Environment checks",
+	"plan_dependencies":               "Dependencies:",
+	"plan_check_result":               "Check:",
+	"plan_no_actions_required":        "No actions required",
+	"plan_awaiting_interactive_input": "Awaiting interactive input",
 
 	// APT mirror
 	"apt_mirror_form_title":  "Switch APT mirror to CERNET?",
