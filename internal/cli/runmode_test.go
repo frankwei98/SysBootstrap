@@ -70,12 +70,54 @@ func TestMissingDependenciesUseTargetExecutionConfig(t *testing.T) {
 	registry.Register(target)
 	cfg := &types.Config{AptMirror: "cernet", DockerUser: "alice"}
 
-	missing := missingDependenciesForModule(context.Background(), registry, target, &system.Context{}, cfg)
+	missing, err := missingDependenciesForModule(context.Background(), registry, target, &system.Context{}, cfg)
+	if err != nil {
+		t.Fatalf("missingDependenciesForModule returned error: %v", err)
+	}
 	if len(missing) != 1 || missing[0] != "base" {
 		t.Fatalf("missing = %v, want [base]", missing)
 	}
 	if dependency.checkCfg != cfg {
 		t.Fatal("dependency Check did not receive the target execution config")
+	}
+}
+
+func TestMissingDependenciesIncludeUnsatisfiedTransitiveDependencies(t *testing.T) {
+	registry := modules.NewRegistry()
+	leaf := &configCapturingModule{
+		testModule: testModule{id: "leaf"},
+		satisfied:  false,
+	}
+	middle := &configCapturingModule{
+		testModule: testModule{id: "middle", deps: []string{"leaf"}},
+		satisfied:  true,
+	}
+	target := &testModule{id: "target", deps: []string{"middle"}}
+	registry.Register(leaf)
+	registry.Register(middle)
+	registry.Register(target)
+	cfg := &types.Config{AptMirror: "cernet"}
+
+	missing, err := missingDependenciesForModule(context.Background(), registry, target, &system.Context{}, cfg)
+	if err != nil {
+		t.Fatalf("missingDependenciesForModule returned error: %v", err)
+	}
+	if len(missing) != 1 || missing[0] != "leaf" {
+		t.Fatalf("missing = %v, want [leaf]", missing)
+	}
+	if leaf.checkCfg != cfg || middle.checkCfg != cfg {
+		t.Fatal("transitive dependency checks did not receive the target execution config")
+	}
+}
+
+func TestMissingDependenciesPropagatesResolutionErrors(t *testing.T) {
+	registry := modules.NewRegistry()
+	target := &testModule{id: "target", deps: []string{"missing"}}
+	registry.Register(target)
+
+	_, err := missingDependenciesForModule(context.Background(), registry, target, &system.Context{}, &types.Config{})
+	if err == nil || !strings.Contains(err.Error(), "resolve dependencies for target") {
+		t.Fatalf("error = %v, want contextual dependency resolution error", err)
 	}
 }
 
