@@ -125,7 +125,12 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 
 	needsReload := false
 	if !sshStateUsesOnlyPort(state, port) {
-		steps = append(steps, types.Step{Module: "ssh", Title: "Configure SSH port", Detail: fmt.Sprintf("Set port to %d", port), Risk: "high"})
+		steps = append(steps, types.Step{
+			Module: "ssh",
+			Title:  "Configure SSH port",
+			Detail: fmt.Sprintf("Set exclusive port to %d; comment explicit non-target Port directives during finalization", port),
+			Risk:   "high",
+		})
 		needsReload = true
 	}
 	if cfg.SSHDisableRoot && (!state.effectiveKnown || !strings.EqualFold(state.permitRootLogin, "no")) {
