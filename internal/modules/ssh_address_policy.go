@@ -196,6 +196,42 @@ func sshMatchDependsOnAddress(fields []string) (bool, error) {
 }
 
 func splitSSHConfigFields(line string) ([]string, error) {
+	content := strings.TrimLeftFunc(line, unicode.IsSpace)
+	if content == "" || strings.HasPrefix(content, "#") {
+		return nil, nil
+	}
+	keywordEnd := len(content)
+	separator := rune(0)
+	for index, char := range content {
+		if char == '=' || unicode.IsSpace(char) {
+			keywordEnd = index
+			separator = char
+			break
+		}
+	}
+	keyword := content[:keywordEnd]
+	if keyword == "" {
+		return nil, fmt.Errorf("missing keyword")
+	}
+	arguments := content[keywordEnd:]
+	if separator == '=' {
+		arguments = arguments[1:]
+	} else if separator != 0 {
+		arguments = strings.TrimLeftFunc(arguments, unicode.IsSpace)
+		if strings.HasPrefix(arguments, "=") {
+			arguments = arguments[1:]
+		}
+	}
+	arguments = strings.TrimLeftFunc(arguments, unicode.IsSpace)
+
+	fields, err := splitSSHConfigArguments(arguments)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string{keyword}, fields...), nil
+}
+
+func splitSSHConfigArguments(line string) ([]string, error) {
 	var fields []string
 	var field strings.Builder
 	inQuotes := false
