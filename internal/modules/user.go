@@ -257,7 +257,11 @@ func (m *UserModule) configureSudo(username string, cfg *types.Config, log *logg
 
 func (m *UserModule) setPasswordIfNeeded(ctx context.Context, username string, cfg *types.Config, log *logging.Logger) error {
 	if cfg.UserAddSudo && !cfg.UserPasswordlessSudo {
-		if state, err := inspectUserStateFn(username); err == nil && state.Exists && state.PasswordKnown && state.HasUsablePassword {
+		state, err := inspectUserStateFn(username)
+		if err != nil {
+			return fmt.Errorf("cannot determine whether %s has a usable password: %w", username, err)
+		}
+		if state.Exists && state.PasswordKnown && state.HasUsablePassword {
 			log.Info("Existing password already usable for sudo, skipping passwd")
 			return nil
 		}
@@ -426,7 +430,10 @@ func inspectUserState(username string) (userState, error) {
 	}
 
 	state.PasswordlessSudo = passwordlessSudoEnabled(username)
-	state.PasswordKnown, state.HasUsablePassword = userPasswordState(username)
+	state.PasswordKnown, state.HasUsablePassword, err = userPasswordState(username)
+	if err != nil {
+		return userState{}, err
+	}
 	state.AuthorizedKeysExists = authorizedKeysExists(state.HomeDir)
 	return state, nil
 }
@@ -593,10 +600,14 @@ func authorizedKeyContains(home, publicKey string) bool {
 	return false
 }
 
-func userPasswordState(username string) (known bool, usable bool) {
-	f, err := os.Open("/etc/shadow")
+func userPasswordState(username string) (known bool, usable bool, err error) {
+	return userPasswordStateFromPath("/etc/shadow", username)
+}
+
+func userPasswordStateFromPath(path, username string) (known bool, usable bool, err error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return false, false
+		return false, false, fmt.Errorf("cannot read password state from %s: %w", path, err)
 	}
 	defer f.Close()
 
@@ -608,9 +619,12 @@ func userPasswordState(username string) (known bool, usable bool) {
 		}
 		hash := parts[1]
 		if hash == "" || strings.HasPrefix(hash, "!") || strings.HasPrefix(hash, "*") {
-			return true, false
+			return true, false, nil
 		}
-		return true, true
+		return true, true, nil
 	}
-	return false, false
+	if err := scanner.Err(); err != nil {
+		return false, false, fmt.Errorf("cannot scan password state from %s: %w", path, err)
+	}
+	return false, false, nil
 }
