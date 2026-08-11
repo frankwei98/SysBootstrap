@@ -89,10 +89,10 @@ func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Conf
 		return nil
 	}
 	if _, err := os.Stat(filepath.Join(system.NvmDirForContext(sys), "nvm.sh")); err != nil {
-		return fmt.Errorf("Node.js is not installed — please run the node module first")
+		return fmt.Errorf("required Node.js runtime is not installed — please run the node module first")
 	}
 	if !nvmCommandExistsForAI(sys, "node") {
-		return fmt.Errorf("Node.js is not installed — please run the node module first")
+		return fmt.Errorf("required Node.js runtime is not installed — please run the node module first")
 	}
 
 	// Detect package manager inside nvm-aware shell
