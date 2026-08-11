@@ -99,6 +99,9 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 	if port == 0 {
 		port = DefaultSSHPort
 	}
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("SSH port %d must be between 1 and 65535", port)
+	}
 
 	state, err := readSSHConfigState()
 	if err != nil && !os.IsNotExist(err) {
@@ -149,6 +152,9 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	port := cfg.SSHPort
 	if port == 0 {
 		port = DefaultSSHPort
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("SSH port %d must be between 1 and 65535", port)
 	}
 
 	// Guard: requesting to disable both root login and password auth without
@@ -329,7 +335,7 @@ func mergeSSHConfigState(state *sshConfigState, content []byte) error {
 		switch key {
 		case "port":
 			port, convErr := strconv.Atoi(fields[1])
-			if convErr != nil {
+			if convErr != nil || port < 1 || port > 65535 {
 				return fmt.Errorf("invalid Port value %q", fields[1])
 			}
 			state.port = port

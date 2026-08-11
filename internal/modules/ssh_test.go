@@ -296,6 +296,64 @@ func TestSSHPlanDefaultPort(t *testing.T) {
 	}
 }
 
+func TestSSHPlanRejectsOutOfRangeExistingPort(t *testing.T) {
+	for _, value := range []string{"0", "-1", "65536"} {
+		t.Run(value, func(t *testing.T) {
+			origPath := sshConfigPath
+			origDropIn := managedSSHDropIn
+			origService := sshServiceReadyFn
+			sshConfigPath = filepath.Join(t.TempDir(), "sshd_config")
+			managedSSHDropIn = filepath.Join(t.TempDir(), "00-sys-bootstrap.conf")
+			sshServiceReadyFn = func() bool { return true }
+			t.Cleanup(func() {
+				sshConfigPath = origPath
+				managedSSHDropIn = origDropIn
+				sshServiceReadyFn = origService
+			})
+
+			if err := os.WriteFile(sshConfigPath, []byte("Port "+value+"\n"), 0o644); err != nil {
+				t.Fatalf("write sshd_config: %v", err)
+			}
+			_, err := NewSSHModule().Plan(context.Background(), &system.Context{
+				HasSSHD:        true,
+				HasSSHDService: true,
+			}, &types.Config{SSHPort: 22122})
+			if err == nil || !strings.Contains(err.Error(), "invalid Port value") {
+				t.Fatalf("Plan error = %v, want invalid Port value for %s", err, value)
+			}
+		})
+	}
+}
+
+func TestSSHPlanRejectsOutOfRangeRequestedPort(t *testing.T) {
+	origPath := sshConfigPath
+	origDropIn := managedSSHDropIn
+	origService := sshServiceReadyFn
+	sshConfigPath = filepath.Join(t.TempDir(), "sshd_config")
+	managedSSHDropIn = filepath.Join(t.TempDir(), "00-sys-bootstrap.conf")
+	sshServiceReadyFn = func() bool { return true }
+	t.Cleanup(func() {
+		sshConfigPath = origPath
+		managedSSHDropIn = origDropIn
+		sshServiceReadyFn = origService
+	})
+	if err := os.WriteFile(sshConfigPath, []byte("Port 22\n"), 0o644); err != nil {
+		t.Fatalf("write sshd_config: %v", err)
+	}
+
+	for _, port := range []int{-1, 65536} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			_, err := NewSSHModule().Plan(context.Background(), &system.Context{
+				HasSSHD:        true,
+				HasSSHDService: true,
+			}, &types.Config{SSHPort: port})
+			if err == nil || !strings.Contains(err.Error(), "between 1 and 65535") {
+				t.Fatalf("Plan error = %v, want requested-port range guidance", err)
+			}
+		})
+	}
+}
+
 func TestSSHPlanNoStepsWhenAlreadySatisfied(t *testing.T) {
 	origPath := sshConfigPath
 	origDropIn := managedSSHDropIn
@@ -693,6 +751,30 @@ func TestSSHRunReplacesExplicitLegacyPort(t *testing.T) {
 	env := newSSHRunTestEnvironment(t)
 	if err := env.run(t); err != nil {
 		t.Fatalf("SSH hardening should replace an explicit legacy port: %v", err)
+	}
+}
+
+func TestSSHRunRejectsOutOfRangeRequestedPortBeforeMutation(t *testing.T) {
+	for _, port := range []int{-1, 65536} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			env := newSSHRunTestEnvironment(t)
+			err := NewSSHModule().Run(context.Background(), &system.Context{
+				CurrentUser: &user.User{Username: "sys-bootstrap-test-missing-user"},
+			}, &types.Config{SSHPort: port}, newQuietLogger(t))
+			if err == nil || !strings.Contains(err.Error(), "between 1 and 65535") {
+				t.Fatalf("Run error = %v, want requested-port range guidance", err)
+			}
+			if _, statErr := os.Stat(env.dropInPath); !os.IsNotExist(statErr) {
+				t.Fatalf("managed drop-in created before port validation: %v", statErr)
+			}
+			content, readErr := os.ReadFile(env.configPath)
+			if readErr != nil {
+				t.Fatalf("read sshd_config: %v", readErr)
+			}
+			if string(content) != env.originalConfig {
+				t.Fatalf("sshd_config changed before port validation:\n%s", content)
+			}
+		})
 	}
 }
 
