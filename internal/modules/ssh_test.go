@@ -696,6 +696,58 @@ func TestSSHRunReplacesExplicitLegacyPort(t *testing.T) {
 	}
 }
 
+func TestSSHRunRequiresSSBeforeManagedConfigMutation(t *testing.T) {
+	tests := []struct {
+		name            string
+		existingDropIn  string
+		wantDropInExist bool
+	}{
+		{name: "new managed config remains absent"},
+		{name: "existing managed config remains unchanged", existingDropIn: "Port 22022\n", wantDropInExist: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newSSHRunTestEnvironment(t)
+			if tt.wantDropInExist {
+				if err := os.WriteFile(env.dropInPath, []byte(tt.existingDropIn), 0o640); err != nil {
+					t.Fatalf("write existing managed SSH drop-in: %v", err)
+				}
+			}
+			origCommandExists := sshCommandExistsFn
+			sshCommandExistsFn = func(name string) bool {
+				if name == "ss" {
+					return false
+				}
+				return origCommandExists(name)
+			}
+			t.Cleanup(func() { sshCommandExistsFn = origCommandExists })
+
+			err := env.run(t)
+			if err == nil {
+				t.Fatal("expected missing ss prerequisite to reject SSH hardening")
+			}
+			if !strings.Contains(err.Error(), "required command ss") || !strings.Contains(err.Error(), "install iproute2") {
+				t.Fatalf("missing ss error = %q, want required-command and iproute2 guidance", err)
+			}
+
+			content, readErr := os.ReadFile(env.dropInPath)
+			if !tt.wantDropInExist {
+				if !os.IsNotExist(readErr) {
+					t.Fatalf("managed drop-in was created before prerequisite rejection: %v", readErr)
+				}
+				return
+			}
+			if readErr != nil {
+				t.Fatalf("read existing managed SSH drop-in: %v", readErr)
+			}
+			if string(content) != tt.existingDropIn {
+				t.Fatalf("managed drop-in changed before prerequisite rejection:\n%s", content)
+			}
+		})
+	}
+}
+
 func TestSSHRunDisablesPasswordAndKeyboardInteractiveAuthentication(t *testing.T) {
 	env := newSSHRunTestEnvironment(t)
 	m := NewSSHModule()
