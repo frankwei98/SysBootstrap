@@ -513,16 +513,17 @@ func TestSSHPlanAppliesConnectionContextToEffectiveState(t *testing.T) {
 	writeFakeCommand(t, tempBin, "sshd", `#!/bin/sh
 echo "port 22122"
 echo "permitrootlogin no"
-case " $* " in
-  *"lport=22122"*)
-    echo "passwordauthentication yes"
-    echo "kbdinteractiveauthentication yes"
-    ;;
-  *)
-    echo "passwordauthentication no"
-    echo "kbdinteractiveauthentication no"
-    ;;
-esac
+if [ "$SYSBOOTSTRAP_TEST_MATCH_PASSWORD_LOCAL_PORT" = "yes" ]; then
+  case " $* " in
+    *"lport=22122"*)
+      echo "passwordauthentication yes"
+      echo "kbdinteractiveauthentication yes"
+      exit 0
+      ;;
+  esac
+fi
+echo "passwordauthentication no"
+echo "kbdinteractiveauthentication no"
 `)
 	t.Setenv("PATH", tempBin+":"+os.Getenv("PATH"))
 	sshServiceReadyFn = func() bool { return true }
@@ -532,19 +533,37 @@ esac
 		sshServiceReadyFn = origService
 	})
 
-	steps, err := NewSSHModule().Plan(context.Background(), &system.Context{
+	m := NewSSHModule()
+	sys := &system.Context{
 		HasSSHD:        true,
 		HasSSHDService: true,
-	}, &types.Config{SSHPort: 22122, SSHDisablePass: true})
+	}
+	cfg := &types.Config{SSHPort: 22122, SSHDisablePass: true}
+	t.Setenv("SYSBOOTSTRAP_TEST_MATCH_PASSWORD_LOCAL_PORT", "yes")
+	steps, err := m.Plan(context.Background(), sys, cfg)
 	if err != nil {
 		t.Fatalf("Plan failed: %v", err)
 	}
+	foundPasswordStep := false
 	for _, step := range steps {
 		if step.Title == "Disable password auth" {
-			return
+			foundPasswordStep = true
 		}
 	}
-	t.Fatalf("expected Match LocalPort policy to keep password hardening pending: %#v", steps)
+	if !foundPasswordStep {
+		t.Fatalf("expected Match LocalPort policy to keep password hardening pending: %#v", steps)
+	}
+
+	t.Setenv("SYSBOOTSTRAP_TEST_MATCH_PASSWORD_LOCAL_PORT", "")
+	steps, err = m.Plan(context.Background(), sys, cfg)
+	if err != nil {
+		t.Fatalf("negative-control Plan failed: %v", err)
+	}
+	for _, step := range steps {
+		if step.Title == "Disable password auth" {
+			t.Fatalf("effective configuration fixture was not consumed by Plan: %#v", steps)
+		}
+	}
 }
 
 func TestSSHPlanChecksDefaultRequestedPortConnectionContext(t *testing.T) {
@@ -565,16 +584,17 @@ func TestSSHPlanChecksDefaultRequestedPortConnectionContext(t *testing.T) {
 	writeFakeCommand(t, tempBin, "sshd", `#!/bin/sh
 echo "port 22"
 echo "permitrootlogin no"
-case " $* " in
-  *"lport=22122"*)
-    echo "passwordauthentication yes"
-    echo "kbdinteractiveauthentication yes"
-    ;;
-  *)
-    echo "passwordauthentication no"
-    echo "kbdinteractiveauthentication no"
-    ;;
-esac
+if [ "$SYSBOOTSTRAP_TEST_MATCH_PASSWORD_LOCAL_PORT" = "yes" ]; then
+  case " $* " in
+    *"lport=22122"*)
+      echo "passwordauthentication yes"
+      echo "kbdinteractiveauthentication yes"
+      exit 0
+      ;;
+  esac
+fi
+echo "passwordauthentication no"
+echo "kbdinteractiveauthentication no"
 `)
 	t.Setenv("PATH", tempBin+":"+os.Getenv("PATH"))
 	sshServiceReadyFn = func() bool { return true }
@@ -584,19 +604,37 @@ esac
 		sshServiceReadyFn = origService
 	})
 
-	steps, err := NewSSHModule().Plan(context.Background(), &system.Context{
+	m := NewSSHModule()
+	sys := &system.Context{
 		HasSSHD:        true,
 		HasSSHDService: true,
-	}, &types.Config{SSHDisablePass: true})
+	}
+	cfg := &types.Config{SSHDisablePass: true}
+	t.Setenv("SYSBOOTSTRAP_TEST_MATCH_PASSWORD_LOCAL_PORT", "yes")
+	steps, err := m.Plan(context.Background(), sys, cfg)
 	if err != nil {
 		t.Fatalf("Plan failed: %v", err)
 	}
+	foundPasswordStep := false
 	for _, step := range steps {
 		if step.Title == "Disable password auth" {
-			return
+			foundPasswordStep = true
 		}
 	}
-	t.Fatalf("expected default requested port Match policy to keep password hardening pending: %#v", steps)
+	if !foundPasswordStep {
+		t.Fatalf("expected default requested port Match policy to keep password hardening pending: %#v", steps)
+	}
+
+	t.Setenv("SYSBOOTSTRAP_TEST_MATCH_PASSWORD_LOCAL_PORT", "")
+	steps, err = m.Plan(context.Background(), sys, cfg)
+	if err != nil {
+		t.Fatalf("negative-control Plan failed: %v", err)
+	}
+	for _, step := range steps {
+		if step.Title == "Disable password auth" {
+			t.Fatalf("effective configuration fixture was not consumed by default-port Plan: %#v", steps)
+		}
+	}
 }
 
 func TestQuerySSHEffectiveOutputErrorIncludesConnectionContext(t *testing.T) {
