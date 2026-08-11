@@ -1133,6 +1133,11 @@ func TestSSHRunRequiresSSBeforeManagedConfigMutation(t *testing.T) {
 				return origCommandExists(name)
 			}
 			t.Cleanup(func() { sshCommandExistsFn = origCommandExists })
+			pathEntries := filepath.SplitList(os.Getenv("PATH"))
+			if len(pathEntries) == 0 {
+				t.Fatal("test PATH is empty")
+			}
+			writeFakeCommand(t, pathEntries[0], "apt-get", "#!/bin/sh\nexit 42\n")
 
 			err := env.run(t)
 			if err == nil {

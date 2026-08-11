@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -21,6 +20,7 @@ type stubModule struct {
 	deps      []string
 	satisfied bool
 	checkMsg  string
+	warnings  []string
 	steps     []types.Step
 }
 
@@ -31,7 +31,7 @@ func (m *stubModule) DefaultEnabled() bool   { return false }
 func (m *stubModule) RequiresRoot() bool     { return false }
 func (m *stubModule) Dependencies() []string { return m.deps }
 func (m *stubModule) Check(_ context.Context, _ *system.Context, _ *types.Config) modules.CheckResult {
-	return modules.CheckResult{Satisfied: m.satisfied, Message: m.checkMsg}
+	return modules.CheckResult{Satisfied: m.satisfied, Message: m.checkMsg, Warnings: m.warnings}
 }
 func (m *stubModule) Plan(_ context.Context, _ *system.Context, _ *types.Config) ([]types.Step, error) {
 	return m.steps, nil
@@ -297,16 +297,18 @@ func TestPlanMarksUserModuleNotConfiguredWithoutUsername(t *testing.T) {
 }
 
 func TestPlanMarksConfiguredUserModuleSatisfiedWhenNoStepsRemain(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("real user-state inspection is Linux-specific")
-	}
 	i18n.SetLang(i18n.LangEN)
 
 	r := modules.NewRegistry()
-	r.Register(modules.NewUserModule())
+	r.Register(&stubModule{
+		id:        "user",
+		name:      "Create User",
+		satisfied: true,
+		checkMsg:  "user alice exists and matches requested configuration",
+	})
 
 	plan, err := GeneratePlan(context.Background(), &system.Context{}, &types.Config{
-		NewUsername:          "root",
+		NewUsername:          "alice",
 		UserShell:            "bash",
 		UserAddSudo:          false,
 		UserPasswordlessSudo: false,
@@ -321,8 +323,30 @@ func TestPlanMarksConfiguredUserModuleSatisfiedWhenNoStepsRemain(t *testing.T) {
 	if plan.Modules[0].Status != "satisfied" {
 		t.Fatalf("user status = %q, want satisfied", plan.Modules[0].Status)
 	}
-	if !strings.Contains(plan.Modules[0].CheckMessage, "user root exists") {
+	if !strings.Contains(plan.Modules[0].CheckMessage, "user alice exists") {
 		t.Fatalf("unexpected user check message: %q", plan.Modules[0].CheckMessage)
+	}
+}
+
+func TestPlanPreservesWarningsForPendingModule(t *testing.T) {
+	r := modules.NewRegistry()
+	r.Register(&stubModule{
+		id:        "example",
+		name:      "Example",
+		satisfied: false,
+		checkMsg:  "configuration pending",
+		warnings:  []string{"first warning", "second warning"},
+	})
+
+	plan, err := GeneratePlan(context.Background(), &system.Context{}, &types.Config{}, r, []string{"example"})
+	if err != nil {
+		t.Fatalf("GeneratePlan failed: %v", err)
+	}
+	warning := plan.Modules[0].Warning
+	for _, want := range []string{"configuration pending", "first warning", "second warning"} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("warning = %q, want %q", warning, want)
+		}
 	}
 }
 

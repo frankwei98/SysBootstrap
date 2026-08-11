@@ -430,7 +430,7 @@ func TestAIModuleRunUsesHomeSafeShell(t *testing.T) {
 	writeFakeNvmScript(t, home)
 
 	oldRun := runAIShellForContext
-	oldCmdExists := nvmCommandExistsForAICheck
+	oldCmdExists := nvmCommandExistsForAI
 	oldToolWorks := aiToolWorksForCheck
 	runAIShellForContext = func(_ *system.Context, script string) (*system.Result, error) {
 		if strings.Contains(script, "install -g @openai/codex") || strings.Contains(script, "codex --version") {
@@ -438,7 +438,7 @@ func TestAIModuleRunUsesHomeSafeShell(t *testing.T) {
 		}
 		return &system.Result{ExitCode: 0}, nil
 	}
-	nvmCommandExistsForAICheck = func(_ *system.Context, name string) bool {
+	nvmCommandExistsForAI = func(_ *system.Context, name string) bool {
 		return name == "node"
 	}
 	aiToolWorksForCheck = func(_ *system.Context, _ string) bool {
@@ -446,7 +446,7 @@ func TestAIModuleRunUsesHomeSafeShell(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		runAIShellForContext = oldRun
-		nvmCommandExistsForAICheck = oldCmdExists
+		nvmCommandExistsForAI = oldCmdExists
 		aiToolWorksForCheck = oldToolWorks
 	})
 
@@ -469,16 +469,16 @@ func TestAIModuleRunUsesHomeSafeShell(t *testing.T) {
 func setupAICheckStubs(t *testing.T, commands map[string]bool, tools map[string]bool) {
 	t.Helper()
 
-	oldCommandExists := nvmCommandExistsForAICheck
+	oldCommandExists := nvmCommandExistsForAI
 	oldToolWorks := aiToolWorksForCheck
-	nvmCommandExistsForAICheck = func(_ *system.Context, name string) bool {
+	nvmCommandExistsForAI = func(_ *system.Context, name string) bool {
 		return commands[name]
 	}
 	aiToolWorksForCheck = func(_ *system.Context, name string) bool {
 		return tools[name]
 	}
 	t.Cleanup(func() {
-		nvmCommandExistsForAICheck = oldCommandExists
+		nvmCommandExistsForAI = oldCommandExists
 		aiToolWorksForCheck = oldToolWorks
 	})
 }

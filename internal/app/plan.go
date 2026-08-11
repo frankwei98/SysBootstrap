@@ -80,10 +80,10 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 		mp.CheckMessage = strings.TrimSpace(check.Message)
 		if check.Satisfied {
 			mp.Status = "satisfied"
-			mp.Warning = strings.TrimSpace(strings.Join(check.Warnings, "; "))
+			mp.Warning = joinCheckWarnings("", check.Warnings)
 		} else {
 			mp.Status = "pending"
-			mp.Warning = strings.TrimSpace(check.Message)
+			mp.Warning = joinCheckWarnings(check.Message, check.Warnings)
 		}
 
 		steps, err := m.Plan(ctx, sys, moduleCfg)
@@ -161,6 +161,19 @@ func moduleStateContractError(moduleName string, check modules.CheckResult, step
 		noun = "action"
 	}
 	return fmt.Errorf("module %s reported satisfied but planned %d %s", moduleName, len(steps), noun)
+}
+
+func joinCheckWarnings(message string, warnings []string) string {
+	parts := make([]string, 0, len(warnings)+1)
+	if message = strings.TrimSpace(message); message != "" {
+		parts = append(parts, message)
+	}
+	for _, warning := range warnings {
+		if warning = strings.TrimSpace(warning); warning != "" {
+			parts = append(parts, warning)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // FormatPlanText formats a plan as human-readable text.

@@ -19,6 +19,17 @@ type testModule struct {
 	needsRoot bool
 }
 
+type configCapturingModule struct {
+	testModule
+	checkCfg  *types.Config
+	satisfied bool
+}
+
+func (m *configCapturingModule) Check(_ context.Context, _ *system.Context, cfg *types.Config) modules.CheckResult {
+	m.checkCfg = cfg
+	return modules.CheckResult{Satisfied: m.satisfied}
+}
+
 func (m *testModule) ID() string             { return m.id }
 func (m *testModule) Name() string           { return m.id }
 func (m *testModule) Description() string    { return m.id }
@@ -49,6 +60,23 @@ func newTestRegistry() *modules.Registry {
 	r.Register(&testModule{id: "timezone", needsRoot: true})
 	r.Register(&testModule{id: "fail2ban", needsRoot: true})
 	return r
+}
+
+func TestMissingDependenciesUseTargetExecutionConfig(t *testing.T) {
+	registry := modules.NewRegistry()
+	dependency := &configCapturingModule{testModule: testModule{id: "base"}}
+	target := &testModule{id: "docker", deps: []string{"base"}}
+	registry.Register(dependency)
+	registry.Register(target)
+	cfg := &types.Config{AptMirror: "cernet", DockerUser: "alice"}
+
+	missing := missingDependenciesForModule(context.Background(), registry, target, &system.Context{}, cfg)
+	if len(missing) != 1 || missing[0] != "base" {
+		t.Fatalf("missing = %v, want [base]", missing)
+	}
+	if dependency.checkCfg != cfg {
+		t.Fatal("dependency Check did not receive the target execution config")
+	}
 }
 
 // --- buildModuleList tests ---
