@@ -233,7 +233,14 @@ func querySSHEffectiveOutput(ctx context.Context, username string, localPort int
 	}
 	res, err := system.RunWithContext(opCtx, "sshd", args...)
 	if err != nil || res == nil || res.ExitCode != 0 {
-		return "", fmt.Errorf("sshd effective-configuration query failed for %q: %v (%s)", username, err, resultStderr(res))
+		queryContext := "global configuration"
+		if username != "" {
+			queryContext = fmt.Sprintf("user %q", username)
+			if localPort > 0 {
+				queryContext += fmt.Sprintf(" on local port %d", localPort)
+			}
+		}
+		return "", fmt.Errorf("sshd effective-configuration query failed for %s: %v (%s)", queryContext, err, resultStderr(res))
 	}
 	return res.Stdout, nil
 }
