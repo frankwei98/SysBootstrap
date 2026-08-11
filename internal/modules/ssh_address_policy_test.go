@@ -37,6 +37,31 @@ func TestSSHPlanRejectsAddressDependentPasswordPolicy(t *testing.T) {
 	}
 }
 
+func TestSSHPlanRejectsAddressPolicyUsingEqualsSeparators(t *testing.T) {
+	env := newSSHAddressPlanEnvironment(t)
+	policyPath := filepath.Join(env.dropInDir, "10-address-policy.conf")
+	if err := os.WriteFile(
+		policyPath,
+		[]byte("Match=Address 192.0.2.0/24\n  PasswordAuthentication=yes\n"),
+		0o644,
+	); err != nil {
+		t.Fatalf("write equals-separated address policy: %v", err)
+	}
+	if err := os.WriteFile(sshConfigPath, []byte("Include="+policyPath+"\nPort 22122\n"), 0o644); err != nil {
+		t.Fatalf("write equals-separated Include: %v", err)
+	}
+
+	_, err := env.plan(&types.Config{SSHPort: 22122, SSHDisablePass: true})
+	if err == nil {
+		t.Fatal("expected equals-separated address policy to be rejected")
+	}
+	for _, want := range []string{"Match Address", "PasswordAuthentication", policyPath} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Plan error = %q, want %q", err, want)
+		}
+	}
+}
+
 func TestSSHPlanRestoresMatchStateBetweenIncludedFiles(t *testing.T) {
 	env := newSSHAddressPlanEnvironment(t)
 	if err := os.WriteFile(
