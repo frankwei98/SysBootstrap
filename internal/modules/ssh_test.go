@@ -1065,6 +1065,29 @@ func TestSSHRunRejectsOutOfRangeRequestedPortBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestSSHRunRequiresCheckpointBeforeMutation(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	err := NewSSHModule().Run(
+		context.Background(),
+		&system.Context{CurrentUser: &user.User{Username: "sys-bootstrap-test-missing-user"}},
+		&types.Config{SSHPort: 22122},
+		newQuietLogger(t),
+	)
+	if err == nil || !strings.Contains(err.Error(), "confirmation checkpoint is required") {
+		t.Fatalf("Run() error = %v, want checkpoint guidance", err)
+	}
+	if _, statErr := os.Stat(env.dropInPath); !os.IsNotExist(statErr) {
+		t.Fatalf("managed drop-in created without a checkpoint: %v", statErr)
+	}
+	content, readErr := os.ReadFile(env.configPath)
+	if readErr != nil {
+		t.Fatalf("read sshd_config: %v", readErr)
+	}
+	if string(content) != env.originalConfig {
+		t.Fatalf("sshd_config changed without a checkpoint:\n%s", content)
+	}
+}
+
 func TestSSHRunRequiresSSBeforeManagedConfigMutation(t *testing.T) {
 	tests := []struct {
 		name            string
