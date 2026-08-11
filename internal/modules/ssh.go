@@ -160,6 +160,9 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 			return fmt.Errorf("cannot disable both root login and password authentication without providing an SSH public key — no replacement access path")
 		}
 	}
+	if err := requireSSHListenerInspection(); err != nil {
+		return err
+	}
 
 	if err := ensureOpenSSHServer(ctx, log); err != nil {
 		return err

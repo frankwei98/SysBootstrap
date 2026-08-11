@@ -19,6 +19,7 @@ import (
 
 var managedSSHDropIn = "/etc/ssh/sshd_config.d/00-sys-bootstrap.conf"
 var effectiveSSHPortsFunc = effectiveSSHPorts
+var sshCommandExistsFn = system.CommandExists
 var sshdRuntimeDir = "/run/sshd"
 
 // sshTransactionJournal records state before the SSH module mutates anything,
@@ -351,9 +352,16 @@ func verifyOnlyListeningPorts(ctx context.Context, wanted []int) error {
 	return waitForSSHListeningPorts(ctx, wanted, true)
 }
 
+func requireSSHListenerInspection() error {
+	if !sshCommandExistsFn("ss") {
+		return fmt.Errorf("required command ss is unavailable; install iproute2 before running SSH hardening")
+	}
+	return nil
+}
+
 func waitForSSHListeningPorts(ctx context.Context, wanted []int, requireExact bool) error {
-	if !system.CommandExists("ss") {
-		return fmt.Errorf("cannot verify SSH listeners: ss command is unavailable")
+	if err := requireSSHListenerInspection(); err != nil {
+		return fmt.Errorf("cannot verify SSH listeners: %w", err)
 	}
 	opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
