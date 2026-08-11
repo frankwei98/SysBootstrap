@@ -864,14 +864,14 @@ case "$1" in
     if [ "$SYSBOOTSTRAP_TEST_FORCE_KBD_INTERACTIVE" = "yes" ]; then
       echo "kbdinteractiveauthentication yes"
     fi
-    case " $* " in
-      *"lport=$SYSBOOTSTRAP_TEST_FORCE_PASSWORD_LOCAL_PORT"*)
-        if [ -n "$SYSBOOTSTRAP_TEST_FORCE_PASSWORD_LOCAL_PORT" ]; then
+    if [ -n "$SYSBOOTSTRAP_TEST_FORCE_PASSWORD_LOCAL_PORT" ]; then
+      case " $* " in
+        *"lport=$SYSBOOTSTRAP_TEST_FORCE_PASSWORD_LOCAL_PORT"*)
           echo "passwordauthentication yes"
           echo "kbdinteractiveauthentication yes"
-        fi
-        ;;
-    esac
+          ;;
+      esac
+    fi
     exit 0
     ;;
 esac
