@@ -77,6 +77,9 @@ func (m *UserModule) Check(ctx context.Context, sys *system.Context, cfg *types.
 }
 
 func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
+	if cfg == nil {
+		return nil, nil
+	}
 	if cfg.NewUsername == "" {
 		return nil, nil
 	}
@@ -115,11 +118,13 @@ func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 	}
 	if cfg.UserAddKey {
 		if cfg.UserKeySource == "github" && cfg.UserGitHubUser != "" {
-			title := "Fetch SSH keys from GitHub"
-			if strings.TrimSpace(cfg.UserGitHubKeys) != "" {
-				title = "Install confirmed SSH keys from GitHub"
+			if desired.NeedsSSHKey {
+				title := "Fetch SSH keys from GitHub"
+				if strings.TrimSpace(cfg.UserGitHubKeys) != "" {
+					title = "Install confirmed SSH keys from GitHub"
+				}
+				steps = append(steps, types.Step{Module: "user", Title: title, Detail: "github.com/" + cfg.UserGitHubUser})
 			}
-			steps = append(steps, types.Step{Module: "user", Title: title, Detail: "github.com/" + cfg.UserGitHubUser})
 		} else if desired.NeedsSSHKey {
 			steps = append(steps, types.Step{Module: "user", Title: "Write SSH public key", Detail: "authorized_keys"})
 		}
@@ -216,7 +221,7 @@ func (m *UserModule) supplementUser(ctx context.Context, username string, cfg *t
 		if !desired.NeedsSudoGroup {
 			log.Info("User already in sudo group, skipping")
 		} else if res, err := system.Run("usermod", "-aG", "sudo", username); err != nil || res.ExitCode != 0 {
-			log.Warn(system.FormatCommandError(fmt.Sprintf("could not add %s to sudo group", username), res, err).Error())
+			return system.FormatCommandError(fmt.Sprintf("could not add %s to sudo group", username), res, err)
 		} else {
 			log.Successf("%s added to sudo group", username)
 		}
@@ -284,24 +289,34 @@ func sudoersFile(username string) string {
 
 func writePasswordlessSudo(username string) error {
 	path := sudoersFile(username)
-	tmp := path + ".tmp"
 	content := fmt.Sprintf("%s ALL=(ALL) NOPASSWD: ALL\n", username)
 
-	if err := os.WriteFile(tmp, []byte(content), 0o440); err != nil {
+	if err := system.RejectSymlinkPath(path); err != nil {
+		return fmt.Errorf("refusing unsafe sudoers path %s: %w", path, err)
+	}
+	tmpFile, err := os.CreateTemp(sudoersDir, ".sys-bootstrap-sudo-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary sudoers rule: %w", err)
+	}
+	tmp := tmpFile.Name()
+	defer os.Remove(tmp)
+	if err := tmpFile.Chmod(0o440); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to chmod sudoers rule: %w", err)
+	}
+	if _, err := tmpFile.WriteString(content); err != nil {
+		_ = tmpFile.Close()
 		return fmt.Errorf("failed to write sudoers rule: %w", err)
 	}
-	if res, err := system.Run("chmod", "0440", tmp); err != nil || res.ExitCode != 0 {
-		os.Remove(tmp)
-		return system.FormatCommandError("failed to chmod sudoers rule", res, err)
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close sudoers rule: %w", err)
 	}
 	if system.CommandExists("visudo") {
 		if res, err := system.Run("visudo", "-cf", tmp); err != nil || res.ExitCode != 0 {
-			os.Remove(tmp)
 			return system.FormatCommandError(fmt.Sprintf("invalid sudoers rule for %s", username), res, err)
 		}
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
 		return fmt.Errorf("failed to install sudoers rule: %w", err)
 	}
 	return nil
@@ -455,7 +470,14 @@ func evaluateUserDesiredState(cfg *types.Config, state userState) userDesiredSta
 
 	if cfg.UserAddKey {
 		if cfg.UserKeySource == "github" && cfg.UserGitHubUser != "" {
-			desired.NeedsSSHKey = true
+			// An empty value means the run still needs to fetch and review keys.
+			// Once reviewed keys are present, Check must verify their actual
+			// presence so a successful run is idempotent.
+			if strings.TrimSpace(cfg.UserGitHubKeys) == "" {
+				desired.NeedsSSHKey = true
+			} else {
+				desired.NeedsSSHKey = !authorizedKeysContainAll(state.HomeDir, cfg.UserGitHubKeys)
+			}
 		} else if cfg.UserPublicKey != "" && !authorizedKeyContains(state.HomeDir, cfg.UserPublicKey) {
 			desired.NeedsSSHKey = true
 		}
@@ -563,8 +585,17 @@ func passwordPlanDetail(username string, exists bool, passwordKnown bool) string
 }
 
 func passwordlessSudoEnabled(username string) bool {
-	_, err := os.Stat(sudoersFile(username))
-	return err == nil
+	path := sudoersFile(username)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	expected := fmt.Sprintf("%s ALL=(ALL) NOPASSWD: ALL", username)
+	return strings.TrimSpace(string(content)) == expected
 }
 
 func userHomeDir(username string) string {
@@ -587,7 +618,15 @@ func authorizedKeyContains(home, publicKey string) bool {
 	if strings.TrimSpace(home) == "" || strings.TrimSpace(publicKey) == "" {
 		return false
 	}
-	content, err := os.ReadFile(filepath.Join(home, ".ssh", "authorized_keys"))
+	path := filepath.Join(home, ".ssh", "authorized_keys")
+	if err := rejectAuthorizedKeysFullPath(home, ".ssh/authorized_keys"); err != nil {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
@@ -598,6 +637,35 @@ func authorizedKeyContains(home, publicKey string) bool {
 		}
 	}
 	return false
+}
+
+func authorizedKeysContainAll(home, publicKeys string) bool {
+	if strings.TrimSpace(home) == "" || strings.TrimSpace(publicKeys) == "" {
+		return false
+	}
+	valid, err := validateKeyLines(publicKeys)
+	if err != nil {
+		return false
+	}
+	path := filepath.Join(home, ".ssh", "authorized_keys")
+	if err := rejectAuthorizedKeysFullPath(home, ".ssh/authorized_keys"); err != nil {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	existing := strings.Split(string(content), "\n")
+	for _, key := range valid {
+		if !containsKey(existing, key) {
+			return false
+		}
+	}
+	return len(valid) > 0
 }
 
 func userPasswordState(username string) (known bool, usable bool, err error) {

@@ -161,7 +161,7 @@ func ShouldWarnOnModuleFailure(moduleID string, ctx context.Context, err error) 
 	}
 
 	switch moduleID {
-	case "zellij", "node", "ai", "docker", "fail2ban":
+	case "zellij", "node", "ai", "docker":
 		return true
 	default:
 		return false

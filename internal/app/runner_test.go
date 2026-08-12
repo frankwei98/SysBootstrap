@@ -101,12 +101,12 @@ func (c *capturedRunnerLog) Output() string {
 
 func TestShouldWarnOnModuleFailure(t *testing.T) {
 	installErr := errors.New("installation failed")
-	for _, moduleID := range []string{"zellij", "node", "ai", "docker", "fail2ban"} {
+	for _, moduleID := range []string{"zellij", "node", "ai", "docker"} {
 		if !ShouldWarnOnModuleFailure(moduleID, context.Background(), installErr) {
 			t.Fatalf("%s installation failure should be reported as a warning", moduleID)
 		}
 	}
-	for _, moduleID := range []string{"base", "ssh", "user", "ssh_keygen", "timezone"} {
+	for _, moduleID := range []string{"base", "ssh", "user", "ssh_keygen", "timezone", "fail2ban"} {
 		if ShouldWarnOnModuleFailure(moduleID, context.Background(), installErr) {
 			t.Fatalf("%s failure must remain fatal", moduleID)
 		}

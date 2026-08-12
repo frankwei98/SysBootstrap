@@ -45,6 +45,9 @@ func (m *SSHKeygenModule) Check(ctx context.Context, sys *system.Context, cfg *t
 }
 
 func (m *SSHKeygenModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
+	if cfg == nil {
+		return nil, nil
+	}
 	keyType := cfg.KeygenType
 	if keyType == "" {
 		keyType = "ed25519"
