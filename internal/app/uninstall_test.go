@@ -438,14 +438,14 @@ func TestBuildUninstallPlan_CollectsDirs(t *testing.T) {
 	}
 }
 
-func TestBuildUninstallPlan_SkipsUnsafePaths(t *testing.T) {
+func TestBuildUninstallPlan_RetainsUnsafePathsForExecutionCheck(t *testing.T) {
 	home := t.TempDir()
 	items := []UninstallItem{
 		{ID: "bad", Dirs: []string{"/etc"}},
 	}
 	plan := BuildUninstallPlan(items, home)
-	if len(plan.DirsToDelete) != 0 {
-		t.Errorf("expected 0 dirs (unsafe path), got %d", len(plan.DirsToDelete))
+	if len(plan.DirsToDelete) != 1 {
+		t.Errorf("expected unsafe dir to remain visible for execution-time rejection, got %d", len(plan.DirsToDelete))
 	}
 }
 
@@ -931,10 +931,10 @@ func TestExecuteUninstall_SkipsUnsafePaths(t *testing.T) {
 
 	log := createTestLogger(t)
 	err := ExecuteUninstall(plan, home, false, log)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected unsafe path error")
 	}
-	// Should log a warning but not error out
+	// The warning is retained, and the failure is also propagated to the caller.
 }
 
 func TestExecuteUninstall_CleansRC(t *testing.T) {
@@ -977,8 +977,8 @@ func TestExecuteUninstall_SkipsPkgRemovalWhenPkgManagerUnavailable(t *testing.T)
 
 	log := createTestLogger(t)
 	err := ExecuteUninstall(plan, home, false, log)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected missing package manager error")
 	}
 }
 

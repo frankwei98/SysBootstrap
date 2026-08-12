@@ -127,6 +127,14 @@ init_download_paths() {
     DOWNLOAD_DIR=$(mktemp -d "${tmp_base%/}/${BINARY}.XXXXXX") || die "Failed to create temporary download directory."
     DOWNLOAD_PATH="${DOWNLOAD_DIR}/${BINARY}"
     CHECKSUM_PATH="${DOWNLOAD_DIR}/${BINARY}.sha256"
+    trap cleanup_download_dir EXIT
+}
+
+cleanup_download_dir() {
+    local dir="${DOWNLOAD_DIR:-}"
+    if [[ -n "$dir" && -d "$dir" ]]; then
+        rm -rf -- "$dir"
+    fi
 }
 
 can_use_sudo() {
@@ -358,7 +366,7 @@ download_from_url() {
     info "Downloading from: $url"
     curl -fsSL --connect-timeout 15 --max-time 90 --retry 2 "$url" -o "$tmp_file" || return 1
     [[ -s "$tmp_file" ]] || return 1
-    chmod +x "$tmp_file"
+    chmod 0755 "$tmp_file"
     mv "$tmp_file" "$DOWNLOAD_PATH"
 }
 
@@ -515,10 +523,8 @@ install_or_run() {
                     info "Running in user-level tools mode (no sudo needed)..."
                 fi
                 env_args+=("SYS_BOOTSTRAP_RUN_MODE=user")
-                if [[ ${#env_args[@]} -gt 0 ]]; then
-                    export "${env_args[@]}"
-                fi
-                run_with_tty "$DOWNLOAD_PATH"
+                run_with_tty env "${env_args[@]}" "$DOWNLOAD_PATH"
+                cleanup_download_dir
                 maybe_reload_shell_after_temp_run
             else
                 # Full initialization: needs root
@@ -543,14 +549,12 @@ install_or_run() {
                         info "Running in full initialization mode with sudo..."
                     fi
                 fi
-                if [[ ${#env_args[@]} -gt 0 ]]; then
-                    export "${env_args[@]}"
-                fi
                 if [[ $(current_euid) -eq 0 ]]; then
-                    run_with_tty "$DOWNLOAD_PATH"
+                    run_with_tty env "${env_args[@]}" "$DOWNLOAD_PATH"
                 else
                     run_with_tty sudo env "${env_args[@]}" "$DOWNLOAD_PATH"
                 fi
+                cleanup_download_dir
                 maybe_reload_shell_after_temp_run
             fi
             ;;
@@ -569,7 +573,7 @@ install_or_run() {
                     info "Installing to ${INSTALL_DIR} with sudo..."
                 fi
             fi
-            run_as_root cp "$DOWNLOAD_PATH" "${INSTALL_DIR}/${BINARY}"
+            run_as_root install -m 0755 "$DOWNLOAD_PATH" "${INSTALL_DIR}/${BINARY}"
 
             # Persist settings to system config
             local config_dir="/etc/sys-bootstrap"

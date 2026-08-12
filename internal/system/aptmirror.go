@@ -158,6 +158,9 @@ type backupEntry struct {
 }
 
 func backupFile(path string) (backupEntry, error) {
+	if err := RejectSymlinkPath(path); err != nil {
+		return backupEntry{}, err
+	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return backupEntry{}, err
@@ -171,11 +174,35 @@ func backupFile(path string) (backupEntry, error) {
 
 func restoreAll(backups []backupEntry) error {
 	for _, b := range backups {
-		if err := os.WriteFile(b.path, b.content, b.mode); err != nil {
+		if err := atomicWriteFile(b.path, b.content, b.mode); err != nil {
 			return fmt.Errorf("restoring %s: %w", b.path, err)
 		}
 	}
 	return nil
+}
+
+func atomicWriteFile(path string, content []byte, mode os.FileMode) error {
+	if err := RejectSymlinkPath(path); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".sys-bootstrap-apt-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(mode.Perm()); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // isSecuritySource returns true if the line contains a security host or path
@@ -192,6 +219,9 @@ func isSecuritySource(line string) bool {
 // switchListFile processes a traditional .list file. Returns true if any
 // line was changed.
 func switchListFile(path string) (bool, backupEntry, error) {
+	if err := RejectSymlinkPath(path); err != nil {
+		return false, backupEntry{}, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -229,7 +259,7 @@ func switchListFile(path string) (bool, backupEntry, error) {
 		mode = info.Mode()
 	}
 
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), mode); err != nil {
+	if err := atomicWriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), mode); err != nil {
 		return false, backupEntry{}, err
 	}
 
@@ -289,6 +319,9 @@ func rewriteListLine(line string) string {
 // switchSourcesFile processes a DEB822 .sources file.
 // Parses stanza-by-stanza and rewrites URIs.
 func switchSourcesFile(path string) (bool, backupEntry, error) {
+	if err := RejectSymlinkPath(path); err != nil {
+		return false, backupEntry{}, err
+	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -310,7 +343,7 @@ func switchSourcesFile(path string) (bool, backupEntry, error) {
 
 	bk := backupEntry{path: path, content: content, mode: mode}
 
-	if err := os.WriteFile(path, []byte(newContent), mode); err != nil {
+	if err := atomicWriteFile(path, []byte(newContent), mode); err != nil {
 		return false, backupEntry{}, err
 	}
 

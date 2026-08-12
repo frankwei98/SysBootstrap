@@ -159,31 +159,79 @@ func fail2banSSHDJailMatchesConfig(cfg *types.Config) (bool, string) {
 	if err != nil {
 		return false, "sshd jail missing"
 	}
-	text := string(content)
-	if !strings.Contains(text, "[sshd]") || !strings.Contains(text, "enabled = true") {
+	settings := fail2banSSHDSettings(string(content))
+	if settings["enabled"] != "true" {
 		return false, "sshd jail missing"
 	}
 	ports, fellBack := resolveEffectiveSSHPortsForFail2ban(cfg)
-	expectedPort := "port = " + fail2banSSHPortSettingForPorts(ports)
-	expectedMaxRetry := fmt.Sprintf("maxretry = %d", fail2banMaxRetry(cfg))
-	expectedFindTime := fmt.Sprintf("findtime = %s", fail2banFindTime(cfg))
-	expectedBanTime := fmt.Sprintf("bantime = %s", fail2banBanTime(cfg))
-	expectedBackend := fmt.Sprintf("backend = %s", fail2banBackend(cfg))
-	expectedIgnoreIP := fmt.Sprintf("ignoreip = %s", fail2banIgnoreIP(cfg))
-	missing := []string{}
-	for _, item := range []string{expectedPort, expectedMaxRetry, expectedFindTime, expectedBanTime, expectedBackend, expectedIgnoreIP} {
-		if !strings.Contains(text, item) {
-			missing = append(missing, item)
-		}
+	expected := map[string]string{
+		"port":     fail2banSSHPortSettingForPorts(ports),
+		"maxretry": strconv.Itoa(fail2banMaxRetry(cfg)),
+		"findtime": fail2banFindTime(cfg),
+		"bantime":  fail2banBanTime(cfg),
+		"backend":  fail2banBackend(cfg),
+		"ignoreip": fail2banIgnoreIP(cfg),
 	}
-	if len(missing) > 0 {
-		return false, "sshd jail differs from target policy"
+	for key, want := range expected {
+		if settings[key] != want {
+			return false, "sshd jail differs from target policy"
+		}
 	}
 	summary := "sshd jail configured"
 	if fellBack {
 		summary += "; " + fail2banEffectiveSSHPortFallbackWarning
 	}
 	return true, summary
+}
+
+// fail2banSSHDSettings parses only the [sshd] section. Substring matching is
+// unsafe here: for example, port = 22122 must not satisfy a target port 22.
+func fail2banSSHDSettings(content string) map[string]string {
+	settings := make(map[string]string)
+	inSSHD := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inSSHD = strings.EqualFold(trimmed, "[sshd]")
+			continue
+		}
+		if !inSSHD {
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, "=")
+		if ok {
+			settings[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
+		}
+	}
+	return settings
+}
+
+func writeFail2banContentAtomically(path string, content []byte, mode os.FileMode) error {
+	if err := system.RejectSymlinkPath(path); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".sys-bootstrap-fail2ban-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(mode.Perm()); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func writeFail2banManagedJail(cfg *types.Config) error {

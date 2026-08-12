@@ -45,6 +45,17 @@ const (
 	SupportTierUnsupported   SupportTier = "unsupported"
 )
 
+// IsSupportedArchitecture reports the architectures covered by the release
+// artifacts and the documented support matrix.
+func IsSupportedArchitecture(arch string) bool {
+	switch arch {
+	case "linux/amd64", "linux/arm64":
+		return true
+	default:
+		return false
+	}
+}
+
 var sbinSearchPaths = []string{"/usr/local/sbin", "/usr/sbin", "/sbin"}
 
 // NewContext creates a system context by detecting the current environment.

@@ -286,7 +286,7 @@ func DoctorCmd() (*DoctorResult, error) {
 		{"OS ID", sys.OSID != "", sys.OSID, true},
 		{"OS Version", sys.OSVersion != "", sys.OSVersion, true},
 		{"Supported OS", sys.IsSupportedOS(), osDetail, false},
-		{"Architecture", true, sys.Arch, false},
+		{"Architecture", system.IsSupportedArchitecture(sys.Arch), sys.Arch, true},
 		{"Root", true, boolStr(sys.IsRoot, i18n.T("doctor_root_yes"), i18n.T("doctor_root_no")), false},
 		{"systemd", sys.HasSystemd, boolStr(sys.HasSystemd, i18n.T("doctor_systemd_yes"), i18n.T("doctor_systemd_no")), false},
 		{"apt-get", sys.HasApt, boolStr(sys.HasApt, i18n.T("doctor_apt_yes"), i18n.T("doctor_apt_no")), true},
@@ -656,7 +656,9 @@ func UninstallCmd(args []string) error {
 			return fmt.Errorf("logger init failed: %w", err)
 		}
 		defer log.Close()
-		app.CleanShellRC(plan.RCFiles, itemIDs, true, log)
+		if _, err := app.CleanShellRC(plan.RCFiles, itemIDs, true, log); err != nil {
+			return err
+		}
 		return nil
 	}
 

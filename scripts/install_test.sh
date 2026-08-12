@@ -153,7 +153,7 @@ test_temp_user_mode_no_sudo() {
     install_or_run >/dev/null
     assert_not_contains "$CAPTURED_CMD" "sudo"
     assert_contains "$CAPTURED_CMD" "/tmp/fake/sys-bootstrap"
-    assert_equal "${SYS_BOOTSTRAP_RUN_MODE:-}" "user"
+    assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_RUN_MODE=user"
 }
 
 test_temp_full_mode_nonroot_uses_sudo() {
@@ -212,7 +212,7 @@ test_env_vars_zh_cn() {
     LANG_CHOICE="zh-CN"
     PROMPT_VALUES=("1" "1" "n")
     install_or_run >/dev/null
-    assert_equal "${SYS_BOOTSTRAP_LANG:-}" "zh-CN"
+    assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_LANG=zh-CN"
 }
 
 test_env_vars_apt_mirror() {
@@ -221,7 +221,7 @@ test_env_vars_apt_mirror() {
     APT_MIRROR="cernet"
     PROMPT_VALUES=("1" "1" "n")
     install_or_run >/dev/null
-    assert_equal "${SYS_BOOTSTRAP_APT_MIRROR:-}" "cernet"
+    assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_APT_MIRROR=cernet"
 }
 
 test_env_vars_full_mode_combined() {

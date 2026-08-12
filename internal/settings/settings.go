@@ -152,8 +152,14 @@ func isValidAptMirror(v string) bool {
 // Creates parent directories with 0755 and the file with 0644.
 func writeConfig(path string, s Settings, userScoped bool) error {
 	dir := filepath.Dir(path)
+	if err := rejectConfigSymlinks(path, userScoped); err != nil {
+		return fmt.Errorf("refusing unsafe config path %s: %w", path, err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("cannot create config dir %s: %w", dir, err)
+	}
+	if err := rejectConfigSymlinks(path, userScoped); err != nil {
+		return fmt.Errorf("refusing unsafe config path %s: %w", path, err)
 	}
 	if userScoped {
 		// The parent (usually ~/.config) may have been created by MkdirAll as
@@ -171,13 +177,27 @@ func writeConfig(path string, s Settings, userScoped bool) error {
 		fmt.Fprintf(&b, "apt_mirror=%s\n", s.AptMirror)
 	}
 
-	// Write to temp file then rename for atomicity
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	// Write to a unique temp file in the destination directory, then rename for
+	// atomicity. A fixed sibling name could be pre-planted as a symlink by the
+	// unprivileged invoking user before a sudo run.
+	tmpFile, err := os.CreateTemp(dir, ".sys-bootstrap-config-*")
+	if err != nil {
+		return fmt.Errorf("cannot create temporary config file in %s: %w", dir, err)
+	}
+	tmp := tmpFile.Name()
+	defer os.Remove(tmp)
+	if err := tmpFile.Chmod(0o644); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("cannot set config permissions: %w", err)
+	}
+	if _, err := tmpFile.WriteString(b.String()); err != nil {
+		tmpFile.Close()
 		return fmt.Errorf("cannot write config %s: %w", tmp, err)
 	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("cannot close config %s: %w", tmp, err)
+	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
 		return fmt.Errorf("cannot rename config %s -> %s: %w", tmp, path, err)
 	}
 	if userScoped {
@@ -186,6 +206,19 @@ func writeConfig(path string, s Settings, userScoped bool) error {
 		}
 	}
 	return nil
+}
+
+func rejectConfigSymlinks(path string, userScoped bool) error {
+	if userScoped {
+		home := userHomeDir()
+		if home != "" {
+			rel, err := filepath.Rel(filepath.Clean(home), filepath.Clean(path))
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return system.RejectSymlinkPathBelow(home, path)
+			}
+		}
+	}
+	return system.RejectSymlinkPath(path)
 }
 
 // NormalizeLang converts settings lang values to i18n-compatible form.

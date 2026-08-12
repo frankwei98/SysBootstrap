@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -91,7 +92,11 @@ func ValidatePathSafety(target, homeDir string) error {
 
 	// Clean both paths for comparison
 	cleanTarget := filepath.Clean(absTarget)
-	cleanHome := filepath.Clean(homeDir)
+	absHome, err := filepath.Abs(homeDir)
+	if err != nil {
+		return fmt.Errorf("cannot resolve home directory %s: %w", homeDir, err)
+	}
+	cleanHome := filepath.Clean(absHome)
 
 	if cleanTarget == "/" {
 		return fmt.Errorf("refusing to delete root path /")
@@ -100,13 +105,45 @@ func ValidatePathSafety(target, homeDir string) error {
 	if cleanTarget == cleanHome {
 		return fmt.Errorf("refusing to delete home directory itself: %s", cleanHome)
 	}
-
 	// Check that target is inside home directory
 	if !strings.HasPrefix(cleanTarget+string(filepath.Separator), cleanHome+string(filepath.Separator)) {
 		return fmt.Errorf("path %s is outside home directory %s", cleanTarget, cleanHome)
 	}
+	if err := system.RejectSymlinkPathBelow(cleanHome, cleanTarget); err != nil {
+		return fmt.Errorf("unsafe target path %s: %w", cleanTarget, err)
+	}
+	// A home directory may itself be a platform-managed symlink. Resolve both
+	// paths when possible so a user-controlled home link cannot make an inside
+	// lexical path point outside the real home tree.
+	if realHome, err := resolveExistingPath(cleanHome); err == nil {
+		if realTarget, targetErr := resolveExistingPath(cleanTarget); targetErr == nil {
+			if !strings.HasPrefix(realTarget+string(filepath.Separator), realHome+string(filepath.Separator)) {
+				return fmt.Errorf("path %s resolves outside home directory %s", cleanTarget, cleanHome)
+			}
+		}
+	}
 
 	return nil
+}
+
+func resolveExistingPath(path string) (string, error) {
+	current := filepath.Clean(path)
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
 }
 
 // ScanUninstallItems detects user-level software installed in the given home directory.
@@ -253,9 +290,10 @@ func BuildUninstallPlan(items []UninstallItem, homeDir string) UninstallPlan {
 	for _, item := range items {
 		// Collect directories
 		for _, d := range item.Dirs {
-			if err := ValidatePathSafety(d, homeDir); err == nil {
-				plan.DirsToDelete = append(plan.DirsToDelete, d)
-			}
+			// Keep even unsafe paths in the plan so ExecuteUninstall can report
+			// the rejected operation instead of silently returning success with
+			// zero deletions.
+			plan.DirsToDelete = append(plan.DirsToDelete, d)
 		}
 
 		// Collect package removal commands
@@ -313,7 +351,7 @@ func detectRCFiles(homeDir string) []string {
 	var result []string
 	for _, name := range candidates {
 		path := filepath.Join(homeDir, name)
-		if fileExists(path) {
+		if fileExists(path) && system.RejectSymlinkPath(path) == nil {
 			result = append(result, path)
 		}
 	}
@@ -350,10 +388,20 @@ func CleanShellRC(rcFiles []string, itemIDs []string, dryRun bool, log *logging.
 
 // cleanSingleRC cleans a single rc file. Returns lines removed.
 func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *logging.Logger) (int, error) {
+	if err := system.RejectSymlinkPath(rcFile); err != nil {
+		return 0, fmt.Errorf("refusing unsafe shell rc path %s: %w", rcFile, err)
+	}
 	// Read and scan for matches
 	data, err := os.ReadFile(rcFile)
 	if err != nil {
 		return 0, fmt.Errorf("cannot read %s: %w", rcFile, err)
+	}
+	rcInfo, err := os.Lstat(rcFile)
+	if err != nil || !rcInfo.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
+		return 0, fmt.Errorf("cannot safely inspect %s: %w", rcFile, err)
 	}
 
 	rawLines := strings.Split(string(data), "\n")
@@ -393,6 +441,9 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 
 	// Backup original before modifying
 	backupPath := rcFile + ".bak.sys-bootstrap"
+	if err := system.RejectSymlinkPath(backupPath); err != nil {
+		return removed, fmt.Errorf("refusing unsafe backup path %s: %w", backupPath, err)
+	}
 	if err := copyFile(rcFile, backupPath); err != nil {
 		return removed, fmt.Errorf("cannot backup %s: %w", rcFile, err)
 	}
@@ -403,9 +454,13 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 		log.Infof(i18n.T("uninstall_rc_backup"), backupPath)
 	}
 
-	// Write cleaned content
-	if err := os.WriteFile(rcFile, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+	// Write cleaned content atomically so a pre-existing symlink cannot redirect
+	// the privileged write to another file.
+	if err := writeFileAtomically(rcFile, []byte(strings.Join(lines, "\n")+"\n"), rcInfo.Mode()); err != nil {
 		return removed, fmt.Errorf("cannot write %s: %w", rcFile, err)
+	}
+	if err := system.ChownToInvokingUser(rcFile); err != nil {
+		return removed, fmt.Errorf("cannot restore ownership for %s: %w", rcFile, err)
 	}
 
 	return removed, nil
@@ -414,6 +469,7 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 // ExecuteUninstall performs the actual uninstallation.
 // If dryRun is true, only prints what would be done without making changes.
 func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logging.Logger) error {
+	var failures []error
 	// 1. Remove package manager packages
 	for _, item := range plan.Items {
 		if item.PkgName == "" {
@@ -422,6 +478,9 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 
 		if item.PkgManager == "" {
 			log.Warnf(i18n.T("uninstall_cmd_skipped_no_pkgmgr"), item.Name, item.PkgName)
+			if !dryRun {
+				failures = append(failures, fmt.Errorf("cannot remove %s: no package manager available", item.PkgName))
+			}
 			continue
 		}
 
@@ -432,12 +491,13 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 		}
 		log.Infof(i18n.T("uninstall_running_cmd"), cmd)
 		res, err := system.RunInNvmShellForHome(homeDir, cmd)
-		if err != nil || res.ExitCode != 0 {
+		if err != nil || res == nil || res.ExitCode != 0 {
 			stderr := ""
 			if res != nil {
 				stderr = res.Stderr
 			}
 			log.Warnf(i18n.T("uninstall_cmd_failed"), cmd, stderr)
+			failures = append(failures, fmt.Errorf("uninstall command %q failed: %v (%s)", cmd, err, stderr))
 		} else {
 			log.Successf(i18n.T("uninstall_cmd_done"), cmd)
 		}
@@ -451,11 +511,13 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 		}
 		if err := ValidatePathSafety(dir, homeDir); err != nil {
 			log.Warnf(i18n.T("uninstall_path_unsafe"), dir, err)
+			failures = append(failures, fmt.Errorf("unsafe uninstall path %s: %w", dir, err))
 			continue
 		}
 		log.Infof(i18n.T("uninstall_removing_dir"), dir)
 		if err := os.RemoveAll(dir); err != nil {
 			log.Warnf(i18n.T("uninstall_dir_failed"), dir, err)
+			failures = append(failures, fmt.Errorf("remove %s: %w", dir, err))
 		} else {
 			log.Successf(i18n.T("uninstall_dir_removed"), dir)
 		}
@@ -469,6 +531,7 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 	removed, err := CleanShellRC(plan.RCFiles, itemIDs, dryRun, log)
 	if err != nil {
 		log.Warnf(i18n.T("uninstall_rc_failed"), err)
+		failures = append(failures, fmt.Errorf("clean shell rc files: %w", err))
 	} else if removed > 0 {
 		if dryRun {
 			log.Infof(i18n.T("uninstall_dry_run_rc"), removed)
@@ -477,7 +540,7 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 		}
 	}
 
-	return nil
+	return errors.Join(failures...)
 }
 
 // PrintUserInfo displays the current effective user information.
@@ -535,25 +598,70 @@ func dirExists(path string) bool {
 }
 
 func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func copyFile(src, dst string) error {
+	if err := system.RejectSymlinkPath(src); err != nil {
+		return err
+	}
+	if err := system.RejectSymlinkPath(dst); err != nil {
+		return err
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
 
-	out, err := os.Create(dst)
+	info, err := in.Stat()
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	dir := filepath.Dir(dst)
+	out, err := os.CreateTemp(dir, ".sys-bootstrap-copy-*")
+	if err != nil {
+		return err
+	}
+	tmp := out.Name()
+	defer os.Remove(tmp)
+	if err := out.Chmod(info.Mode().Perm()); err != nil {
+		out.Close()
+		return err
+	}
 
 	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
 		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
 	}
-	return nil
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
+
+func writeFileAtomically(path string, data []byte, mode os.FileMode) error {
+	if err := system.RejectSymlinkPath(path); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".sys-bootstrap-write-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(mode.Perm()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }

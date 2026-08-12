@@ -280,7 +280,7 @@ func buildPlanChecks(sys *system.Context) []PlanCheck {
 
 	checks := []PlanCheck{
 		{Name: "os", Status: string(sys.SupportTier()), Detail: fmt.Sprintf("%s %s", sys.OSID, sys.OSVersion)},
-		{Name: "arch", Status: "ok", Detail: sys.Arch},
+		{Name: "arch", Status: fatalStatus(system.IsSupportedArchitecture(sys.Arch)), Detail: sys.Arch},
 		{Name: "apt-get", Status: fatalStatus(sys.HasApt), Detail: boolDetail(sys.HasApt, "available", "missing")},
 		{Name: "network", Status: fatalStatus(sys.HasNetwork), Detail: boolDetail(sys.HasNetwork, "dns ok", "dns failed")},
 	}

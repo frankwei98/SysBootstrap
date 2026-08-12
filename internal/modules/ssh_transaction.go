@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
@@ -45,8 +46,103 @@ type sshTransactionJournal struct {
 	// Firewall rules added by this run
 	addedUFWRules []string
 
+	// authorized_keys prior state, because key installation happens before
+	// prepare and must be undone if the transaction cannot be completed.
+	authorizedKeysPath    string
+	authorizedKeysExisted bool
+	authorizedKeysBytes   []byte
+	authorizedKeysMode    os.FileMode
+	authorizedKeysUID     int
+	authorizedKeysGID     int
+
 	// Whether prepare completed
 	prepared bool
+}
+
+func captureAuthorizedKeysSnapshot(j *sshTransactionJournal, sys *system.Context) error {
+	username := system.TargetUsername(sys)
+	if username == "" {
+		return nil
+	}
+	home, err := resolveHome(username)
+	if err != nil {
+		return fmt.Errorf("cannot determine home for %s: %w", username, err)
+	}
+	path := filepath.Join(home, ".ssh", "authorized_keys")
+	if err := rejectAuthorizedKeysFullPath(home, ".ssh/authorized_keys"); err != nil {
+		return err
+	}
+	j.authorizedKeysPath = path
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot inspect %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("authorized_keys %s is not a regular file", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", path, err)
+	}
+	j.authorizedKeysExisted = true
+	j.authorizedKeysBytes = data
+	j.authorizedKeysMode = info.Mode()
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("cannot determine ownership of %s", path)
+	}
+	j.authorizedKeysUID = int(stat.Uid)
+	j.authorizedKeysGID = int(stat.Gid)
+	return nil
+}
+
+func restoreAuthorizedKeysSnapshot(j *sshTransactionJournal) error {
+	if j.authorizedKeysPath == "" {
+		return nil
+	}
+	if err := system.RejectSymlinkPath(j.authorizedKeysPath); err != nil {
+		return err
+	}
+	if !j.authorizedKeysExisted {
+		if err := os.Remove(j.authorizedKeysPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := writeSSHFileAtomically(j.authorizedKeysPath, j.authorizedKeysBytes, j.authorizedKeysMode); err != nil {
+		return err
+	}
+	if err := os.Lchown(j.authorizedKeysPath, j.authorizedKeysUID, j.authorizedKeysGID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeSSHFileAtomically(path string, data []byte, mode os.FileMode) error {
+	if err := system.RejectSymlinkPath(path); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".sys-bootstrap-ssh-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(mode.Perm()); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 type sshConfigFileSnapshot struct {
@@ -196,7 +292,7 @@ func writeManagedDropInPorts(ports []int, permitRootLogin, passwordAuth, kbdInte
 	if kbdInteractiveAuth != "" {
 		b.WriteString(fmt.Sprintf("KbdInteractiveAuthentication %s\n", kbdInteractiveAuth))
 	}
-	return os.WriteFile(managedSSHDropIn, []byte(b.String()), 0o644)
+	return writeSSHFileAtomically(managedSSHDropIn, []byte(b.String()), 0o644)
 }
 
 func managedAuthPolicyBeforeRun(j *sshTransactionJournal) (string, string, string, error) {
@@ -711,6 +807,9 @@ func disableLegacyPortDirectives(configPath string, managedPort int, j *sshTrans
 		if path == managedSSHDropIn {
 			continue
 		}
+		if err := system.RejectSymlinkPath(path); err != nil {
+			return nil, fmt.Errorf("refusing unsafe SSH config path %s: %w", path, err)
+		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return nil, readErr
@@ -728,7 +827,7 @@ func disableLegacyPortDirectives(configPath string, managedPort int, j *sshTrans
 			data: append([]byte(nil), data...),
 			mode: info.Mode(),
 		})
-		if writeErr := os.WriteFile(path, []byte(updated), info.Mode()); writeErr != nil {
+		if writeErr := writeSSHFileAtomically(path, []byte(updated), info.Mode()); writeErr != nil {
 			return nil, writeErr
 		}
 		for _, port := range ports {
@@ -780,7 +879,7 @@ func rollbackPrepare(ctx context.Context, j *sshTransactionJournal) error {
 	var rollbackErrs []error
 	// Restore managed drop-in
 	if j.hadDropIn {
-		if err := os.WriteFile(managedSSHDropIn, j.dropInBytes, j.dropInMode); err != nil {
+		if err := writeSSHFileAtomically(managedSSHDropIn, j.dropInBytes, j.dropInMode); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore managed sshd config: %w", err))
 		}
 	} else {
@@ -789,9 +888,12 @@ func rollbackPrepare(ctx context.Context, j *sshTransactionJournal) error {
 		}
 	}
 	for _, snapshot := range j.legacyPortFiles {
-		if err := os.WriteFile(snapshot.path, snapshot.data, snapshot.mode); err != nil {
+		if err := writeSSHFileAtomically(snapshot.path, snapshot.data, snapshot.mode); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore SSH config %s: %w", snapshot.path, err))
 		}
+	}
+	if err := restoreAuthorizedKeysSnapshot(j); err != nil {
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("restore authorized_keys: %w", err))
 	}
 
 	// Remove firewall rules we added

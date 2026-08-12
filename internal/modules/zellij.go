@@ -60,8 +60,10 @@ func (m *ZellijModule) Run(ctx context.Context, sys *system.Context, cfg *types.
 func installZellij(ctx context.Context) error {
 	// Determine architecture from runtime.
 	runtimeArch := system.RunQuietOutput("uname", "-m")
-	goarch := "amd64"
+	goarch := ""
 	switch {
+	case strings.Contains(runtimeArch, "x86_64"), strings.Contains(runtimeArch, "amd64"):
+		goarch = "amd64"
 	case strings.Contains(runtimeArch, "aarch64"), strings.Contains(runtimeArch, "arm64"):
 		goarch = "arm64"
 	}

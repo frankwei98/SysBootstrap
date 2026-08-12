@@ -284,6 +284,25 @@ func TestFail2banSSHDJailMatchesConfig(t *testing.T) {
 	}
 }
 
+func TestFail2banSSHDJailMatchesConfigDoesNotUsePortSubstring(t *testing.T) {
+	origPath := fail2banManagedJailPath
+	tmpFile := filepath.Join(t.TempDir(), "jail.d", "99-sys-bootstrap.local")
+	fail2banManagedJailPath = tmpFile
+	t.Cleanup(func() { fail2banManagedJailPath = origPath })
+
+	if err := os.MkdirAll(filepath.Dir(tmpFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "[sshd]\nenabled = true\nport = 22122\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\nbackend = systemd\nignoreip = 127.0.0.1/8 ::1\n"
+	if err := os.WriteFile(tmpFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, _ := fail2banSSHDJailMatchesConfig(&types.Config{SSHPort: 22})
+	if ok {
+		t.Fatal("port 22122 must not satisfy target port 22")
+	}
+}
+
 func TestFail2banRunInstallsWritesAndValidates(t *testing.T) {
 	origPath := os.Getenv("PATH")
 	origJailPath := fail2banManagedJailPath

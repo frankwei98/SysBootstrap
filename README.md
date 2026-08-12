@@ -113,7 +113,7 @@ You run the installer
   -> It checks OS / arch and installs minimal download dependencies if needed
   -> It asks for language, region, run mode, and APT mirror
   -> It downloads the matching release binary
-  -> It verifies SHA256 when available, or asks before continuing without it
+  -> It requires and verifies the release SHA256 before installing or running
   -> You choose temporary run or install to /usr/local/bin
   -> sys-bootstrap runs doctor
   -> You enter provisioning or settings

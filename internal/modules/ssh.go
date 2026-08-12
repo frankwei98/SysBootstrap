@@ -110,6 +110,9 @@ func (m *SSHModule) Check(ctx context.Context, sys *system.Context, cfg *types.C
 }
 
 func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
+	if cfg == nil {
+		return nil, nil
+	}
 	port := cfg.SSHPort
 	if port == 0 {
 		port = DefaultSSHPort
@@ -232,8 +235,11 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 		if strings.TrimSpace(cfg.SSHPublicKey) == "" {
 			return fmt.Errorf("SSH key installation was requested but no public key was provided")
 		}
+		if err := captureAuthorizedKeysSnapshot(journal, sys); err != nil {
+			return fmt.Errorf("cannot capture authorized_keys state: %w", err)
+		}
 		if err := m.writeAuthorizedKeys(ctx, sys, cfg, log); err != nil {
-			return err
+			return joinSSHRollbackError(err, restoreAuthorizedKeysSnapshot(journal))
 		}
 	}
 
@@ -575,25 +581,48 @@ func syncExistingFail2banSSHDPort(ctx context.Context, port int, log *logging.Lo
 		}
 		return fmt.Errorf("failed to read %s: %w", fail2banManagedJailPath, err)
 	}
+	if err := system.RejectSymlinkPath(fail2banManagedJailPath); err != nil {
+		return fmt.Errorf("refusing to update fail2ban jail: %w", err)
+	}
+	info, err := os.Lstat(fail2banManagedJailPath)
+	if err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
+		return fmt.Errorf("refusing to update %s: %w", fail2banManagedJailPath, err)
+	}
 
 	updated, changed := rewriteFail2banSSHDPort(string(content), port)
 	if !changed {
 		return nil
 	}
+	serviceWasActive := fail2banServiceEnabled()
 
 	log.Infof("Syncing fail2ban sshd jail to port %d...", port)
-	if err := os.WriteFile(fail2banManagedJailPath, []byte(updated), 0o644); err != nil {
+	if err := writeFail2banContentAtomically(fail2banManagedJailPath, []byte(updated), info.Mode()); err != nil {
 		return fmt.Errorf("failed to update %s: %w", fail2banManagedJailPath, err)
 	}
-	if err := validateFail2banConfig("fail2ban configuration validation failed after SSH port change"); err != nil {
-		return err
+	restore := func(cause error) error {
+		if restoreErr := writeFail2banContentAtomically(fail2banManagedJailPath, content, info.Mode()); restoreErr != nil {
+			return fmt.Errorf("%w; failed to restore previous fail2ban jail: %v", cause, restoreErr)
+		}
+		if serviceWasActive {
+			if res, restartErr := system.Run("systemctl", "restart", "fail2ban"); restartErr != nil || res == nil || res.ExitCode != 0 {
+				restartFailure := system.FormatCommandError("failed to restart fail2ban with restored configuration", res, restartErr)
+				return fmt.Errorf("%w; %v", cause, restartFailure)
+			}
+		}
+		return cause
 	}
-	if fail2banServiceEnabled() {
+	if err := validateFail2banConfig("fail2ban configuration validation failed after SSH port change"); err != nil {
+		return restore(err)
+	}
+	if serviceWasActive {
 		if res, err := system.Run("systemctl", "restart", "fail2ban"); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError("failed to restart fail2ban after SSH port change", res, err)
+			return restore(system.FormatCommandError("failed to restart fail2ban after SSH port change", res, err))
 		}
 		if err := validateFail2banConfig("fail2ban configuration validation failed after restart"); err != nil {
-			return err
+			return restore(err)
 		}
 	}
 	log.Successf("Fail2ban sshd jail synced to port %d", port)
@@ -702,14 +731,14 @@ func (m *SSHModule) computeAccessPaths(ctx context.Context, sys *system.Context,
 	}
 
 	seen := make(map[string]bool)
-	if username := system.TargetUsername(sys); username != "" {
+	if username := system.TargetUsername(sys); username != "" && !(cfg.SSHDisableRoot && username == "root") {
 		if candidate, err := verifiedAccessPath(ctx, username, port); err == nil {
 			candidates = append(candidates, candidate)
 			seen[username] = true
 		}
 	}
 
-	if cfg.NewUsername != "" && !seen[cfg.NewUsername] {
+	if cfg.NewUsername != "" && !(cfg.SSHDisableRoot && cfg.NewUsername == "root") && !seen[cfg.NewUsername] {
 		if candidate, err := verifiedAccessPath(ctx, cfg.NewUsername, port); err == nil {
 			candidates = append(candidates, candidate)
 		}
