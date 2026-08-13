@@ -1,14 +1,50 @@
 package modules
 
 import (
+	"context"
 	"errors"
 	"os"
+	osuser "os/user"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 const testAuthorizedKeyPayload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+
+func TestRunAuthorizedKeysHelperPreservesNotFoundIdentity(t *testing.T) {
+	sudoStub := filepath.Join(t.TempDir(), "sudo")
+	if err := os.WriteFile(sudoStub, []byte("#!/bin/sh\nprintf '%s\\n' '{\"error\":\"authorized_keys is missing\",\"not_found\":true}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalSudoPath := authorizedKeysSudoPathFn
+	authorizedKeysSudoPathFn = func() (string, error) { return sudoStub, nil }
+	t.Cleanup(func() { authorizedKeysSudoPathFn = originalSudoPath })
+
+	_, err := runAuthorizedKeysHelper(context.Background(), "alice", "/home/alice", "rollback", authorizedKeysHelperRequest{})
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("helper error = %v, want os.ErrNotExist identity", err)
+	}
+}
+
+func TestPreflightAuthorizedKeysForUserRequiresSudo(t *testing.T) {
+	originalLookup := lookupUser
+	originalSudoPath := authorizedKeysSudoPathFn
+	lookupUser = func(string) (*osuser.User, error) {
+		return &osuser.User{Username: "alice", Uid: "1000"}, nil
+	}
+	authorizedKeysSudoPathFn = func() (string, error) {
+		return "", errors.New("sudo not installed")
+	}
+	t.Cleanup(func() {
+		lookupUser = originalLookup
+		authorizedKeysSudoPathFn = originalSudoPath
+	})
+
+	if err := preflightAuthorizedKeysForUser("alice"); err == nil {
+		t.Fatal("expected missing sudo to fail before user mutation")
+	}
+}
 
 func TestAppendAuthorizedKeyLinesDoesNotFollowSymlink(t *testing.T) {
 	root := t.TempDir()
