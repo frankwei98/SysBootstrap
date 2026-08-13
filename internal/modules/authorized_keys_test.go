@@ -401,6 +401,17 @@ func TestBuildAuthorizedKeysContentDoesNotBypassExistingOptions(t *testing.T) {
 	}
 }
 
+func TestBuildAuthorizedKeysContentDoesNotTreatCAAsLoginKey(t *testing.T) {
+	const payload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+	existing := []string{"cert-authority ssh-ed25519 " + payload + " user-ca"}
+	requested := []string{"ssh-ed25519 " + payload + " direct-login"}
+
+	result := buildAuthorizedKeysContent(existing, requested)
+	if strings.Count(result, payload) != 2 {
+		t.Fatalf("CA entry incorrectly suppressed the direct login key: %q", result)
+	}
+}
+
 func TestSelectAuthorizedKeySkipsCommentsAndParsesOptions(t *testing.T) {
 	const payload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
 	content := []byte("# operator note\n\n" +
@@ -426,6 +437,15 @@ func TestSelectAuthorizedKeyPrefersRequestedKey(t *testing.T) {
 	}
 	if got != "ssh-ed25519 "+requested {
 		t.Fatalf("selected key = %q, want requested key", got)
+	}
+}
+
+func TestSelectAuthorizedKeyRejectsCAAsDirectLoginKey(t *testing.T) {
+	const payload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+	content := []byte("cert-authority ssh-ed25519 " + payload + " user-ca\n")
+
+	if got, err := selectAuthorizedKey(content, "ssh-ed25519 "+payload+" direct-login"); err == nil {
+		t.Fatalf("CA entry selected as a direct login key: %q", got)
 	}
 }
 
