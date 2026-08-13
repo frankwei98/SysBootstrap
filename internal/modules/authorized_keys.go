@@ -274,6 +274,26 @@ func appendAuthorizedKeyLinesOnceWithOps(path string, keys []string, ops authori
 		return nil, false, fmt.Errorf("acquire exclusive write lease on %s: %w", path, err)
 	}
 	defer ops.releaseLease(f) //nolint:errcheck
+	// A non-cooperating writer may have appended between the initial path
+	// inspection and lease acquisition. Snapshot both identity and length only
+	// after the lease excludes any further opens.
+	info, err = f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
+		return nil, false, fmt.Errorf("cannot safely use %s after lease: %w", path, err)
+	}
+	same, err = pathReferencesOpenFile(path, info)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	if !same {
+		return nil, true, nil
+	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, false, err
 	}
