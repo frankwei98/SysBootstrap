@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,24 @@ var githubUsernameRegex = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[
 const authorizedKeysMaxRetries = 8
 
 const authorizedKeysHelperEnv = "SYS_BOOTSTRAP_AUTHORIZED_KEYS_HELPER"
+
+type authorizedKeysFileOps struct {
+	acquireLease func(*os.File) error
+	releaseLease func(*os.File) error
+	write        func(*os.File, string) (int, error)
+	sync         func(*os.File) error
+	truncate     func(*os.File, int64) error
+}
+
+var defaultAuthorizedKeysFileOps = authorizedKeysFileOps{
+	acquireLease: acquireAuthorizedKeysWriteLease,
+	releaseLease: releaseAuthorizedKeysWriteLease,
+	write: func(f *os.File, payload string) (int, error) {
+		return f.WriteString(payload)
+	},
+	sync:     func(f *os.File) error { return f.Sync() },
+	truncate: func(f *os.File, size int64) error { return f.Truncate(size) },
+}
 
 type authorizedKeysHelperRequest struct {
 	Home string   `json:"home"`
@@ -218,6 +237,10 @@ func ensureAuthorizedKeysFileLocal(home, dir, file string) error {
 }
 
 func appendAuthorizedKeyLinesOnce(path string, keys []string) ([]string, bool, error) {
+	return appendAuthorizedKeyLinesOnceWithOps(path, keys, defaultAuthorizedKeysFileOps)
+}
+
+func appendAuthorizedKeyLinesOnceWithOps(path string, keys []string, ops authorizedKeysFileOps) ([]string, bool, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, false, err
@@ -247,6 +270,10 @@ func appendAuthorizedKeyLinesOnce(path string, keys []string) ([]string, bool, e
 	if !same {
 		return nil, true, nil
 	}
+	if err := ops.acquireLease(f); err != nil {
+		return nil, false, fmt.Errorf("acquire exclusive write lease on %s: %w", path, err)
+	}
+	defer ops.releaseLease(f) //nolint:errcheck
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, false, err
 	}
@@ -274,11 +301,8 @@ func appendAuthorizedKeyLinesOnce(path string, keys []string) ([]string, bool, e
 		return nil, !same, nil
 	}
 	payload := "\n" + strings.Join(added, "\n") + "\n"
-	if _, err := f.WriteString(payload); err != nil {
-		return added, false, fmt.Errorf("append keys to %s: %w", path, err)
-	}
-	if err := f.Sync(); err != nil {
-		return added, false, fmt.Errorf("sync %s: %w", path, err)
+	if err := appendAuthorizedKeysPayload(f, path, info.Size(), payload, ops); err != nil {
+		return nil, false, fmt.Errorf("append keys to %s: %w", path, err)
 	}
 	same, err = pathReferencesOpenFile(path, info)
 	if err != nil {
@@ -291,6 +315,39 @@ func appendAuthorizedKeyLinesOnce(path string, keys []string) ([]string, bool, e
 		return added, true, nil
 	}
 	return added, false, nil
+}
+
+// appendAuthorizedKeysPayload restores the original file length when the
+// append or its durability sync fails. On Linux, the caller holds a kernel
+// write lease, so even writers that ignore flock cannot open the file between
+// the failed append and its restoration.
+func appendAuthorizedKeysPayload(f *os.File, path string, originalSize int64, payload string, ops authorizedKeysFileOps) error {
+	written, appendErr := ops.write(f, payload)
+	if appendErr == nil && written != len(payload) {
+		appendErr = io.ErrShortWrite
+	}
+	if appendErr == nil {
+		appendErr = ops.sync(f)
+	}
+	if appendErr == nil {
+		return nil
+	}
+
+	restoreErr := restoreFailedAuthorizedKeysAppend(f, path, originalSize, written, ops)
+	return errors.Join(appendErr, restoreErr)
+}
+
+func restoreFailedAuthorizedKeysAppend(f *os.File, path string, originalSize int64, written int, ops authorizedKeysFileOps) error {
+	if written < 0 {
+		return fmt.Errorf("cannot restore %s after writer returned a negative byte count", path)
+	}
+	if err := ops.truncate(f, originalSize); err != nil {
+		return fmt.Errorf("restore %s after failed append: %w", path, err)
+	}
+	if err := ops.sync(f); err != nil {
+		return fmt.Errorf("sync restored %s: %w", path, err)
+	}
+	return nil
 }
 
 func pathReferencesOpenFile(path string, openInfo os.FileInfo) (bool, error) {

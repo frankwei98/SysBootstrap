@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,97 @@ func TestAppendAuthorizedKeyLinesReturnsOnlyActualAdditions(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(content), existing) || strings.Count(string(content), testAuthorizedKeyPayload) != 1 {
 		t.Fatalf("existing content was not preserved/deduplicated: %q", content)
+	}
+}
+
+func TestAppendAuthorizedKeyLinesRestoresFileAfterPartialWrite(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	original := []byte("# keep exactly\n")
+	if err := os.WriteFile(keyFile, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := defaultAuthorizedKeysFileOps
+	ops.write = func(f *os.File, payload string) (int, error) {
+		n, err := f.WriteString(payload[:len(payload)/2])
+		if err != nil {
+			return n, err
+		}
+		return n, errors.New("injected write failure")
+	}
+
+	if added, _, err := appendAuthorizedKeyLinesOnceWithOps(keyFile, []string{"ssh-ed25519 " + testAuthorizedKeyPayload}, ops); err == nil {
+		t.Fatal("partial write should fail")
+	} else if len(added) != 0 {
+		t.Fatalf("failed append attributed keys for rollback: %v", added)
+	}
+	got, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("failed append changed authorized_keys: %q", got)
+	}
+}
+
+func TestAppendAuthorizedKeyLinesRestoresFileAfterSyncFailure(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	original := []byte("# keep exactly\n")
+	if err := os.WriteFile(keyFile, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := defaultAuthorizedKeysFileOps
+	syncCalls := 0
+	ops.sync = func(f *os.File) error {
+		syncCalls++
+		if syncCalls == 1 {
+			return errors.New("injected sync failure")
+		}
+		return f.Sync()
+	}
+
+	if added, _, err := appendAuthorizedKeyLinesOnceWithOps(keyFile, []string{"ssh-ed25519 " + testAuthorizedKeyPayload}, ops); err == nil {
+		t.Fatal("sync failure should fail")
+	} else if len(added) != 0 {
+		t.Fatalf("failed append attributed keys for rollback: %v", added)
+	}
+	got, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("failed sync changed authorized_keys: %q", got)
+	}
+}
+
+func TestAppendAuthorizedKeyLinesFailsBeforeWriteWithoutLease(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	original := []byte("# keep exactly\n")
+	if err := os.WriteFile(keyFile, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := defaultAuthorizedKeysFileOps
+	ops.acquireLease = func(*os.File) error { return errors.New("lease unavailable") }
+	writeCalled := false
+	ops.write = func(*os.File, string) (int, error) {
+		writeCalled = true
+		return 0, nil
+	}
+
+	if _, _, err := appendAuthorizedKeyLinesOnceWithOps(keyFile, []string{"ssh-ed25519 " + testAuthorizedKeyPayload}, ops); err == nil {
+		t.Fatal("missing write lease should fail")
+	}
+	if writeCalled {
+		t.Fatal("append attempted a write without the lease")
+	}
+	got, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("lease failure changed authorized_keys: %q", got)
 	}
 }
 
