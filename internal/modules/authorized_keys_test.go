@@ -192,6 +192,32 @@ func TestAppendAuthorizedKeyLinesFailsBeforeWriteWithoutLease(t *testing.T) {
 	}
 }
 
+func TestRollbackAuthorizedKeyLinesFailsBeforeWriteWithoutLease(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	line := "ssh-ed25519 " + testAuthorizedKeyPayload + " transaction"
+	original := []byte(line + "\n")
+	if err := os.WriteFile(keyFile, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := defaultAuthorizedKeysFileOps
+	ops.acquireLease = func(*os.File) error { return errors.New("lease unavailable") }
+	changed, _, err := rollbackAuthorizedKeyLinesOnceWithOps(keyFile, map[string]int{line: 1}, ops)
+	if err == nil {
+		t.Fatal("missing write lease should fail")
+	}
+	if changed {
+		t.Fatal("rollback reported a change without the lease")
+	}
+	got, readErr := os.ReadFile(keyFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("lease failure changed authorized_keys: %q", got)
+	}
+}
+
 func TestEnsureAuthorizedKeysFileLocalTightensPermissions(t *testing.T) {
 	home := t.TempDir()
 	sshDir := filepath.Join(home, ".ssh")
