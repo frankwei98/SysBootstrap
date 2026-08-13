@@ -87,6 +87,11 @@ func (m *UserModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 	if !ValidateLinuxUsername(cfg.NewUsername) {
 		return nil, fmt.Errorf("invalid username %q: use 1-32 lowercase letters, digits, hyphens, or underscores, starting with a letter", cfg.NewUsername)
 	}
+	if cfg.UserAddKey {
+		if err := preflightAuthorizedKeysForUser(cfg.NewUsername); err != nil {
+			return nil, err
+		}
+	}
 
 	state, err := inspectUserStateFn(cfg.NewUsername)
 	if err != nil {
@@ -161,6 +166,11 @@ func (m *UserModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 	}
 	if !ValidateLinuxUsername(username) {
 		return fmt.Errorf("invalid username %q: use 1-32 lowercase letters, digits, hyphens, or underscores, starting with a letter", username)
+	}
+	if cfg.UserAddKey {
+		if err := preflightAuthorizedKeysForUser(username); err != nil {
+			return err
+		}
 	}
 	shell := desiredUserShell(cfg)
 	if !loginShellAvailableFn(shell) {
