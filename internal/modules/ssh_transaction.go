@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
@@ -30,6 +32,8 @@ type sshTransactionJournal struct {
 	hadDropIn   bool
 	dropInBytes []byte
 	dropInMode  os.FileMode
+	dropInUID   int
+	dropInGID   int
 
 	// Administrator-owned SSH config files whose legacy Port directives were
 	// disabled during finalization. Keep exact snapshots so a failed cutover
@@ -110,6 +114,8 @@ type sshConfigFileSnapshot struct {
 	path string
 	data []byte
 	mode os.FileMode
+	uid  int
+	gid  int
 }
 
 type sshReloadTarget struct {
@@ -154,14 +160,12 @@ func captureJournal() (*sshTransactionJournal, error) {
 	j := &sshTransactionJournal{}
 
 	// Managed drop-in prior state
-	if data, err := os.ReadFile(managedSSHDropIn); err == nil {
+	if snapshot, err := readSSHConfigFileSnapshot(managedSSHDropIn); err == nil {
 		j.hadDropIn = true
-		j.dropInBytes = data
-		if info, err := os.Stat(managedSSHDropIn); err == nil {
-			j.dropInMode = info.Mode()
-		} else {
-			return nil, fmt.Errorf("cannot stat existing managed SSH drop-in: %w", err)
-		}
+		j.dropInBytes = snapshot.data
+		j.dropInMode = snapshot.mode
+		j.dropInUID = snapshot.uid
+		j.dropInGID = snapshot.gid
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("cannot read existing managed SSH drop-in: %w", err)
 	}
@@ -173,6 +177,32 @@ func captureJournal() (*sshTransactionJournal, error) {
 	}
 	j.oldPorts = ports
 	return j, nil
+}
+
+func readSSHConfigFileSnapshot(path string) (sshConfigFileSnapshot, error) {
+	f, info, err := system.OpenExistingFileNoFollow(path)
+	if err != nil {
+		return sshConfigFileSnapshot{}, err
+	}
+	data, readErr := io.ReadAll(f)
+	closeErr := f.Close()
+	if readErr != nil {
+		return sshConfigFileSnapshot{}, readErr
+	}
+	if closeErr != nil {
+		return sshConfigFileSnapshot{}, closeErr
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return sshConfigFileSnapshot{}, fmt.Errorf("cannot determine ownership metadata for %s", path)
+	}
+	return sshConfigFileSnapshot{
+		path: path,
+		data: append([]byte(nil), data...),
+		mode: info.Mode(),
+		uid:  int(stat.Uid),
+		gid:  int(stat.Gid),
+	}, nil
 }
 
 // sshdPreCheck verifies that the host's sshd_config is compatible with the
@@ -771,24 +801,16 @@ func disableLegacyPortDirectives(configPath string, managedPort int, j *sshTrans
 		if err := system.RejectSymlinkPath(path); err != nil {
 			return nil, fmt.Errorf("refusing unsafe SSH config path %s: %w", path, err)
 		}
-		data, readErr := os.ReadFile(path)
+		snapshot, readErr := readSSHConfigFileSnapshot(path)
 		if readErr != nil {
 			return nil, readErr
 		}
-		updated, ports := commentLegacyPortDirectives(string(data), managedPort)
+		updated, ports := commentLegacyPortDirectives(string(snapshot.data), managedPort)
 		if len(ports) == 0 {
 			continue
 		}
-		info, statErr := os.Stat(path)
-		if statErr != nil {
-			return nil, statErr
-		}
-		j.legacyPortFiles = append(j.legacyPortFiles, sshConfigFileSnapshot{
-			path: path,
-			data: append([]byte(nil), data...),
-			mode: info.Mode(),
-		})
-		if writeErr := system.WriteFileAtomically(path, []byte(updated), info.Mode()); writeErr != nil {
+		j.legacyPortFiles = append(j.legacyPortFiles, snapshot)
+		if writeErr := system.WriteFileAtomicallyWithOwner(path, []byte(updated), snapshot.mode, snapshot.uid, snapshot.gid); writeErr != nil {
 			return nil, writeErr
 		}
 		for _, port := range ports {
@@ -840,7 +862,7 @@ func rollbackPrepare(ctx context.Context, j *sshTransactionJournal) error {
 	var rollbackErrs []error
 	// Restore managed drop-in
 	if j.hadDropIn {
-		if err := system.WriteFileAtomically(managedSSHDropIn, j.dropInBytes, j.dropInMode); err != nil {
+		if err := system.WriteFileAtomicallyWithOwner(managedSSHDropIn, j.dropInBytes, j.dropInMode, j.dropInUID, j.dropInGID); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore managed sshd config: %w", err))
 		}
 	} else {
@@ -849,7 +871,7 @@ func rollbackPrepare(ctx context.Context, j *sshTransactionJournal) error {
 		}
 	}
 	for _, snapshot := range j.legacyPortFiles {
-		if err := system.WriteFileAtomically(snapshot.path, snapshot.data, snapshot.mode); err != nil {
+		if err := system.WriteFileAtomicallyWithOwner(snapshot.path, snapshot.data, snapshot.mode, snapshot.uid, snapshot.gid); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore SSH config %s: %w", snapshot.path, err))
 		}
 	}
