@@ -147,6 +147,39 @@ func TestSaveUser_EmptyFieldsOmitted(t *testing.T) {
 	}
 }
 
+func TestSaveUserDelegatesSudoWriteBeforeTouchingPath(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "must-not-be-created", "config.env")
+	originalPath := UserConfigPath
+	UserConfigPath = func() string { return configPath }
+	t.Cleanup(func() { UserConfigPath = originalPath })
+
+	originalEUID := settingsEffectiveUID
+	settingsEffectiveUID = func() int { return 0 }
+	t.Cleanup(func() { settingsEffectiveUID = originalEUID })
+	t.Setenv("SUDO_USER", "alice")
+
+	originalDelegate := saveUserAsInvokingUser
+	delegated := false
+	saveUserAsInvokingUser = func(s Settings) error {
+		delegated = true
+		if s.Lang != "en" || s.AptMirror != "cernet" {
+			t.Fatalf("delegated settings = %#v", s)
+		}
+		return nil
+	}
+	t.Cleanup(func() { saveUserAsInvokingUser = originalDelegate })
+
+	if err := SaveUser(Settings{Lang: "en", AptMirror: "cernet"}); err != nil {
+		t.Fatalf("SaveUser failed: %v", err)
+	}
+	if !delegated {
+		t.Fatal("sudo user write was not delegated")
+	}
+	if _, err := os.Lstat(filepath.Dir(configPath)); !os.IsNotExist(err) {
+		t.Fatalf("privileged parent touched user path before delegation: %v", err)
+	}
+}
+
 func TestUserHomeDirUsesSudoUser(t *testing.T) {
 	current, err := user.Current()
 	if err != nil {

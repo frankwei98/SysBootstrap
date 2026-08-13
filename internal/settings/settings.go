@@ -2,11 +2,16 @@ package settings
 
 import (
 	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 )
@@ -19,7 +24,42 @@ const (
 
 	ValAptCernet  = "cernet"
 	ValAptDefault = "default"
+
+	settingsUserHelperEnv = "SYS_BOOTSTRAP_SETTINGS_USER_HELPER"
 )
+
+var (
+	settingsEffectiveUID   = os.Geteuid
+	saveUserAsInvokingUser = runUserSettingsHelper
+)
+
+type settingsHelperResponse struct {
+	Error string `json:"error,omitempty"`
+}
+
+func init() {
+	if os.Getenv(settingsUserHelperEnv) == "" {
+		return
+	}
+	response := settingsHelperResponse{}
+	if os.Geteuid() == 0 {
+		response.Error = "settings user helper refuses to run with root privileges"
+	} else {
+		var s Settings
+		if err := json.NewDecoder(os.Stdin).Decode(&s); err != nil {
+			response.Error = fmt.Sprintf("decode settings helper request: %v", err)
+		} else if current, err := user.Current(); err != nil || current.HomeDir == "" {
+			response.Error = fmt.Sprintf("resolve settings helper user: %v", err)
+		} else {
+			path := filepath.Join(current.HomeDir, ".config", "sys-bootstrap", "config.env")
+			if err := writeConfig(path, s, true); err != nil {
+				response.Error = err.Error()
+			}
+		}
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(response)
+	os.Exit(0)
+}
 
 // SystemConfigPath is the system-wide config file path. Overridable for tests.
 var SystemConfigPath = DefaultSystemConfigPath
@@ -74,11 +114,61 @@ func Load() Settings {
 
 // SaveUser writes settings to the user config file.
 func SaveUser(s Settings) error {
+	if settingsEffectiveUID() == 0 {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
+			return saveUserAsInvokingUser(s)
+		}
+	}
 	path := UserConfigPath()
 	if path == "" {
 		return fmt.Errorf("cannot determine user config path")
 	}
 	return writeConfig(path, s, true)
+}
+
+func runUserSettingsHelper(s Settings) error {
+	username := os.Getenv("SUDO_USER")
+	if username == "" || username == "root" {
+		return fmt.Errorf("cannot determine non-root invoking user")
+	}
+	invoker, err := user.Lookup(username)
+	if err != nil {
+		return fmt.Errorf("cannot resolve invoking user %q: %w", username, err)
+	}
+	if invoker.Uid == "0" || invoker.HomeDir == "" {
+		return fmt.Errorf("refusing invalid invoking user %q", username)
+	}
+	payload, err := json.Marshal(s)
+	if err != nil {
+		return fmt.Errorf("encode user settings: %w", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate current executable: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/bin/sudo", "-n", "-H", "-u", username, "--",
+		"/usr/bin/env", "-i", "HOME="+invoker.HomeDir, "USER="+username, "LOGNAME="+username,
+		settingsUserHelperEnv+"=1", executable)
+	cmd.Stdin = bytes.NewReader(payload)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("user settings helper timed out: %w", ctx.Err())
+		}
+		return fmt.Errorf("user settings helper failed: %w (%s)", err, strings.TrimSpace(stderr.String()))
+	}
+	var response settingsHelperResponse
+	if err := json.NewDecoder(&stdout).Decode(&response); err != nil {
+		return fmt.Errorf("decode user settings helper response: %w", err)
+	}
+	if response.Error != "" {
+		return fmt.Errorf("user settings helper: %s", response.Error)
+	}
+	return nil
 }
 
 // SaveSystem writes settings to the system config file.
