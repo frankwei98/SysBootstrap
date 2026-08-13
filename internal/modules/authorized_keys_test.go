@@ -2,32 +2,24 @@ package modules
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestAuthorizedKeysWriteDoesNotFollowPredictableTempSymlink(t *testing.T) {
+func TestAppendAuthorizedKeyLinesDoesNotFollowSymlink(t *testing.T) {
 	root := t.TempDir()
-	sshDir := filepath.Join(root, ".ssh")
-	keyFile := filepath.Join(sshDir, "authorized_keys")
 	victim := filepath.Join(root, "victim")
 	if err := os.WriteFile(victim, []byte("keep me\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	keyFile := filepath.Join(root, "authorized_keys")
+	if err := os.Symlink(victim, keyFile); err != nil {
+		t.Fatal(err)
+	}
 
-	attackSetup := `
-dir=$1; file=$2; victim=$3
-mkdir -p -- "$dir"
-ln -s -- "$victim" "${file}.tmp.$$"
-`
-	portableScript := strings.ReplaceAll(writeAuthKeysAsUserScript, "chmod 700 --", "chmod 700")
-	portableScript = strings.ReplaceAll(portableScript, "chmod 600 --", "chmod 600")
-	cmd := exec.Command("sh", "-e", "-c", attackSetup+portableScript, "--", sshDir, keyFile, victim)
-	cmd.Stdin = strings.NewReader("new key material\n")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("authorized_keys writer failed: %v (%s)", err, output)
+	if _, _, err := appendAuthorizedKeyLinesOnce(keyFile, []string{"ssh-ed25519 AAAA-new"}); err == nil {
+		t.Fatal("symlink destination should be rejected")
 	}
 
 	victimContent, err := os.ReadFile(victim)
@@ -37,12 +29,67 @@ ln -s -- "$victim" "${file}.tmp.$$"
 	if string(victimContent) != "keep me\n" {
 		t.Fatalf("predictable temporary path overwrote another file: %q", victimContent)
 	}
-	keyContent, err := os.ReadFile(keyFile)
+}
+
+func TestAppendAuthorizedKeyLinesReturnsOnlyActualAdditions(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	existing := "# keep\nssh-ed25519 AAAA-existing owner\n"
+	if err := os.WriteFile(keyFile, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	added, retry, err := appendAuthorizedKeyLinesOnce(keyFile, []string{
+		"ssh-ed25519 AAAA-existing duplicate",
+		"ssh-rsa AAAA-new owner",
+	})
+	if err != nil || retry {
+		t.Fatalf("append = (%v, retry=%t, %v)", added, retry, err)
+	}
+	if len(added) != 1 || added[0] != "ssh-rsa AAAA-new owner" {
+		t.Fatalf("actual additions = %v", added)
+	}
+	content, err := os.ReadFile(keyFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(keyContent) != "new key material\n" {
-		t.Fatalf("authorized_keys content = %q", keyContent)
+	if !strings.HasPrefix(string(content), existing) || strings.Count(string(content), "AAAA-existing") != 1 {
+		t.Fatalf("existing content was not preserved/deduplicated: %q", content)
+	}
+}
+
+func TestEnsureAuthorizedKeysFileLocalTightensPermissions(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	keyFile := filepath.Join(sshDir, "authorized_keys")
+	if err := os.Mkdir(sshDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, []byte("# keep\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sshDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(keyFile, 0o666); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureAuthorizedKeysFileLocal(home, sshDir, keyFile); err != nil {
+		t.Fatalf("ensure authorized_keys: %v", err)
+	}
+	dirInfo, err := os.Stat(sshDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileInfo, err := os.Stat(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf(".ssh mode = %o, want 700", got)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("authorized_keys mode = %o, want 600", got)
 	}
 }
 

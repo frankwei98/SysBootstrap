@@ -642,21 +642,21 @@ func UninstallCmd(args []string) error {
 	plan := app.BuildUninstallPlan(items, info.HomeDir)
 
 	if flags.DryRun {
+		if err := app.ValidateUninstallPlan(plan, info.HomeDir); err != nil {
+			return err
+		}
 		fmt.Println(i18n.T("uninstall_dry_run_header"))
 		fmt.Println()
 		app.PrintUninstallPlan(plan)
 		fmt.Println()
-		// Show what rc cleanup would do (non-quiet logger for visibility)
-		itemIDs := make([]string, len(items))
-		for i, item := range items {
-			itemIDs[i] = item.ID
-		}
+		// Execute the same read-only validation and preview path used by the
+		// actual uninstaller so dry-run cannot promise an unsafe deletion.
 		log, err := logging.New(false)
 		if err != nil {
 			return fmt.Errorf("logger init failed: %w", err)
 		}
 		defer log.Close()
-		if _, err := app.CleanShellRC(plan.RCFiles, itemIDs, true, log); err != nil {
+		if err := app.ExecuteUninstall(plan, info.HomeDir, true, log); err != nil {
 			return err
 		}
 		return nil
@@ -706,6 +706,9 @@ func UninstallCmd(args []string) error {
 		}
 	}
 	plan = app.BuildUninstallPlan(selectedItems, info.HomeDir)
+	if err := app.ValidateUninstallPlan(plan, info.HomeDir); err != nil {
+		return err
+	}
 
 	// Show plan and confirm (interactive only, unless --yes)
 	if isInteractiveTerminal() && !flags.Yes {

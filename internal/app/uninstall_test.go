@@ -921,6 +921,50 @@ func TestExecuteUninstall_DryRunDoesNotRemove(t *testing.T) {
 	}
 }
 
+func TestExecuteUninstall_DryRunRejectsUnsafePath(t *testing.T) {
+	home := t.TempDir()
+	plan := UninstallPlan{DirsToDelete: []string{"/tmp/outside-home"}}
+
+	err := ExecuteUninstall(plan, home, true, createTestLogger(t))
+	if err == nil || !strings.Contains(err.Error(), "unsafe uninstall path") {
+		t.Fatalf("dry-run error = %v, want unsafe path rejection", err)
+	}
+}
+
+func TestValidateUninstallPlanRejectsUnsafePathBeforePreview(t *testing.T) {
+	home := t.TempDir()
+	plan := UninstallPlan{DirsToDelete: []string{"/tmp/outside-home"}}
+
+	err := ValidateUninstallPlan(plan, home)
+	if err == nil || !strings.Contains(err.Error(), "unsafe uninstall path") {
+		t.Fatalf("validation error = %v, want unsafe path rejection", err)
+	}
+}
+
+func TestValidateUninstallPlanRejectsUnsafeRCBackupBeforePreview(t *testing.T) {
+	home := t.TempDir()
+	rcFile := filepath.Join(home, ".bashrc")
+	if err := os.WriteFile(rcFile, []byte("export NVM_DIR=\"$HOME/.nvm\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(home, "victim")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, rcFile+".bak.sys-bootstrap"); err != nil {
+		t.Fatal(err)
+	}
+	plan := UninstallPlan{
+		Items:   []UninstallItem{{ID: "nvm"}},
+		RCFiles: []string{rcFile},
+	}
+
+	err := ValidateUninstallPlan(plan, home)
+	if err == nil || !strings.Contains(err.Error(), "unsafe shell rc backup path") {
+		t.Fatalf("validation error = %v, want unsafe backup rejection", err)
+	}
+}
+
 func TestExecuteUninstall_SkipsUnsafePaths(t *testing.T) {
 	home := t.TempDir()
 	// Try to remove a path outside home — should be skipped

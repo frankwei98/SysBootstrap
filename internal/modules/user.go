@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -379,21 +380,10 @@ func (m *UserModule) writeSSHKey(ctx context.Context, username string, cfg *type
 		return fmt.Errorf("path rejected for %s: %w", username, err)
 	}
 
-	// Existing keys for deduplication
-	existingKeys, err := readExistingKeys(keyFile)
-	if err != nil {
-		return fmt.Errorf("cannot read existing keys for %s: %w", username, err)
-	}
-
-	content := buildAuthorizedKeysContent(existingKeys, validLines)
-
-	// Write atomically as the target user
-	if err := writeAuthorizedKeysAsUser(ctx, username, home, sshDir, keyFile, content); err != nil {
+	if _, err := addAuthorizedKeys(ctx, username, home, sshDir, keyFile, validLines); err != nil {
 		return fmt.Errorf("failed to write authorized_keys for %s: %w", username, err)
 	}
 
-	// Verify ownership (chown via sudo may not set correctly; double-check)
-	// The write runs as the target user via sudo, so ownership is correct.
 	log.Successf("SSH public key(s) written for %s", username)
 	return nil
 }
@@ -588,6 +578,10 @@ func passwordlessSudoEnabled(username string) bool {
 	path := sudoersFile(username)
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 || stat.Gid != 0 {
 		return false
 	}
 	content, err := os.ReadFile(path)

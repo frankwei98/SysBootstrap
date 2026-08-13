@@ -177,28 +177,8 @@ func writeConfig(path string, s Settings, userScoped bool) error {
 		fmt.Fprintf(&b, "apt_mirror=%s\n", s.AptMirror)
 	}
 
-	// Write to a unique temp file in the destination directory, then rename for
-	// atomicity. A fixed sibling name could be pre-planted as a symlink by the
-	// unprivileged invoking user before a sudo run.
-	tmpFile, err := os.CreateTemp(dir, ".sys-bootstrap-config-*")
-	if err != nil {
-		return fmt.Errorf("cannot create temporary config file in %s: %w", dir, err)
-	}
-	tmp := tmpFile.Name()
-	defer os.Remove(tmp)
-	if err := tmpFile.Chmod(0o644); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("cannot set config permissions: %w", err)
-	}
-	if _, err := tmpFile.WriteString(b.String()); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("cannot write config %s: %w", tmp, err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("cannot close config %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("cannot rename config %s -> %s: %w", tmp, path, err)
+	if err := system.WriteFileAtomically(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("cannot write config %s: %w", path, err)
 	}
 	if userScoped {
 		if err := system.ChownToInvokingUser(path); err != nil {

@@ -3,6 +3,7 @@ package modules
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,39 +13,295 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
 var githubUsernameRegex = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
 
-const writeAuthKeysAsUserScript = `set -e
-dir=$1; file=$2
-mkdir -p -- "$dir"
-chmod 700 -- "$dir"
-umask 077
-tmp=$(mktemp "${file}.tmp.XXXXXX")
-trap 'rm -f -- "$tmp"' EXIT
-cat > "$tmp"
-chmod 600 -- "$tmp"
-mv -f -- "$tmp" "$file"
-trap - EXIT
-`
+const authorizedKeysMaxRetries = 8
 
-// writeAuthorizedKeysAsUser atomically writes key content to the given file
-// as the specified target user (via sudo -n -H -u), creating directories as needed.
-// caller must pre-validate paths for symlink safety.
-func writeAuthorizedKeysAsUser(ctx context.Context, username, home, dir, file, content string) error {
+const authorizedKeysHelperEnv = "SYS_BOOTSTRAP_AUTHORIZED_KEYS_HELPER"
+
+type authorizedKeysHelperRequest struct {
+	Home string   `json:"home"`
+	Dir  string   `json:"dir"`
+	File string   `json:"file"`
+	Keys []string `json:"keys"`
+}
+
+type authorizedKeysHelperResponse struct {
+	Added   []string `json:"added,omitempty"`
+	Changed bool     `json:"changed,omitempty"`
+	Error   string   `json:"error,omitempty"`
+}
+
+func init() {
+	mode := os.Getenv(authorizedKeysHelperEnv)
+	if mode == "" {
+		return
+	}
+	response := authorizedKeysHelperResponse{}
+	if os.Geteuid() == 0 {
+		response.Error = "authorized_keys helper refuses to run with root privileges"
+	} else {
+		var request authorizedKeysHelperRequest
+		if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
+			response.Error = fmt.Sprintf("decode helper request: %v", err)
+		} else {
+			switch mode {
+			case "add":
+				var err error
+				response.Added, err = addAuthorizedKeysLocal(context.Background(), request.Home, request.Dir, request.File, request.Keys)
+				response.Error = errorText(err)
+			case "rollback":
+				var err error
+				response.Changed, err = rollbackAuthorizedKeyLines(request.File, request.Keys)
+				response.Error = errorText(err)
+			default:
+				response.Error = fmt.Sprintf("unknown authorized_keys helper mode %q", mode)
+			}
+		}
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(response)
+	os.Exit(0)
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// addAuthorizedKeys creates the user's SSH files if needed, then appends only
+// keys absent from the file opened under an exclusive lock. The returned keys
+// are the exact additions made to the inode still referenced by path.
+func addAuthorizedKeys(ctx context.Context, username, home, dir, file string, keys []string) ([]string, error) {
+	u, err := lookupUser(username)
+	if err != nil {
+		return nil, fmt.Errorf("cannot resolve user %s: %w", username, err)
+	}
+	if u.Uid == "0" {
+		return addAuthorizedKeysLocal(ctx, home, dir, file, keys)
+	}
+	response, err := runAuthorizedKeysHelper(ctx, username, home, "add", authorizedKeysHelperRequest{
+		Home: home,
+		Dir:  dir,
+		File: file,
+		Keys: keys,
+	})
+	return response.Added, err
+}
+
+func rollbackAuthorizedKeysForUser(ctx context.Context, username, home, file string, keys []string) (bool, error) {
+	u, err := lookupUser(username)
+	if err != nil {
+		return false, fmt.Errorf("cannot resolve user %s: %w", username, err)
+	}
+	if u.Uid == "0" {
+		return rollbackAuthorizedKeyLines(file, keys)
+	}
+	response, err := runAuthorizedKeysHelper(ctx, username, home, "rollback", authorizedKeysHelperRequest{
+		Home: home,
+		File: file,
+		Keys: keys,
+	})
+	return response.Changed, err
+}
+
+func addAuthorizedKeysLocal(ctx context.Context, home, dir, file string, keys []string) ([]string, error) {
+	wroteDetachedInode := false
+	for attempt := 0; attempt < authorizedKeysMaxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// A prior attempt may have observed a path replacement. Re-tighten the
+		// directory and file reached by the current path before every retry.
+		if err := ensureAuthorizedKeysFileLocal(home, dir, file); err != nil {
+			return nil, err
+		}
+		added, retry, err := appendAuthorizedKeyLinesOnce(file, keys)
+		if err != nil {
+			return added, err
+		}
+		if retry {
+			wroteDetachedInode = wroteDetachedInode || len(added) > 0
+			continue
+		}
+		if wroteDetachedInode && len(added) == 0 {
+			// The current inode already contains the key, but it may have been
+			// supplied independently or copied from a detached inode. Attribution
+			// is ambiguous, so fail without claiming it for rollback.
+			return nil, fmt.Errorf("authorized_keys inode changed after a write and the final key ownership is ambiguous")
+		}
+		return added, nil
+	}
+	return nil, fmt.Errorf("authorized_keys path changed repeatedly while adding keys")
+}
+
+func runAuthorizedKeysHelper(ctx context.Context, username, home, mode string, request authorizedKeysHelperRequest) (authorizedKeysHelperResponse, error) {
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return authorizedKeysHelperResponse{}, err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return authorizedKeysHelperResponse{}, fmt.Errorf("locate current executable: %w", err)
+	}
 	cmd := exec.CommandContext(ctx, "sudo", "-n", "-H", "-u", username,
 		"env", "HOME="+home, "USER="+username, "LOGNAME="+username,
-		"sh", "-e", "-c", writeAuthKeysAsUserScript, "--", dir, file)
-	cmd.Stdin = strings.NewReader(content)
-	var stderr bytes.Buffer
+		authorizedKeysHelperEnv+"="+mode, executable)
+	cmd.Stdin = bytes.NewReader(payload)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		return fmt.Errorf("failed to write authorized_keys as user %s: %w (stderr: %s)", username, err, detail)
+		return authorizedKeysHelperResponse{}, fmt.Errorf("authorized_keys helper failed: %w (%s)", err, strings.TrimSpace(stderr.String()))
+	}
+	var response authorizedKeysHelperResponse
+	if err := json.NewDecoder(&stdout).Decode(&response); err != nil {
+		return authorizedKeysHelperResponse{}, fmt.Errorf("decode authorized_keys helper response: %w", err)
+	}
+	if response.Error != "" {
+		return response, fmt.Errorf("%s", response.Error)
+	}
+	return response, nil
+}
+
+func ensureAuthorizedKeysFileLocal(home, dir, file string) error {
+	if err := rejectAuthorizedKeysFullPath(home, ".ssh/authorized_keys"); err != nil {
+		return err
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("create %s: %w", dir, err)
+		}
+	}
+	dirInfo, err := os.Lstat(dir)
+	if err != nil || !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+		if err == nil {
+			err = fmt.Errorf("not a real directory")
+		}
+		return fmt.Errorf("cannot safely use %s: %w", dir, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("set permissions on %s: %w", dir, err)
+	}
+
+	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("create %s: %w", file, err)
+		}
+		f, err = os.OpenFile(file, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
+		if err != nil {
+			return fmt.Errorf("open existing %s: %w", file, err)
+		}
+	}
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
+		return fmt.Errorf("cannot safely use %s: %w", file, err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("set permissions on %s: %w", file, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", file, err)
 	}
 	return nil
+}
+
+func appendAuthorizedKeyLinesOnce(path string, keys []string) ([]string, bool, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return nil, false, fmt.Errorf("lock %s: %w", path, err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
+		return nil, false, fmt.Errorf("cannot safely use %s: %w", path, err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		return nil, false, fmt.Errorf("set permissions on %s: %w", path, err)
+	}
+	same, err := pathReferencesOpenFile(path, info)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	if !same {
+		return nil, true, nil
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, false, err
+	}
+	content, err := io.ReadAll(f)
+	if err != nil {
+		return nil, false, err
+	}
+	existing := authorizedKeyLines(content)
+	var added []string
+	for _, key := range keys {
+		if containsKey(existing, key) {
+			continue
+		}
+		added = append(added, key)
+		existing = append(existing, key)
+	}
+	if len(added) == 0 {
+		same, err = pathReferencesOpenFile(path, info)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, true, nil
+			}
+			return nil, false, err
+		}
+		return nil, !same, nil
+	}
+	payload := "\n" + strings.Join(added, "\n") + "\n"
+	if _, err := f.WriteString(payload); err != nil {
+		return added, false, fmt.Errorf("append keys to %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		return added, false, fmt.Errorf("sync %s: %w", path, err)
+	}
+	same, err = pathReferencesOpenFile(path, info)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, true, nil
+		}
+		return added, false, err
+	}
+	if !same {
+		return added, true, nil
+	}
+	return added, false, nil
+}
+
+func pathReferencesOpenFile(path string, openInfo os.FileInfo) (bool, error) {
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() {
+		return false, fmt.Errorf("%s is not a regular non-symlink file", path)
+	}
+	return os.SameFile(openInfo, pathInfo), nil
 }
 
 // resolveHome returns the passwd-resolved home directory for username.
@@ -87,6 +344,14 @@ func rejectAuthorizedKeysFullPath(home, relPath string) error {
 // readExistingKeys reads authorized_keys lines from a file, returning
 // each non-empty, non-comment line as a trimmed string.
 func readExistingKeys(path string) ([]string, error) {
+	data, err := readAuthorizedKeysContent(path)
+	if err != nil {
+		return nil, err
+	}
+	return authorizedKeyLines(data), nil
+}
+
+func readAuthorizedKeysContent(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -94,6 +359,10 @@ func readExistingKeys(path string) ([]string, error) {
 		}
 		return nil, fmt.Errorf("cannot read %s: %w", path, err)
 	}
+	return data, nil
+}
+
+func authorizedKeyLines(data []byte) []string {
 	var keys []string
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -102,24 +371,135 @@ func readExistingKeys(path string) ([]string, error) {
 		}
 		keys = append(keys, line)
 	}
-	return keys, nil
+	return keys
 }
 
 // containsKey reports whether the key slice contains a line matching k,
 // comparing by (key type + base64 payload) ignoring trailing options/comments.
 func containsKey(keys []string, k string) bool {
-	keyFields := strings.Fields(k)
-	if len(keyFields) < 2 {
+	keyID := authorizedKeyID(k)
+	if keyID == "" {
 		return false
 	}
-	keyPayload := keyFields[0] + " " + keyFields[1]
 	for _, existing := range keys {
-		existingFields := strings.Fields(existing)
-		if len(existingFields) >= 2 && existingFields[0]+" "+existingFields[1] == keyPayload {
+		if authorizedKeyID(existing) == keyID {
 			return true
 		}
 	}
 	return false
+}
+
+func authorizedKeyID(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return ""
+	}
+	return fields[0] + " " + fields[1]
+}
+
+// rollbackAuthorizedKeyLines disables only keys installed by the current
+// transaction. It edits matching lines in place as equal-length comments,
+// rather than replacing the file, so unrelated and concurrently appended
+// content cannot be overwritten by rollback.
+func rollbackAuthorizedKeyLines(path string, keys []string) (bool, error) {
+	remove := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if id := authorizedKeyID(key); id != "" {
+			remove[id] = struct{}{}
+		}
+	}
+	if len(remove) == 0 {
+		return false, nil
+	}
+	for attempt := 0; attempt < authorizedKeysMaxRetries; attempt++ {
+		changed, retry, err := rollbackAuthorizedKeyLinesOnce(path, remove)
+		if err != nil {
+			return changed, err
+		}
+		if !retry {
+			return changed, nil
+		}
+	}
+	return false, fmt.Errorf("authorized_keys path changed repeatedly during rollback")
+}
+
+func rollbackAuthorizedKeyLinesOnce(path string, remove map[string]struct{}) (bool, bool, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return false, false, err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return false, false, fmt.Errorf("lock %s: %w", path, err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	info, err := f.Stat()
+	if err != nil {
+		return false, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, false, fmt.Errorf("%s is not a regular file", path)
+	}
+	same, err := pathReferencesOpenFile(path, info)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, true, nil
+		}
+		return false, false, err
+	}
+	if !same {
+		return false, true, nil
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return false, false, err
+	}
+	content, err := io.ReadAll(f)
+	if err != nil {
+		return false, false, err
+	}
+	offset := 0
+	changed := false
+	for _, segment := range strings.SplitAfter(string(content), "\n") {
+		line := strings.TrimSuffix(segment, "\n")
+		line = strings.TrimSuffix(line, "\r")
+		if _, found := remove[authorizedKeyID(line)]; found {
+			lineLength := len(segment)
+			if strings.HasSuffix(segment, "\n") {
+				lineLength--
+			}
+			original := []byte(segment[:lineLength])
+			current := make([]byte, lineLength)
+			if _, err := f.ReadAt(current, int64(offset)); err != nil {
+				return changed, false, fmt.Errorf("recheck key line in %s: %w", path, err)
+			}
+			if !bytes.Equal(current, original) {
+				return changed, false, fmt.Errorf("%s changed during authorized_keys rollback", path)
+			}
+			replacement := bytes.Repeat([]byte{' '}, lineLength)
+			replacement[0] = '#'
+			if _, err := f.WriteAt(replacement, int64(offset)); err != nil {
+				return changed, false, fmt.Errorf("neutralize key line in %s: %w", path, err)
+			}
+			changed = true
+		}
+		offset += len(segment)
+	}
+	if changed {
+		if err := f.Sync(); err != nil {
+			return true, false, fmt.Errorf("sync %s: %w", path, err)
+		}
+	}
+	same, err = pathReferencesOpenFile(path, info)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return changed, true, nil
+		}
+		return changed, false, err
+	}
+	if !same {
+		return changed, true, nil
+	}
+	return changed, false, nil
 }
 
 // validatedKeyLinesAndFingerprints validates every non-blank line in content

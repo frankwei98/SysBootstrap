@@ -456,7 +456,7 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 
 	// Write cleaned content atomically so a pre-existing symlink cannot redirect
 	// the privileged write to another file.
-	if err := writeFileAtomically(rcFile, []byte(strings.Join(lines, "\n")+"\n"), rcInfo.Mode()); err != nil {
+	if err := system.WriteFileAtomically(rcFile, []byte(strings.Join(lines, "\n")+"\n"), rcInfo.Mode()); err != nil {
 		return removed, fmt.Errorf("cannot write %s: %w", rcFile, err)
 	}
 	if err := system.ChownToInvokingUser(rcFile); err != nil {
@@ -466,9 +466,45 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	return removed, nil
 }
 
+// ValidateUninstallPlan performs every path-safety check that can reject an
+// uninstall before the plan is displayed or any package command is run.
+func ValidateUninstallPlan(plan UninstallPlan, homeDir string) error {
+	var failures []error
+	itemIDs := make([]string, len(plan.Items))
+	for i, item := range plan.Items {
+		itemIDs[i] = item.ID
+	}
+	for _, dir := range plan.DirsToDelete {
+		if err := ValidatePathSafety(dir, homeDir); err != nil {
+			failures = append(failures, fmt.Errorf("unsafe uninstall path %s: %w", dir, err))
+		}
+	}
+	for _, rcFile := range plan.RCFiles {
+		if err := ValidatePathSafety(rcFile, homeDir); err != nil {
+			failures = append(failures, fmt.Errorf("unsafe shell rc path %s: %w", rcFile, err))
+			continue
+		}
+		removed, err := CleanShellRC([]string{rcFile}, itemIDs, true, nil)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("cannot preview shell rc cleanup for %s: %w", rcFile, err))
+			continue
+		}
+		if removed > 0 {
+			backupPath := rcFile + ".bak.sys-bootstrap"
+			if err := ValidatePathSafety(backupPath, homeDir); err != nil {
+				failures = append(failures, fmt.Errorf("unsafe shell rc backup path %s: %w", backupPath, err))
+			}
+		}
+	}
+	return errors.Join(failures...)
+}
+
 // ExecuteUninstall performs the actual uninstallation.
 // If dryRun is true, only prints what would be done without making changes.
 func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logging.Logger) error {
+	if err := ValidateUninstallPlan(plan, homeDir); err != nil {
+		return err
+	}
 	var failures []error
 	// 1. Remove package manager packages
 	for _, item := range plan.Items {
@@ -505,13 +541,13 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 
 	// 2. Remove directories
 	for _, dir := range plan.DirsToDelete {
-		if dryRun {
-			log.Infof(i18n.T("uninstall_dry_run_dir"), dir)
-			continue
-		}
 		if err := ValidatePathSafety(dir, homeDir); err != nil {
 			log.Warnf(i18n.T("uninstall_path_unsafe"), dir, err)
 			failures = append(failures, fmt.Errorf("unsafe uninstall path %s: %w", dir, err))
+			continue
+		}
+		if dryRun {
+			log.Infof(i18n.T("uninstall_dry_run_dir"), dir)
 			continue
 		}
 		log.Infof(i18n.T("uninstall_removing_dir"), dir)
@@ -639,29 +675,4 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.Rename(tmp, dst)
-}
-
-func writeFileAtomically(path string, data []byte, mode os.FileMode) error {
-	if err := system.RejectSymlinkPath(path); err != nil {
-		return err
-	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".sys-bootstrap-write-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(mode.Perm()); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
 }

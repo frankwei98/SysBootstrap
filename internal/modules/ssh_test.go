@@ -844,8 +844,8 @@ exit 0
 echo "systemctl $*" >> "$SYSBOOTSTRAP_TEST_LOG"
 case "$1" in
   is-enabled)
-    echo "enabled"
-    exit 0
+	echo "disabled"
+	exit 1
     ;;
   is-active)
     echo "active"
@@ -892,6 +892,72 @@ exit 0
 	}
 	if !strings.Contains(text, "systemctl restart fail2ban") {
 		t.Fatalf("expected fail2ban restart, got:\n%s", text)
+	}
+}
+
+func TestRestoreAuthorizedKeysSnapshotPreservesConcurrentChanges(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	original := []byte("ssh-ed25519 AAAA-original\n")
+	written := []byte("ssh-ed25519 AAAA-original\nssh-ed25519 AAAA-added\n")
+	concurrent := append(append([]byte(nil), written...), []byte("ssh-ed25519 AAAA-concurrent\n")...)
+	if err := os.WriteFile(keyFile, concurrent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rollbackAuthorizedKeyLines(keyFile, []string{"ssh-ed25519 AAAA-added"}); err != nil {
+		t.Fatalf("restore failed: %v", err)
+	}
+	got, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(got), string(original)) || !strings.Contains(string(got), "ssh-ed25519 AAAA-concurrent\n") {
+		t.Fatalf("rollback did not preserve original and concurrent content: %q", got)
+	}
+	if strings.Contains(string(got), "ssh-ed25519 AAAA-added") {
+		t.Fatalf("rollback left the transaction key authorized: %q", got)
+	}
+}
+
+func TestRestoreAuthorizedKeysSnapshotRestoresUnchangedTransactionWrite(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	original := []byte("ssh-ed25519 AAAA-original\n")
+	written := []byte("ssh-ed25519 AAAA-original\nssh-ed25519 AAAA-added\n")
+	if err := os.WriteFile(keyFile, written, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rollbackAuthorizedKeyLines(keyFile, []string{"ssh-ed25519 AAAA-added"}); err != nil {
+		t.Fatalf("restore failed: %v", err)
+	}
+	got, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(got), string(original)) {
+		t.Fatalf("rollback changed original content: %q", got)
+	}
+	if strings.Contains(string(got), "ssh-ed25519 AAAA-added") {
+		t.Fatalf("rollback left the transaction key authorized: %q", got)
+	}
+}
+
+func TestRestoreAuthorizedKeysSnapshotKeepsConcurrentFileWhenOriginallyAbsent(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	current := []byte("# retained comment\nssh-ed25519 AAAA-added\nssh-ed25519 AAAA-concurrent\n")
+	if err := os.WriteFile(keyFile, current, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rollbackAuthorizedKeyLines(keyFile, []string{"ssh-ed25519 AAAA-added"}); err != nil {
+		t.Fatalf("restore failed: %v", err)
+	}
+	got, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "# retained comment\n") || !strings.Contains(string(got), "ssh-ed25519 AAAA-concurrent\n") {
+		t.Fatalf("rollback did not retain concurrent file content: %q", got)
+	}
+	if strings.Contains(string(got), "ssh-ed25519 AAAA-added") {
+		t.Fatalf("rollback left the transaction key authorized: %q", got)
 	}
 }
 
