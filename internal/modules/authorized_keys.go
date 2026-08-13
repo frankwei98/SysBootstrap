@@ -390,11 +390,95 @@ func containsKey(keys []string, k string) bool {
 }
 
 func authorizedKeyID(line string) string {
-	fields := strings.Fields(line)
-	if len(fields) < 2 {
+	key, ok := parseAuthorizedKeyLine(line)
+	if !ok {
 		return ""
 	}
-	return fields[0] + " " + fields[1]
+	return key
+}
+
+// parseAuthorizedKeyLine extracts the key type and base64 blob from either a
+// bare public key or an authorized_keys line with quoted options. Comments and
+// malformed entries are rejected. The returned value deliberately excludes
+// options and comments so identity comparisons cannot add an unrestricted
+// duplicate of an existing restricted key.
+func parseAuthorizedKeyLine(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", false
+	}
+	fields := splitAuthorizedKeyFields(line)
+	for i := 0; i+1 < len(fields); i++ {
+		keyType := fields[i]
+		if !supportedPublicKeyTypes[keyType] {
+			continue
+		}
+		candidate := keyType + " " + fields[i+1]
+		if ValidatePublicKey(candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func selectAuthorizedKey(content []byte, preferred string) (string, error) {
+	var keys []string
+	for _, line := range strings.Split(string(content), "\n") {
+		if key, ok := parseAuthorizedKeyLine(line); ok {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return "", fmt.Errorf("authorized_keys contains no valid public keys")
+	}
+	if strings.TrimSpace(preferred) == "" {
+		return keys[0], nil
+	}
+	preferredLines, err := validateKeyLines(preferred)
+	if err != nil {
+		return "", fmt.Errorf("preferred public key is invalid: %w", err)
+	}
+	for _, preferredLine := range preferredLines {
+		if containsKey(keys, preferredLine) {
+			return authorizedKeyID(preferredLine), nil
+		}
+	}
+	return "", fmt.Errorf("preferred public key is not present in authorized_keys")
+}
+
+func splitAuthorizedKeyFields(line string) []string {
+	var fields []string
+	start := -1
+	inQuotes := false
+	escaped := false
+	for i, r := range line {
+		if start < 0 {
+			if r == ' ' || r == '\t' {
+				continue
+			}
+			start = i
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' && inQuotes {
+			escaped = true
+			continue
+		}
+		if r == '"' {
+			inQuotes = !inQuotes
+			continue
+		}
+		if (r == ' ' || r == '\t') && !inQuotes {
+			fields = append(fields, line[start:i])
+			start = -1
+		}
+	}
+	if start >= 0 {
+		fields = append(fields, line[start:])
+	}
+	return fields
 }
 
 // rollbackAuthorizedKeyLines disables only keys installed by the current
@@ -551,17 +635,15 @@ func buildAuthorizedKeysContent(existing, newValid []string) string {
 	var b strings.Builder
 
 	for _, k := range existing {
-		keyFields := strings.Fields(k)
-		if len(keyFields) >= 2 {
-			seen[keyFields[0]+" "+keyFields[1]] = true
+		if id := authorizedKeyID(k); id != "" {
+			seen[id] = true
 		}
 		b.WriteString(k)
 		b.WriteString("\n")
 	}
 
 	for _, k := range newValid {
-		keyFields := strings.Fields(k)
-		if len(keyFields) >= 2 && seen[keyFields[0]+" "+keyFields[1]] {
+		if id := authorizedKeyID(k); id != "" && seen[id] {
 			continue
 		}
 		b.WriteString(k)
