@@ -490,6 +490,13 @@ func parseAuthorizedKeyLine(line string) (string, bool) {
 		if !validateAuthorizedKeyOptions(fields[0]) {
 			return "", false
 		}
+		// A cert-authority entry authorizes certificates signed by this key;
+		// it does not authorize possession of the CA private key as an ordinary
+		// public-key login. It therefore cannot satisfy direct-key desired state
+		// or serve as a replacement access path.
+		if authorizedKeyOptionsContain(fields[0], "cert-authority") {
+			return "", false
+		}
 		keyIndex = 1
 	}
 	if keyIndex+1 >= len(fields) || !supportedPublicKeyTypes[fields[keyIndex]] {
@@ -500,6 +507,20 @@ func parseAuthorizedKeyLine(line string) (string, bool) {
 		return candidate, true
 	}
 	return "", false
+}
+
+func authorizedKeyOptionsContain(raw, wanted string) bool {
+	options, ok := splitAuthorizedKeyOptions(raw)
+	if !ok {
+		return false
+	}
+	for _, option := range options {
+		name, _, _ := strings.Cut(option, "=")
+		if strings.EqualFold(name, wanted) {
+			return true
+		}
+	}
+	return false
 }
 
 var authorizedKeyFlagOptions = map[string]bool{
