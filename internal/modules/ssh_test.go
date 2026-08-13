@@ -968,6 +968,31 @@ func TestRestoreAuthorizedKeysSnapshotKeepsConcurrentFileWhenOriginallyAbsent(t 
 	}
 }
 
+func TestRollbackAuthorizedKeysPreservesConcurrentSamePayload(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	const payload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+	added := "ssh-ed25519 " + payload + " added-by-sys-bootstrap"
+	concurrent := "ssh-ed25519 " + payload + " concurrent-restriction"
+	content := added + "\n" + concurrent + "\n"
+	if err := os.WriteFile(keyFile, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := rollbackAuthorizedKeyLines(keyFile, []string{added}); err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+	got, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), added) {
+		t.Fatalf("transaction line remains authorized: %q", got)
+	}
+	if !strings.Contains(string(got), concurrent+"\n") {
+		t.Fatalf("concurrent same-payload line was removed: %q", got)
+	}
+}
+
 // --- U2: SSH two-phase transaction tests ---
 
 type sshRunTestEnvironment struct {

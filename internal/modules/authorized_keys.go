@@ -481,22 +481,27 @@ func splitAuthorizedKeyFields(line string) []string {
 	return fields
 }
 
-// rollbackAuthorizedKeyLines disables only keys installed by the current
-// transaction. It edits matching lines in place as equal-length comments,
-// rather than replacing the file, so unrelated and concurrently appended
-// content cannot be overwritten by rollback.
+// rollbackAuthorizedKeyLines disables only the exact lines installed by the
+// current transaction. It edits one matching occurrence per recorded line in
+// place as an equal-length comment, so another process can add the same public
+// key with different restrictions or comments without having its line removed.
 func rollbackAuthorizedKeyLines(path string, keys []string) (bool, error) {
-	remove := make(map[string]struct{}, len(keys))
+	remove := make(map[string]int, len(keys))
 	for _, key := range keys {
-		if id := authorizedKeyID(key); id != "" {
-			remove[id] = struct{}{}
+		line := strings.TrimSpace(key)
+		if _, ok := parseAuthorizedKeyLine(line); ok {
+			remove[line]++
 		}
 	}
 	if len(remove) == 0 {
 		return false, nil
 	}
 	for attempt := 0; attempt < authorizedKeysMaxRetries; attempt++ {
-		changed, retry, err := rollbackAuthorizedKeyLinesOnce(path, remove)
+		remaining := make(map[string]int, len(remove))
+		for line, count := range remove {
+			remaining[line] = count
+		}
+		changed, retry, err := rollbackAuthorizedKeyLinesOnce(path, remaining)
 		if err != nil {
 			return changed, err
 		}
@@ -507,7 +512,7 @@ func rollbackAuthorizedKeyLines(path string, keys []string) (bool, error) {
 	return false, fmt.Errorf("authorized_keys path changed repeatedly during rollback")
 }
 
-func rollbackAuthorizedKeyLinesOnce(path string, remove map[string]struct{}) (bool, bool, error) {
+func rollbackAuthorizedKeyLinesOnce(path string, remove map[string]int) (bool, bool, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return false, false, err
@@ -546,7 +551,7 @@ func rollbackAuthorizedKeyLinesOnce(path string, remove map[string]struct{}) (bo
 	for _, segment := range strings.SplitAfter(string(content), "\n") {
 		line := strings.TrimSuffix(segment, "\n")
 		line = strings.TrimSuffix(line, "\r")
-		if _, found := remove[authorizedKeyID(line)]; found {
+		if remove[line] > 0 {
 			lineLength := len(segment)
 			if strings.HasSuffix(segment, "\n") {
 				lineLength--
@@ -564,6 +569,7 @@ func rollbackAuthorizedKeyLinesOnce(path string, remove map[string]struct{}) (bo
 			if _, err := f.WriteAt(replacement, int64(offset)); err != nil {
 				return changed, false, fmt.Errorf("neutralize key line in %s: %w", path, err)
 			}
+			remove[line]--
 			changed = true
 		}
 		offset += len(segment)
