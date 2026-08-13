@@ -485,17 +485,128 @@ func parseAuthorizedKeyLine(line string) (string, bool) {
 		return "", false
 	}
 	fields := splitAuthorizedKeyFields(line)
-	for i := 0; i+1 < len(fields); i++ {
-		keyType := fields[i]
-		if !supportedPublicKeyTypes[keyType] {
-			continue
+	keyIndex := 0
+	if len(fields) >= 3 && !supportedPublicKeyTypes[fields[0]] {
+		if !validateAuthorizedKeyOptions(fields[0]) {
+			return "", false
 		}
-		candidate := keyType + " " + fields[i+1]
-		if ValidatePublicKey(candidate) {
-			return candidate, true
-		}
+		keyIndex = 1
+	}
+	if keyIndex+1 >= len(fields) || !supportedPublicKeyTypes[fields[keyIndex]] {
+		return "", false
+	}
+	candidate := fields[keyIndex] + " " + fields[keyIndex+1]
+	if ValidatePublicKey(candidate) {
+		return candidate, true
 	}
 	return "", false
+}
+
+var authorizedKeyFlagOptions = map[string]bool{
+	"agent-forwarding":    true,
+	"cert-authority":      true,
+	"no-agent-forwarding": true,
+	"no-port-forwarding":  true,
+	"no-pty":              true,
+	"no-touch-required":   true,
+	"no-user-rc":          true,
+	"no-x11-forwarding":   true,
+	"port-forwarding":     true,
+	"pty":                 true,
+	"restrict":            true,
+	"user-rc":             true,
+	"verify-required":     true,
+	"x11-forwarding":      true,
+}
+
+var authorizedKeyValueOptions = map[string]bool{
+	"command":      true,
+	"environment":  true,
+	"expiry-time":  true,
+	"from":         true,
+	"permitlisten": true,
+	"permitopen":   true,
+	"principals":   true,
+	"tunnel":       true,
+}
+
+// validateAuthorizedKeyOptions accepts the option grammar documented by
+// sshd(8): a comma-separated list of known flags or name="value" entries.
+// Rejecting unknown prefixes is security-critical because OpenSSH ignores the
+// entire line, which must not satisfy desired-state or access-path checks.
+func validateAuthorizedKeyOptions(raw string) bool {
+	options, ok := splitAuthorizedKeyOptions(raw)
+	if !ok || len(options) == 0 {
+		return false
+	}
+	for _, option := range options {
+		name, value, hasValue := strings.Cut(option, "=")
+		name = strings.ToLower(name)
+		if hasValue {
+			if !authorizedKeyValueOptions[name] || !validQuotedAuthorizedKeyOptionValue(value) {
+				return false
+			}
+			continue
+		}
+		if !authorizedKeyFlagOptions[name] {
+			return false
+		}
+	}
+	return true
+}
+
+func splitAuthorizedKeyOptions(raw string) ([]string, bool) {
+	var options []string
+	start := 0
+	inQuotes := false
+	escaped := false
+	for i, r := range raw {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' && inQuotes {
+			escaped = true
+			continue
+		}
+		if r == '"' {
+			inQuotes = !inQuotes
+			continue
+		}
+		if r == ',' && !inQuotes {
+			if i == start {
+				return nil, false
+			}
+			options = append(options, raw[start:i])
+			start = i + 1
+		}
+	}
+	if inQuotes || escaped || start >= len(raw) {
+		return nil, false
+	}
+	options = append(options, raw[start:])
+	return options, true
+}
+
+func validQuotedAuthorizedKeyOptionValue(value string) bool {
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return false
+	}
+	escaped := false
+	for i := 1; i < len(value)-1; i++ {
+		switch value[i] {
+		case '\\':
+			escaped = !escaped
+		case '"':
+			if !escaped {
+				return false
+			}
+			escaped = false
+		default:
+			escaped = false
+		}
+	}
+	return !escaped
 }
 
 func selectAuthorizedKey(content []byte, preferred string) (string, error) {
