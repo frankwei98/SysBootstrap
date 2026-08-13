@@ -34,6 +34,7 @@ type sshTransactionJournal struct {
 	dropInMode  os.FileMode
 	dropInUID   int
 	dropInGID   int
+	dropInXattr map[string][]byte
 
 	// Administrator-owned SSH config files whose legacy Port directives were
 	// disabled during finalization. Keep exact snapshots so a failed cutover
@@ -111,11 +112,12 @@ func rollbackAuthorizedKeys(j *sshTransactionJournal) error {
 }
 
 type sshConfigFileSnapshot struct {
-	path string
-	data []byte
-	mode os.FileMode
-	uid  int
-	gid  int
+	path  string
+	data  []byte
+	mode  os.FileMode
+	uid   int
+	gid   int
+	xattr map[string][]byte
 }
 
 type sshReloadTarget struct {
@@ -166,6 +168,7 @@ func captureJournal() (*sshTransactionJournal, error) {
 		j.dropInMode = snapshot.mode
 		j.dropInUID = snapshot.uid
 		j.dropInGID = snapshot.gid
+		j.dropInXattr = snapshot.xattr
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("cannot read existing managed SSH drop-in: %w", err)
 	}
@@ -185,9 +188,13 @@ func readSSHConfigFileSnapshot(path string) (sshConfigFileSnapshot, error) {
 		return sshConfigFileSnapshot{}, err
 	}
 	data, readErr := io.ReadAll(f)
+	xattrs, xattrErr := system.CaptureFileXattrs(f)
 	closeErr := f.Close()
 	if readErr != nil {
 		return sshConfigFileSnapshot{}, readErr
+	}
+	if xattrErr != nil {
+		return sshConfigFileSnapshot{}, fmt.Errorf("read extended attributes: %w", xattrErr)
 	}
 	if closeErr != nil {
 		return sshConfigFileSnapshot{}, closeErr
@@ -197,11 +204,12 @@ func readSSHConfigFileSnapshot(path string) (sshConfigFileSnapshot, error) {
 		return sshConfigFileSnapshot{}, fmt.Errorf("cannot determine ownership metadata for %s", path)
 	}
 	return sshConfigFileSnapshot{
-		path: path,
-		data: append([]byte(nil), data...),
-		mode: info.Mode(),
-		uid:  int(stat.Uid),
-		gid:  int(stat.Gid),
+		path:  path,
+		data:  append([]byte(nil), data...),
+		mode:  info.Mode(),
+		uid:   int(stat.Uid),
+		gid:   int(stat.Gid),
+		xattr: xattrs,
 	}, nil
 }
 
@@ -810,7 +818,7 @@ func disableLegacyPortDirectives(configPath string, managedPort int, j *sshTrans
 			continue
 		}
 		j.legacyPortFiles = append(j.legacyPortFiles, snapshot)
-		if writeErr := system.WriteFileAtomicallyWithOwner(path, []byte(updated), snapshot.mode, snapshot.uid, snapshot.gid); writeErr != nil {
+		if writeErr := system.WriteFileAtomicallyWithOwnerAndXattrs(path, []byte(updated), snapshot.mode, snapshot.uid, snapshot.gid, snapshot.xattr); writeErr != nil {
 			return nil, writeErr
 		}
 		for _, port := range ports {
@@ -862,7 +870,7 @@ func rollbackPrepare(ctx context.Context, j *sshTransactionJournal) error {
 	var rollbackErrs []error
 	// Restore managed drop-in
 	if j.hadDropIn {
-		if err := system.WriteFileAtomicallyWithOwner(managedSSHDropIn, j.dropInBytes, j.dropInMode, j.dropInUID, j.dropInGID); err != nil {
+		if err := system.WriteFileAtomicallyWithOwnerAndXattrs(managedSSHDropIn, j.dropInBytes, j.dropInMode, j.dropInUID, j.dropInGID, j.dropInXattr); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore managed sshd config: %w", err))
 		}
 	} else {
@@ -871,7 +879,7 @@ func rollbackPrepare(ctx context.Context, j *sshTransactionJournal) error {
 		}
 	}
 	for _, snapshot := range j.legacyPortFiles {
-		if err := system.WriteFileAtomicallyWithOwner(snapshot.path, snapshot.data, snapshot.mode, snapshot.uid, snapshot.gid); err != nil {
+		if err := system.WriteFileAtomicallyWithOwnerAndXattrs(snapshot.path, snapshot.data, snapshot.mode, snapshot.uid, snapshot.gid, snapshot.xattr); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore SSH config %s: %w", snapshot.path, err))
 		}
 	}
