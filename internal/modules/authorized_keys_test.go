@@ -121,6 +121,47 @@ func TestAppendAuthorizedKeyLinesRestoresFileAfterSyncFailure(t *testing.T) {
 	}
 }
 
+func TestAppendAuthorizedKeyLinesSnapshotsSizeAfterLease(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
+	original := []byte("# original\n")
+	concurrent := []byte("# opened-before-lease\n")
+	if err := os.WriteFile(keyFile, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := defaultAuthorizedKeysFileOps
+	ops.acquireLease = func(*os.File) error {
+		other, err := os.OpenFile(keyFile, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			return err
+		}
+		if _, err := other.Write(concurrent); err != nil {
+			_ = other.Close()
+			return err
+		}
+		return other.Close()
+	}
+	ops.write = func(f *os.File, payload string) (int, error) {
+		n, err := f.WriteString(payload[:len(payload)/2])
+		if err != nil {
+			return n, err
+		}
+		return n, errors.New("injected write failure")
+	}
+
+	if _, _, err := appendAuthorizedKeyLinesOnceWithOps(keyFile, []string{"ssh-ed25519 " + testAuthorizedKeyPayload}, ops); err == nil {
+		t.Fatal("partial write should fail")
+	}
+	got, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]byte(nil), original...), concurrent...)
+	if string(got) != string(want) {
+		t.Fatalf("failure recovery removed a pre-lease append: got %q, want %q", got, want)
+	}
+}
+
 func TestAppendAuthorizedKeyLinesFailsBeforeWriteWithoutLease(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
 	original := []byte("# keep exactly\n")
