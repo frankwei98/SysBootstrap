@@ -236,29 +236,72 @@ func ensureAuthorizedKeysFileLocal(home, dir, file string) error {
 	return nil
 }
 
-func appendAuthorizedKeyLinesOnce(path string, keys []string) ([]string, bool, error) {
-	return appendAuthorizedKeyLinesOnceWithOps(path, keys, defaultAuthorizedKeysFileOps)
+type lockedAuthorizedKeysFile struct {
+	file *os.File
+	info os.FileInfo
+	ops  authorizedKeysFileOps
 }
 
-func appendAuthorizedKeyLinesOnceWithOps(path string, keys []string, ops authorizedKeysFileOps) ([]string, bool, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|syscall.O_NOFOLLOW, 0)
+func (locked *lockedAuthorizedKeysFile) close() {
+	_ = locked.ops.releaseLease(locked.file)
+	_ = syscall.Flock(int(locked.file.Fd()), syscall.LOCK_UN)
+	_ = locked.file.Close()
+}
+
+// openLockedLeasedAuthorizedKeys centralizes the safety protocol shared by
+// append and rollback: no-follow open, cooperative lock, regular-file and path
+// identity checks, kernel write lease, then identity revalidation after the
+// lease closes the window for non-cooperating writers.
+func openLockedLeasedAuthorizedKeys(path string, flags int, operation string, ops authorizedKeysFileOps) (*lockedAuthorizedKeysFile, bool, error) {
+	f, err := os.OpenFile(path, flags|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, false, err
 	}
-	defer f.Close()
+	locked := false
+	leased := false
+	cleanup := func() {
+		if leased {
+			_ = ops.releaseLease(f)
+		}
+		if locked {
+			_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		}
+		_ = f.Close()
+	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		cleanup()
 		return nil, false, fmt.Errorf("lock %s: %w", path, err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	locked = true
+	if err := f.Chmod(0o600); err != nil {
+		cleanup()
+		return nil, false, fmt.Errorf("set permissions on %s: %w", path, err)
+	}
+	info, retry, err := validateOpenAuthorizedKeysFile(path, f)
+	if err != nil || retry {
+		cleanup()
+		return nil, retry, err
+	}
+	if err := ops.acquireLease(f); err != nil {
+		cleanup()
+		return nil, false, fmt.Errorf("acquire exclusive write lease on %s for %s: %w", path, operation, err)
+	}
+	leased = true
+	info, retry, err = validateOpenAuthorizedKeysFile(path, f)
+	if err != nil || retry {
+		cleanup()
+		return nil, retry, err
+	}
+	return &lockedAuthorizedKeysFile{file: f, info: info, ops: ops}, false, nil
+}
+
+func validateOpenAuthorizedKeysFile(path string, f *os.File) (os.FileInfo, bool, error) {
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		if err == nil {
 			err = fmt.Errorf("not a regular file")
 		}
 		return nil, false, fmt.Errorf("cannot safely use %s: %w", path, err)
-	}
-	if err := f.Chmod(0o600); err != nil {
-		return nil, false, fmt.Errorf("set permissions on %s: %w", path, err)
 	}
 	same, err := pathReferencesOpenFile(path, info)
 	if err != nil {
@@ -267,33 +310,24 @@ func appendAuthorizedKeyLinesOnceWithOps(path string, keys []string, ops authori
 		}
 		return nil, false, err
 	}
-	if !same {
-		return nil, true, nil
-	}
-	if err := ops.acquireLease(f); err != nil {
-		return nil, false, fmt.Errorf("acquire exclusive write lease on %s: %w", path, err)
-	}
-	defer ops.releaseLease(f) //nolint:errcheck
-	// A non-cooperating writer may have appended between the initial path
-	// inspection and lease acquisition. Snapshot both identity and length only
-	// after the lease excludes any further opens.
-	info, err = f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		if err == nil {
-			err = fmt.Errorf("not a regular file")
-		}
-		return nil, false, fmt.Errorf("cannot safely use %s after lease: %w", path, err)
-	}
-	same, err = pathReferencesOpenFile(path, info)
+	return info, !same, nil
+}
+
+func appendAuthorizedKeyLinesOnce(path string, keys []string) ([]string, bool, error) {
+	return appendAuthorizedKeyLinesOnceWithOps(path, keys, defaultAuthorizedKeysFileOps)
+}
+
+func appendAuthorizedKeyLinesOnceWithOps(path string, keys []string, ops authorizedKeysFileOps) ([]string, bool, error) {
+	locked, retry, err := openLockedLeasedAuthorizedKeys(path, os.O_RDWR|os.O_APPEND, "append", ops)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, true, nil
-		}
 		return nil, false, err
 	}
-	if !same {
+	if retry {
 		return nil, true, nil
 	}
+	defer locked.close()
+	f := locked.file
+	info := locked.info
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, false, err
 	}
@@ -311,7 +345,7 @@ func appendAuthorizedKeyLinesOnceWithOps(path string, keys []string, ops authori
 		existing = append(existing, key)
 	}
 	if len(added) == 0 {
-		same, err = pathReferencesOpenFile(path, info)
+		same, err := pathReferencesOpenFile(path, info)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil, true, nil
@@ -324,7 +358,7 @@ func appendAuthorizedKeyLinesOnceWithOps(path string, keys []string, ops authori
 	if err := appendAuthorizedKeysPayload(f, path, info.Size(), payload, ops); err != nil {
 		return nil, false, fmt.Errorf("append keys to %s: %w", path, err)
 	}
-	same, err = pathReferencesOpenFile(path, info)
+	same, err := pathReferencesOpenFile(path, info)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, true, nil
@@ -733,55 +767,16 @@ func rollbackAuthorizedKeyLinesOnce(path string, remove map[string]int) (bool, b
 }
 
 func rollbackAuthorizedKeyLinesOnceWithOps(path string, remove map[string]int, ops authorizedKeysFileOps) (bool, bool, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
+	locked, retry, err := openLockedLeasedAuthorizedKeys(path, os.O_RDWR, "rollback", ops)
 	if err != nil {
 		return false, false, err
 	}
-	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return false, false, fmt.Errorf("lock %s: %w", path, err)
-	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
-	info, err := f.Stat()
-	if err != nil {
-		return false, false, err
-	}
-	if !info.Mode().IsRegular() {
-		return false, false, fmt.Errorf("%s is not a regular file", path)
-	}
-	same, err := pathReferencesOpenFile(path, info)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, true, nil
-		}
-		return false, false, err
-	}
-	if !same {
+	if retry {
 		return false, true, nil
 	}
-	if err := ops.acquireLease(f); err != nil {
-		return false, false, fmt.Errorf("acquire exclusive write lease on %s for rollback: %w", path, err)
-	}
-	defer ops.releaseLease(f) //nolint:errcheck
-	// Revalidate the inode after the lease closes the window for writers that
-	// do not cooperate with flock.
-	info, err = f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		if err == nil {
-			err = fmt.Errorf("not a regular file")
-		}
-		return false, false, fmt.Errorf("cannot safely use %s after lease: %w", path, err)
-	}
-	same, err = pathReferencesOpenFile(path, info)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, true, nil
-		}
-		return false, false, err
-	}
-	if !same {
-		return false, true, nil
-	}
+	defer locked.close()
+	f := locked.file
+	info := locked.info
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return false, false, err
 	}
@@ -822,7 +817,7 @@ func rollbackAuthorizedKeyLinesOnceWithOps(path string, remove map[string]int, o
 			return true, false, fmt.Errorf("sync %s: %w", path, err)
 		}
 	}
-	same, err = pathReferencesOpenFile(path, info)
+	same, err := pathReferencesOpenFile(path, info)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return changed, true, nil
