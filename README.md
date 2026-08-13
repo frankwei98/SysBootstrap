@@ -191,6 +191,9 @@ That keeps the tool simple while still making repeat usage less annoying.
 - **Debian 11+** and **Ubuntu 22+**: primary supported targets
 - Linux Mint, Pop!_OS, and other apt-based Debian/Ubuntu derivatives: compatible path
 - Architecture: `linux/amd64`, `linux/arm64`
+- Linux kernel **5.6+** is required for the descriptor-relative, symlink-safe
+  recursive removal used by `uninstall`; older kernels fail closed instead of
+  performing an unsafe path-based deletion.
 
 ## Validation
 
