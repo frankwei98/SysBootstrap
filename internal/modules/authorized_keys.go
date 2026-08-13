@@ -695,6 +695,10 @@ func splitAuthorizedKeyFields(line string) []string {
 // place as an equal-length comment, so another process can add the same public
 // key with different restrictions or comments without having its line removed.
 func rollbackAuthorizedKeyLines(path string, keys []string) (bool, error) {
+	return rollbackAuthorizedKeyLinesWithOps(path, keys, defaultAuthorizedKeysFileOps)
+}
+
+func rollbackAuthorizedKeyLinesWithOps(path string, keys []string, ops authorizedKeysFileOps) (bool, error) {
 	remove := make(map[string]int, len(keys))
 	for _, key := range keys {
 		line := strings.TrimSpace(key)
@@ -710,9 +714,12 @@ func rollbackAuthorizedKeyLines(path string, keys []string) (bool, error) {
 		for line, count := range remove {
 			remaining[line] = count
 		}
-		changed, retry, err := rollbackAuthorizedKeyLinesOnce(path, remaining)
+		changed, retry, err := rollbackAuthorizedKeyLinesOnceWithOps(path, remaining, ops)
 		if err != nil {
 			return changed, err
+		}
+		if changed && retry {
+			return true, fmt.Errorf("authorized_keys path changed after rollback modified its original inode; refusing to replay on replacement")
 		}
 		if !retry {
 			return changed, nil
@@ -811,7 +818,7 @@ func rollbackAuthorizedKeyLinesOnceWithOps(path string, remove map[string]int, o
 		offset += len(segment)
 	}
 	if changed {
-		if err := f.Sync(); err != nil {
+		if err := ops.sync(f); err != nil {
 			return true, false, fmt.Errorf("sync %s: %w", path, err)
 		}
 	}
