@@ -87,3 +87,35 @@ func TestRemoveAllBeneathRejectsOutsideAndBase(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenPinnedRemovalDirRejectsAncestorSwapAfterResolution(t *testing.T) {
+	root := t.TempDir()
+	ancestor := filepath.Join(root, "ancestor")
+	base := filepath.Join(ancestor, "home")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(filepath.Join(outside, "home"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(ancestor, ancestor+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, ancestor); err != nil {
+		t.Fatal(err)
+	}
+
+	f, _, err := openPinnedRemovalDir(resolved)
+	if f != nil {
+		_ = f.Close()
+	}
+	if err == nil {
+		t.Fatal("opening a resolved base followed a swapped ancestor symlink")
+	}
+}
