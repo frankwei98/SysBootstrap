@@ -590,6 +590,10 @@ func rollbackAuthorizedKeyLines(path string, keys []string) (bool, error) {
 }
 
 func rollbackAuthorizedKeyLinesOnce(path string, remove map[string]int) (bool, bool, error) {
+	return rollbackAuthorizedKeyLinesOnceWithOps(path, remove, defaultAuthorizedKeysFileOps)
+}
+
+func rollbackAuthorizedKeyLinesOnceWithOps(path string, remove map[string]int, ops authorizedKeysFileOps) (bool, bool, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return false, false, err
@@ -607,6 +611,29 @@ func rollbackAuthorizedKeyLinesOnce(path string, remove map[string]int) (bool, b
 		return false, false, fmt.Errorf("%s is not a regular file", path)
 	}
 	same, err := pathReferencesOpenFile(path, info)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, true, nil
+		}
+		return false, false, err
+	}
+	if !same {
+		return false, true, nil
+	}
+	if err := ops.acquireLease(f); err != nil {
+		return false, false, fmt.Errorf("acquire exclusive write lease on %s for rollback: %w", path, err)
+	}
+	defer ops.releaseLease(f) //nolint:errcheck
+	// Revalidate the inode after the lease closes the window for writers that
+	// do not cooperate with flock.
+	info, err = f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
+		return false, false, fmt.Errorf("cannot safely use %s after lease: %w", path, err)
+	}
+	same, err = pathReferencesOpenFile(path, info)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, true, nil
