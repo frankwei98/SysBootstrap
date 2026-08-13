@@ -391,17 +391,19 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	if err := system.RejectSymlinkPath(rcFile); err != nil {
 		return 0, fmt.Errorf("refusing unsafe shell rc path %s: %w", rcFile, err)
 	}
-	// Read and scan for matches
-	data, err := os.ReadFile(rcFile)
+	// Read and inspect the same no-follow inode so FIFOs, devices, and path
+	// replacement races cannot block or change the snapshot after validation.
+	rc, rcInfo, err := system.OpenExistingFileNoFollow(rcFile)
 	if err != nil {
 		return 0, fmt.Errorf("cannot read %s: %w", rcFile, err)
 	}
-	rcInfo, err := os.Lstat(rcFile)
-	if err != nil || !rcInfo.Mode().IsRegular() {
-		if err == nil {
-			err = fmt.Errorf("not a regular file")
-		}
-		return 0, fmt.Errorf("cannot safely inspect %s: %w", rcFile, err)
+	data, err := io.ReadAll(rc)
+	closeErr := rc.Close()
+	if err != nil {
+		return 0, fmt.Errorf("cannot read %s: %w", rcFile, err)
+	}
+	if closeErr != nil {
+		return 0, fmt.Errorf("cannot close %s: %w", rcFile, closeErr)
 	}
 
 	rawLines := strings.Split(string(data), "\n")
@@ -447,22 +449,15 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	if err := copyFile(rcFile, backupPath); err != nil {
 		return removed, fmt.Errorf("cannot backup %s: %w", rcFile, err)
 	}
-	if err := system.ChownToInvokingUser(backupPath); err != nil {
-		return removed, fmt.Errorf("cannot set backup ownership for %s: %w", backupPath, err)
-	}
 	if log != nil {
 		log.Infof(i18n.T("uninstall_rc_backup"), backupPath)
 	}
 
 	// Write cleaned content atomically so a pre-existing symlink cannot redirect
 	// the privileged write to another file.
-	if err := system.WriteFileAtomically(rcFile, []byte(strings.Join(lines, "\n")+"\n"), rcInfo.Mode()); err != nil {
+	if err := system.WriteFileAtomicallyAsInvokingUser(rcFile, []byte(strings.Join(lines, "\n")+"\n"), rcInfo.Mode()); err != nil {
 		return removed, fmt.Errorf("cannot write %s: %w", rcFile, err)
 	}
-	if err := system.ChownToInvokingUser(rcFile); err != nil {
-		return removed, fmt.Errorf("cannot restore ownership for %s: %w", rcFile, err)
-	}
-
 	return removed, nil
 }
 
@@ -639,40 +634,14 @@ func fileExists(path string) bool {
 }
 
 func copyFile(src, dst string) error {
-	if err := system.RejectSymlinkPath(src); err != nil {
-		return err
-	}
-	if err := system.RejectSymlinkPath(dst); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
+	in, info, err := system.OpenExistingFileNoFollow(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-
-	info, err := in.Stat()
+	data, err := io.ReadAll(in)
 	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(dst)
-	out, err := os.CreateTemp(dir, ".sys-bootstrap-copy-*")
-	if err != nil {
-		return err
-	}
-	tmp := out.Name()
-	defer os.Remove(tmp)
-	if err := out.Chmod(info.Mode().Perm()); err != nil {
-		out.Close()
-		return err
-	}
-
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
 		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
 	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, dst)
+	return system.WriteFileAtomicallyAsInvokingUser(dst, data, info.Mode())
 }

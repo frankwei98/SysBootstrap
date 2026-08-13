@@ -87,6 +87,36 @@ func OpenInvokingUserFileBeneath(baseDir, relativeFile string, mode os.FileMode)
 	return f, nil
 }
 
+// OpenExistingFileNoFollow opens an existing regular file by traversing every
+// path component from a pinned root directory. It returns the open file and
+// metadata from that same inode, avoiding read-then-stat races.
+func OpenExistingFileNoFollow(path string) (*os.File, os.FileInfo, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	base, err := openDirectoryFromRoot(filepath.Dir(abs))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer base.Close()
+	name := filepath.Base(abs)
+	fd, err := unix.Openat(int(base.Fd()), name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	f := os.NewFile(uintptr(fd), name)
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
+		return nil, nil, err
+	}
+	return f, info, nil
+}
+
 func safeRelativeComponents(relative string) ([]string, error) {
 	if relative == "" || filepath.IsAbs(relative) {
 		return nil, fmt.Errorf("file path must be a non-empty relative path")
