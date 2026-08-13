@@ -106,9 +106,10 @@ func TestValidatePathSafety_RejectsRootHome(t *testing.T) {
 }
 
 func TestValidatePathSafety_AllowsInsideRootHome(t *testing.T) {
-	err := ValidatePathSafety("/root/.nvm", "/root")
+	home := t.TempDir()
+	err := ValidatePathSafety(filepath.Join(home, ".nvm"), home)
 	if err != nil {
-		t.Errorf("expected no error for /root/.nvm inside /root, got: %v", err)
+		t.Errorf("expected no error for a path inside the root home, got: %v", err)
 	}
 }
 
