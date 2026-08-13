@@ -366,6 +366,30 @@ func TestContainsKeyMatchesRestrictedAuthorizedKey(t *testing.T) {
 	}
 }
 
+func TestContainsKeyRejectsUnknownAuthorizedKeyOption(t *testing.T) {
+	const payload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+	existing := []string{"garbage ssh-ed25519 " + payload + " ignored-by-openssh"}
+
+	if containsKey(existing, "ssh-ed25519 "+payload+" requested") {
+		t.Fatal("an OpenSSH-invalid option prefix must not satisfy key installation")
+	}
+}
+
+func TestParseAuthorizedKeyLineRejectsMalformedOptions(t *testing.T) {
+	const payload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+	invalid := []string{
+		`unknown="value" ssh-ed25519 ` + payload,
+		`from="unterminated ssh-ed25519 ` + payload,
+		`from=unquoted ssh-ed25519 ` + payload,
+		`from="ok", ssh-ed25519 ` + payload,
+	}
+	for _, line := range invalid {
+		if key, ok := parseAuthorizedKeyLine(line); ok {
+			t.Errorf("parseAuthorizedKeyLine(%q) = %q, want rejection", line, key)
+		}
+	}
+}
+
 func TestBuildAuthorizedKeysContentDoesNotBypassExistingOptions(t *testing.T) {
 	const payload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
 	existing := []string{`from="10.0.0.1" ssh-ed25519 ` + payload + ` restricted`}
