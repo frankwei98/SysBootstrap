@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -57,43 +56,13 @@ func New(quiet bool) (*Logger, error) {
 	// Open log file in user state directory
 	stateDir, err := stateHomeDir()
 	if err == nil {
-		localStateDir := filepath.Join(stateDir, ".local")
-		stateDataDir := filepath.Join(localStateDir, "state")
-		appStateDir := filepath.Join(stateDataDir, "sys-bootstrap")
-		logDir := filepath.Join(appStateDir, "logs")
-		// The invoking user controls the home directory contents. Refuse any
-		// symlinked component before a privileged MkdirAll/chown pair can be
-		// redirected into an administrator-owned tree.
-		if err := system.RejectSymlinkPath(logDir); err == nil && os.MkdirAll(logDir, 0o755) == nil && system.RejectSymlinkPath(logDir) == nil {
-			// MkdirAll may have created one or more parent directories as root.
-			// Hand back the complete user-state path, not just the leaf, so the
-			// invoking user can traverse it on later non-sudo runs.
-			if err := system.ChownToInvokingUser(localStateDir, stateDataDir, appStateDir, logDir); err == nil {
-				logFile := filepath.Join(logDir, fmt.Sprintf("sys-bootstrap-%s.log", time.Now().Format("20060102-150405")))
-				f, openErr := openLogFileNoFollow(logFile)
-				if openErr == nil {
-					if system.ChownToInvokingUser(logFile) == nil {
-						l.file = f
-					} else {
-						_ = f.Close()
-					}
-				}
-			}
+		logFile := filepath.Join(".local", "state", "sys-bootstrap", "logs", fmt.Sprintf("sys-bootstrap-%s.log", time.Now().Format("20060102-150405")))
+		if f, openErr := system.OpenInvokingUserFileBeneath(stateDir, logFile, 0o644); openErr == nil {
+			l.file = f
 		}
 	}
 
 	return l, nil
-}
-
-func openLogFileNoFollow(path string) (*os.File, error) {
-	if err := system.RejectSymlinkPath(path); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	return f, nil
 }
 
 func stateHomeDir() (string, error) {
