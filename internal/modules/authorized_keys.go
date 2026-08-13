@@ -277,7 +277,7 @@ func openLockedLeasedAuthorizedKeys(path string, flags int, operation string, op
 		cleanup()
 		return nil, false, fmt.Errorf("set permissions on %s: %w", path, err)
 	}
-	info, retry, err := validateOpenAuthorizedKeysFile(path, f)
+	_, retry, err := validateOpenAuthorizedKeysFile(path, f)
 	if err != nil || retry {
 		cleanup()
 		return nil, retry, err
@@ -287,7 +287,7 @@ func openLockedLeasedAuthorizedKeys(path string, flags int, operation string, op
 		return nil, false, fmt.Errorf("acquire exclusive write lease on %s for %s: %w", path, operation, err)
 	}
 	leased = true
-	info, retry, err = validateOpenAuthorizedKeysFile(path, f)
+	info, retry, err := validateOpenAuthorizedKeysFile(path, f)
 	if err != nil || retry {
 		cleanup()
 		return nil, retry, err
@@ -760,10 +760,6 @@ func rollbackAuthorizedKeyLinesWithOps(path string, keys []string, ops authorize
 		}
 	}
 	return false, fmt.Errorf("authorized_keys path changed repeatedly during rollback")
-}
-
-func rollbackAuthorizedKeyLinesOnce(path string, remove map[string]int) (bool, bool, error) {
-	return rollbackAuthorizedKeyLinesOnceWithOps(path, remove, defaultAuthorizedKeysFileOps)
 }
 
 func rollbackAuthorizedKeyLinesOnceWithOps(path string, remove map[string]int, ops authorizedKeysFileOps) (bool, bool, error) {
