@@ -446,7 +446,7 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	if err := system.RejectSymlinkPath(backupPath); err != nil {
 		return removed, fmt.Errorf("refusing unsafe backup path %s: %w", backupPath, err)
 	}
-	if err := copyFile(rcFile, backupPath); err != nil {
+	if err := copyFileData(data, backupPath, rcInfo.Mode()); err != nil {
 		return removed, fmt.Errorf("cannot backup %s: %w", rcFile, err)
 	}
 	if log != nil {
@@ -643,5 +643,9 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
 	}
-	return system.WriteFileAtomicallyAsInvokingUser(dst, data, info.Mode())
+	return copyFileData(data, dst, info.Mode())
+}
+
+func copyFileData(data []byte, dst string, mode os.FileMode) error {
+	return system.WriteFileAtomicallyAsInvokingUser(dst, data, mode)
 }
