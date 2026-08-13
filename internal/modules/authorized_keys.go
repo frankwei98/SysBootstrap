@@ -50,9 +50,14 @@ type authorizedKeysHelperRequest struct {
 }
 
 type authorizedKeysHelperResponse struct {
-	Added   []string `json:"added,omitempty"`
-	Changed bool     `json:"changed,omitempty"`
-	Error   string   `json:"error,omitempty"`
+	Added    []string `json:"added,omitempty"`
+	Changed  bool     `json:"changed,omitempty"`
+	Error    string   `json:"error,omitempty"`
+	NotFound bool     `json:"not_found,omitempty"`
+}
+
+var authorizedKeysSudoPathFn = func() (string, error) {
+	return exec.LookPath("sudo")
 }
 
 func init() {
@@ -73,10 +78,12 @@ func init() {
 				var err error
 				response.Added, err = addAuthorizedKeysLocal(context.Background(), request.Home, request.Dir, request.File, request.Keys)
 				response.Error = errorText(err)
+				response.NotFound = errors.Is(err, os.ErrNotExist)
 			case "rollback":
 				var err error
 				response.Changed, err = rollbackAuthorizedKeyLines(request.File, request.Keys)
 				response.Error = errorText(err)
+				response.NotFound = errors.Is(err, os.ErrNotExist)
 			default:
 				response.Error = fmt.Sprintf("unknown authorized_keys helper mode %q", mode)
 			}
@@ -111,6 +118,20 @@ func addAuthorizedKeys(ctx context.Context, username, home, dir, file string, ke
 		Keys: keys,
 	})
 	return response.Added, err
+}
+
+func preflightAuthorizedKeysForUser(username string) error {
+	if username == "" {
+		return nil
+	}
+	u, err := lookupUser(username)
+	if err == nil && u.Uid == "0" {
+		return nil
+	}
+	if _, err := authorizedKeysSudoPathFn(); err != nil {
+		return fmt.Errorf("sudo is required to manage authorized_keys for non-root user %s: %w", username, err)
+	}
+	return nil
 }
 
 func rollbackAuthorizedKeysForUser(ctx context.Context, username, home, file string, keys []string) (bool, error) {
@@ -160,6 +181,10 @@ func addAuthorizedKeysLocal(ctx context.Context, home, dir, file string, keys []
 }
 
 func runAuthorizedKeysHelper(ctx context.Context, username, home, mode string, request authorizedKeysHelperRequest) (authorizedKeysHelperResponse, error) {
+	sudoPath, err := authorizedKeysSudoPathFn()
+	if err != nil {
+		return authorizedKeysHelperResponse{}, fmt.Errorf("sudo is required to manage authorized_keys for %s: %w", username, err)
+	}
 	payload, err := json.Marshal(request)
 	if err != nil {
 		return authorizedKeysHelperResponse{}, err
@@ -168,7 +193,7 @@ func runAuthorizedKeysHelper(ctx context.Context, username, home, mode string, r
 	if err != nil {
 		return authorizedKeysHelperResponse{}, fmt.Errorf("locate current executable: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "sudo", "-n", "-H", "-u", username,
+	cmd := exec.CommandContext(ctx, sudoPath, "-n", "-H", "-u", username,
 		"env", "HOME="+home, "USER="+username, "LOGNAME="+username,
 		authorizedKeysHelperEnv+"="+mode, executable)
 	cmd.Stdin = bytes.NewReader(payload)
@@ -183,6 +208,9 @@ func runAuthorizedKeysHelper(ctx context.Context, username, home, mode string, r
 		return authorizedKeysHelperResponse{}, fmt.Errorf("decode authorized_keys helper response: %w", err)
 	}
 	if response.Error != "" {
+		if response.NotFound {
+			return response, fmt.Errorf("%s: %w", response.Error, os.ErrNotExist)
+		}
 		return response, fmt.Errorf("%s", response.Error)
 	}
 	return response, nil

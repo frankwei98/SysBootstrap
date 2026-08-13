@@ -120,6 +120,11 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("SSH port %d must be between 1 and 65535", port)
 	}
+	if cfg.SSHAddKey {
+		if err := preflightAuthorizedKeysForUser(system.TargetUsername(sys)); err != nil {
+			return nil, err
+		}
+	}
 	if err := rejectAddressDependentSSHAuthPolicy(cfg); err != nil {
 		return nil, err
 	}
@@ -186,6 +191,11 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	}
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("SSH port %d must be between 1 and 65535", port)
+	}
+	if cfg.SSHAddKey {
+		if err := preflightAuthorizedKeysForUser(system.TargetUsername(sys)); err != nil {
+			return err
+		}
 	}
 
 	// Guard: requesting to disable both root login and password auth without
