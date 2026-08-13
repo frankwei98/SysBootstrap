@@ -14,16 +14,32 @@ import (
 // WriteFileAtomically replaces path with data using a unique sibling file.
 // Existing symlinks in the destination path are rejected before any write.
 func WriteFileAtomically(path string, data []byte, mode os.FileMode) error {
-	return writeFileAtomically(path, data, mode, false)
+	return writeFileAtomically(path, data, mode, false, nil)
 }
 
 // WriteFileAtomicallyAsInvokingUser performs the same descriptor-relative
 // replacement but gives a newly created user-scoped file to SUDO_USER.
 func WriteFileAtomicallyAsInvokingUser(path string, data []byte, mode os.FileMode) error {
-	return writeFileAtomically(path, data, mode, true)
+	return writeFileAtomically(path, data, mode, true, nil)
 }
 
-func writeFileAtomically(path string, data []byte, mode os.FileMode, preferInvokingUser bool) error {
+// WriteFileAtomicallyWithOwner restores a file with the supplied Unix owner.
+// It is used by rollback journals when the destination may have disappeared
+// since the snapshot was captured. The owner is applied to the replacement
+// inode before it becomes visible at path.
+func WriteFileAtomicallyWithOwner(path string, data []byte, mode os.FileMode, uid, gid int) error {
+	if uid < 0 || gid < 0 {
+		return fmt.Errorf("invalid file owner %d:%d", uid, gid)
+	}
+	return writeFileAtomically(path, data, mode, false, &fileOwner{uid: uid, gid: gid})
+}
+
+type fileOwner struct {
+	uid int
+	gid int
+}
+
+func writeFileAtomically(path string, data []byte, mode os.FileMode, preferInvokingUser bool, explicitOwner *fileOwner) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err
@@ -42,7 +58,9 @@ func writeFileAtomically(path string, data []byte, mode os.FileMode, preferInvok
 		if target.Mode&unix.S_IFMT == unix.S_IFLNK {
 			return fmt.Errorf("refusing to replace symlink %s", path)
 		}
-		uid, gid = int(target.Uid), int(target.Gid)
+		if explicitOwner == nil {
+			uid, gid = int(target.Uid), int(target.Gid)
+		}
 	} else if !errors.Is(err, unix.ENOENT) {
 		return fmt.Errorf("inspect %s: %w", path, err)
 	} else if preferInvokingUser {
@@ -53,6 +71,9 @@ func writeFileAtomically(path string, data []byte, mode os.FileMode, preferInvok
 		if ok {
 			uid, gid = invokingUID, invokingGID
 		}
+	}
+	if explicitOwner != nil {
+		uid, gid = explicitOwner.uid, explicitOwner.gid
 	}
 
 	tmpName, tmp, err := createAtomicTempAt(parent, mode.Perm())
