@@ -897,35 +897,40 @@ exit 0
 
 func TestRestoreAuthorizedKeysSnapshotPreservesConcurrentChanges(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
-	original := []byte("ssh-ed25519 AAAA-original\n")
-	written := []byte("ssh-ed25519 AAAA-original\nssh-ed25519 AAAA-added\n")
-	concurrent := append(append([]byte(nil), written...), []byte("ssh-ed25519 AAAA-concurrent\n")...)
+	const originalKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq original"
+	const addedKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGZvb29vb29vb29vb29vb29vb29vb29vb29vb29vb29v added"
+	const concurrentKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJhcmJhcmJhcmJhcmJhcmJhcmJhcmJhcmJhcmJhcmJh concurrent"
+	original := []byte(originalKey + "\n")
+	written := []byte(originalKey + "\n" + addedKey + "\n")
+	concurrent := append(append([]byte(nil), written...), []byte(concurrentKey+"\n")...)
 	if err := os.WriteFile(keyFile, concurrent, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rollbackAuthorizedKeyLines(keyFile, []string{"ssh-ed25519 AAAA-added"}); err != nil {
+	if _, err := rollbackAuthorizedKeyLines(keyFile, []string{addedKey}); err != nil {
 		t.Fatalf("restore failed: %v", err)
 	}
 	got, err := os.ReadFile(keyFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(got), string(original)) || !strings.Contains(string(got), "ssh-ed25519 AAAA-concurrent\n") {
+	if !strings.HasPrefix(string(got), string(original)) || !strings.Contains(string(got), concurrentKey+"\n") {
 		t.Fatalf("rollback did not preserve original and concurrent content: %q", got)
 	}
-	if strings.Contains(string(got), "ssh-ed25519 AAAA-added") {
+	if strings.Contains(string(got), addedKey) {
 		t.Fatalf("rollback left the transaction key authorized: %q", got)
 	}
 }
 
 func TestRestoreAuthorizedKeysSnapshotRestoresUnchangedTransactionWrite(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
-	original := []byte("ssh-ed25519 AAAA-original\n")
-	written := []byte("ssh-ed25519 AAAA-original\nssh-ed25519 AAAA-added\n")
+	const originalKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq original"
+	const addedKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGZvb29vb29vb29vb29vb29vb29vb29vb29vb29vb29v added"
+	original := []byte(originalKey + "\n")
+	written := []byte(originalKey + "\n" + addedKey + "\n")
 	if err := os.WriteFile(keyFile, written, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rollbackAuthorizedKeyLines(keyFile, []string{"ssh-ed25519 AAAA-added"}); err != nil {
+	if _, err := rollbackAuthorizedKeyLines(keyFile, []string{addedKey}); err != nil {
 		t.Fatalf("restore failed: %v", err)
 	}
 	got, err := os.ReadFile(keyFile)
@@ -935,28 +940,30 @@ func TestRestoreAuthorizedKeysSnapshotRestoresUnchangedTransactionWrite(t *testi
 	if !strings.HasPrefix(string(got), string(original)) {
 		t.Fatalf("rollback changed original content: %q", got)
 	}
-	if strings.Contains(string(got), "ssh-ed25519 AAAA-added") {
+	if strings.Contains(string(got), addedKey) {
 		t.Fatalf("rollback left the transaction key authorized: %q", got)
 	}
 }
 
 func TestRestoreAuthorizedKeysSnapshotKeepsConcurrentFileWhenOriginallyAbsent(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
-	current := []byte("# retained comment\nssh-ed25519 AAAA-added\nssh-ed25519 AAAA-concurrent\n")
+	const addedKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGZvb29vb29vb29vb29vb29vb29vb29vb29vb29vb29v added"
+	const concurrentKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJhcmJhcmJhcmJhcmJhcmJhcmJhcmJhcmJhcmJhcmJh concurrent"
+	current := []byte("# retained comment\n" + addedKey + "\n" + concurrentKey + "\n")
 	if err := os.WriteFile(keyFile, current, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rollbackAuthorizedKeyLines(keyFile, []string{"ssh-ed25519 AAAA-added"}); err != nil {
+	if _, err := rollbackAuthorizedKeyLines(keyFile, []string{addedKey}); err != nil {
 		t.Fatalf("restore failed: %v", err)
 	}
 	got, err := os.ReadFile(keyFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "# retained comment\n") || !strings.Contains(string(got), "ssh-ed25519 AAAA-concurrent\n") {
+	if !strings.Contains(string(got), "# retained comment\n") || !strings.Contains(string(got), concurrentKey+"\n") {
 		t.Fatalf("rollback did not retain concurrent file content: %q", got)
 	}
-	if strings.Contains(string(got), "ssh-ed25519 AAAA-added") {
+	if strings.Contains(string(got), addedKey) {
 		t.Fatalf("rollback left the transaction key authorized: %q", got)
 	}
 }

@@ -728,14 +728,25 @@ func (m *SSHModule) computeAccessPaths(ctx context.Context, sys *system.Context,
 
 	seen := make(map[string]bool)
 	if username := system.TargetUsername(sys); username != "" && !(cfg.SSHDisableRoot && username == "root") {
-		if candidate, err := verifiedAccessPath(ctx, username, port); err == nil {
+		preferredKey := ""
+		if cfg.SSHAddKey {
+			preferredKey = cfg.SSHPublicKey
+		}
+		if candidate, err := verifiedAccessPath(ctx, username, port, preferredKey); err == nil {
 			candidates = append(candidates, candidate)
 			seen[username] = true
 		}
 	}
 
 	if cfg.NewUsername != "" && !(cfg.SSHDisableRoot && cfg.NewUsername == "root") && !seen[cfg.NewUsername] {
-		if candidate, err := verifiedAccessPath(ctx, cfg.NewUsername, port); err == nil {
+		preferredKey := ""
+		if cfg.UserAddKey {
+			preferredKey = cfg.UserPublicKey
+			if cfg.UserKeySource == "github" {
+				preferredKey = cfg.UserGitHubKeys
+			}
+		}
+		if candidate, err := verifiedAccessPath(ctx, cfg.NewUsername, port, preferredKey); err == nil {
 			candidates = append(candidates, candidate)
 		}
 	}
@@ -743,7 +754,7 @@ func (m *SSHModule) computeAccessPaths(ctx context.Context, sys *system.Context,
 	return candidates
 }
 
-func verifiedAccessPath(ctx context.Context, username string, port int) (types.AccessPath, error) {
+func verifiedAccessPath(ctx context.Context, username string, port int, preferredKey string) (types.AccessPath, error) {
 	u, err := lookupUser(username)
 	if err != nil {
 		return types.AccessPath{}, err
@@ -772,7 +783,7 @@ func verifiedAccessPath(ctx context.Context, username string, port int) (types.A
 	if err != nil {
 		return types.AccessPath{}, err
 	}
-	keys, err := validateKeyLines(string(data))
+	selectedKey, err := selectAuthorizedKey(data, preferredKey)
 	if err != nil {
 		return types.AccessPath{}, err
 	}
@@ -782,7 +793,7 @@ func verifiedAccessPath(ctx context.Context, username string, port int) (types.A
 	if err := verifyEffectivePorts(ctx, []int{port}); err != nil {
 		return types.AccessPath{}, err
 	}
-	fingerprint, err := canonicalKeyFingerprint(ctx, keys[0])
+	fingerprint, err := canonicalKeyFingerprint(ctx, selectedKey)
 	if err != nil {
 		return types.AccessPath{}, err
 	}

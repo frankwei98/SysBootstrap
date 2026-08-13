@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const testAuthorizedKeyPayload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+
 func TestAppendAuthorizedKeyLinesDoesNotFollowSymlink(t *testing.T) {
 	root := t.TempDir()
 	victim := filepath.Join(root, "victim")
@@ -18,7 +20,7 @@ func TestAppendAuthorizedKeyLinesDoesNotFollowSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := appendAuthorizedKeyLinesOnce(keyFile, []string{"ssh-ed25519 AAAA-new"}); err == nil {
+	if _, _, err := appendAuthorizedKeyLinesOnce(keyFile, []string{"ssh-ed25519 " + testAuthorizedKeyPayload}); err == nil {
 		t.Fatal("symlink destination should be rejected")
 	}
 
@@ -33,13 +35,13 @@ func TestAppendAuthorizedKeyLinesDoesNotFollowSymlink(t *testing.T) {
 
 func TestAppendAuthorizedKeyLinesReturnsOnlyActualAdditions(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "authorized_keys")
-	existing := "# keep\nssh-ed25519 AAAA-existing owner\n"
+	existing := "# keep\nssh-ed25519 " + testAuthorizedKeyPayload + " owner\n"
 	if err := os.WriteFile(keyFile, []byte(existing), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	added, retry, err := appendAuthorizedKeyLinesOnce(keyFile, []string{
-		"ssh-ed25519 AAAA-existing duplicate",
+		"ssh-ed25519 " + testAuthorizedKeyPayload + " duplicate",
 		"ssh-rsa AAAA-new owner",
 	})
 	if err != nil || retry {
@@ -52,7 +54,7 @@ func TestAppendAuthorizedKeyLinesReturnsOnlyActualAdditions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(content), existing) || strings.Count(string(content), "AAAA-existing") != 1 {
+	if !strings.HasPrefix(string(content), existing) || strings.Count(string(content), testAuthorizedKeyPayload) != 1 {
 		t.Fatalf("existing content was not preserved/deduplicated: %q", content)
 	}
 }
@@ -191,6 +193,56 @@ func TestContainsKey(t *testing.T) {
 	}
 	if containsKey(keys, "") {
 		t.Error("expected false for empty string")
+	}
+}
+
+func TestContainsKeyMatchesRestrictedAuthorizedKey(t *testing.T) {
+	const payload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+	existing := []string{
+		`from="10.0.0.1",command="echo ssh-ed25519 is restricted" ssh-ed25519 ` + payload + ` owner`,
+	}
+
+	if !containsKey(existing, "ssh-ed25519 "+payload+" requested") {
+		t.Fatal("same public key with authorized_keys options must be deduplicated")
+	}
+}
+
+func TestBuildAuthorizedKeysContentDoesNotBypassExistingOptions(t *testing.T) {
+	const payload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+	existing := []string{`from="10.0.0.1" ssh-ed25519 ` + payload + ` restricted`}
+	requested := []string{"ssh-ed25519 " + payload + " unrestricted"}
+
+	result := buildAuthorizedKeysContent(existing, requested)
+	if strings.Count(result, payload) != 1 {
+		t.Fatalf("restricted key was duplicated as an unrestricted key: %q", result)
+	}
+}
+
+func TestSelectAuthorizedKeySkipsCommentsAndParsesOptions(t *testing.T) {
+	const payload = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+	content := []byte("# operator note\n\n" +
+		`from="10.0.0.1",command="echo restricted key" ssh-ed25519 ` + payload + " owner\n")
+
+	got, err := selectAuthorizedKey(content, "ssh-ed25519 "+payload+" requested")
+	if err != nil {
+		t.Fatalf("selectAuthorizedKey failed: %v", err)
+	}
+	if got != "ssh-ed25519 "+payload {
+		t.Fatalf("selected key = %q", got)
+	}
+}
+
+func TestSelectAuthorizedKeyPrefersRequestedKey(t *testing.T) {
+	const first = "AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq"
+	const requested = "AAAAC3NzaC1lZDI1NTE5AAAAIGZvb29vb29vb29vb29vb29vb29vb29vb29vb29vb29v"
+	content := []byte("ssh-ed25519 " + first + " first\nssh-ed25519 " + requested + " second\n")
+
+	got, err := selectAuthorizedKey(content, "ssh-ed25519 "+requested+" reviewed")
+	if err != nil {
+		t.Fatalf("selectAuthorizedKey failed: %v", err)
+	}
+	if got != "ssh-ed25519 "+requested {
+		t.Fatalf("selected key = %q, want requested key", got)
 	}
 }
 
