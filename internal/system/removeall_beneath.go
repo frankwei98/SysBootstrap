@@ -88,17 +88,33 @@ func removeAllRelativePath(baseDir, target string) (string, string, error) {
 }
 
 func openPinnedRemovalDir(path string) (*os.File, *unix.Stat_t, error) {
-	fd, err := unix.Open(path, secureRemoveOpenFlags, 0)
+	if !filepath.IsAbs(path) {
+		return nil, nil, fmt.Errorf("pinned removal directory must be absolute: %s", path)
+	}
+	fd, err := unix.Open(string(filepath.Separator), secureRemoveOpenFlags, 0)
 	if err != nil {
 		return nil, nil, err
 	}
-	f := os.NewFile(uintptr(fd), path)
+	current := os.NewFile(uintptr(fd), string(filepath.Separator))
+	for _, component := range splitPathComponents(path) {
+		childFD, openErr := unix.Openat(int(current.Fd()), component, secureRemoveOpenFlags, 0)
+		if openErr != nil {
+			_ = current.Close()
+			return nil, nil, openErr
+		}
+		child := os.NewFile(uintptr(childFD), component)
+		if closeErr := current.Close(); closeErr != nil {
+			_ = child.Close()
+			return nil, nil, closeErr
+		}
+		current = child
+	}
 	stat := &unix.Stat_t{}
-	if err := unix.Fstat(fd, stat); err != nil {
-		_ = f.Close()
+	if err := unix.Fstat(int(current.Fd()), stat); err != nil {
+		_ = current.Close()
 		return nil, nil, err
 	}
-	return f, stat, nil
+	return current, stat, nil
 }
 
 func openPinnedRemovalDirAt(parent *os.File, name string, baseDevice uint64) (*os.File, *unix.Stat_t, error) {
