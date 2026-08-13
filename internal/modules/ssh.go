@@ -238,8 +238,10 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 		if err := captureAuthorizedKeysSnapshot(journal, sys); err != nil {
 			return fmt.Errorf("cannot capture authorized_keys state: %w", err)
 		}
-		if err := m.writeAuthorizedKeys(ctx, sys, cfg, log); err != nil {
-			return joinSSHRollbackError(err, restoreAuthorizedKeysSnapshot(journal))
+		addedKeys, err := m.writeAuthorizedKeys(ctx, sys, cfg, log)
+		journal.authorizedKeys.addedKeys = addedKeys
+		if err != nil {
+			return joinSSHRollbackError(err, rollbackAuthorizedKeys(journal))
 		}
 	}
 
@@ -316,43 +318,37 @@ func joinSSHRollbackError(original, rollbackErr error) error {
 
 // writeAuthorizedKeys handles writing the SSH public key from config to the
 // invoking user's authorized_keys using shared safety helpers.
-func (m *SSHModule) writeAuthorizedKeys(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+func (m *SSHModule) writeAuthorizedKeys(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) ([]string, error) {
 	username := system.TargetUsername(sys)
 	if username == "" {
 		log.Warn("No target user for authorized_keys write")
-		return nil
+		return nil, nil
 	}
 
 	validLines, err := validateKeyLines(cfg.SSHPublicKey)
 	if err != nil {
-		return fmt.Errorf("key validation failed: %w", err)
+		return nil, fmt.Errorf("key validation failed: %w", err)
 	}
 
 	home, err := resolveHome(username)
 	if err != nil {
-		return fmt.Errorf("cannot determine home for %s: %w", username, err)
+		return nil, fmt.Errorf("cannot determine home for %s: %w", username, err)
 	}
 
 	sshDir := filepath.Join(home, ".ssh")
 	keyFile := filepath.Join(sshDir, "authorized_keys")
 
 	if err := rejectAuthorizedKeysFullPath(home, ".ssh/authorized_keys"); err != nil {
-		return fmt.Errorf("path rejected for %s: %w", username, err)
+		return nil, fmt.Errorf("path rejected for %s: %w", username, err)
 	}
 
-	existingKeys, err := readExistingKeys(keyFile)
+	addedKeys, err := addAuthorizedKeys(ctx, username, home, sshDir, keyFile, validLines)
 	if err != nil {
-		return fmt.Errorf("cannot read existing keys for %s: %w", username, err)
-	}
-
-	content := buildAuthorizedKeysContent(existingKeys, validLines)
-
-	if err := writeAuthorizedKeysAsUser(ctx, username, home, sshDir, keyFile, content); err != nil {
-		return fmt.Errorf("failed to write authorized_keys for %s: %w", username, err)
+		return addedKeys, fmt.Errorf("failed to write authorized_keys for %s: %w", username, err)
 	}
 
 	log.Success("SSH public key written to authorized_keys")
-	return nil
+	return addedKeys, nil
 }
 
 func readSSHConfigState(ctx context.Context, sys *system.Context, cfg *types.Config) (sshConfigState, error) {
@@ -596,14 +592,14 @@ func syncExistingFail2banSSHDPort(ctx context.Context, port int, log *logging.Lo
 	if !changed {
 		return nil
 	}
-	serviceWasActive := fail2banServiceEnabled()
+	serviceWasActive := fail2banServiceActive()
 
 	log.Infof("Syncing fail2ban sshd jail to port %d...", port)
-	if err := writeFail2banContentAtomically(fail2banManagedJailPath, []byte(updated), info.Mode()); err != nil {
+	if err := system.WriteFileAtomically(fail2banManagedJailPath, []byte(updated), info.Mode()); err != nil {
 		return fmt.Errorf("failed to update %s: %w", fail2banManagedJailPath, err)
 	}
 	restore := func(cause error) error {
-		if restoreErr := writeFail2banContentAtomically(fail2banManagedJailPath, content, info.Mode()); restoreErr != nil {
+		if restoreErr := system.WriteFileAtomically(fail2banManagedJailPath, content, info.Mode()); restoreErr != nil {
 			return fmt.Errorf("%w; failed to restore previous fail2ban jail: %v", cause, restoreErr)
 		}
 		if serviceWasActive {

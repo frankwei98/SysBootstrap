@@ -459,6 +459,25 @@ func TestPasswordPlanDetailExistingUserWithoutUsablePassword(t *testing.T) {
 	}
 }
 
+func TestPasswordlessSudoEnabledRejectsNonRootOwner(t *testing.T) {
+	originalDir := sudoersDir
+	sudoersDir = t.TempDir()
+	t.Cleanup(func() { sudoersDir = originalDir })
+
+	path := sudoersFile("alice")
+	if err := os.WriteFile(path, []byte("alice ALL=(ALL) NOPASSWD: ALL\n"), 0o440); err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() == 0 {
+		if err := os.Chown(path, 12345, 12345); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if passwordlessSudoEnabled("alice") {
+		t.Fatal("non-root-owned sudoers rule must not satisfy desired state")
+	}
+}
+
 func TestDescribeUserTargetStateExistingReadySudoUser(t *testing.T) {
 	cfg := &types.Config{
 		NewUsername:          "alice",

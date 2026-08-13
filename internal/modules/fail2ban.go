@@ -150,6 +150,13 @@ func fail2banServiceEnabled() bool {
 	if err != nil || enabledRes == nil || enabledRes.ExitCode != 0 || strings.TrimSpace(enabledRes.Stdout) != "enabled" {
 		return false
 	}
+	return fail2banServiceActive()
+}
+
+func fail2banServiceActive() bool {
+	if !system.CommandExists("systemctl") {
+		return false
+	}
 	activeRes, err := system.Run("systemctl", "is-active", "fail2ban")
 	return err == nil && activeRes != nil && activeRes.ExitCode == 0 && strings.TrimSpace(activeRes.Stdout) == "active"
 }
@@ -209,31 +216,6 @@ func fail2banSSHDSettings(content string) map[string]string {
 	return settings
 }
 
-func writeFail2banContentAtomically(path string, content []byte, mode os.FileMode) error {
-	if err := system.RejectSymlinkPath(path); err != nil {
-		return err
-	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".sys-bootstrap-fail2ban-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(mode.Perm()); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
-}
-
 func writeFail2banManagedJail(cfg *types.Config) error {
 	if err := os.MkdirAll(filepath.Dir(fail2banManagedJailPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create fail2ban config directory: %w", err)
@@ -252,24 +234,7 @@ ignoreip = %s
 backend = %s
 port = %s
 `, banTime, findTime, maxRetry, fail2banIgnoreIP(cfg), fail2banBackend(cfg), fail2banSSHPortSetting(cfg))
-	tmp, err := os.CreateTemp(filepath.Dir(fail2banManagedJailPath), ".sys-bootstrap-fail2ban-*")
-	if err != nil {
-		return fmt.Errorf("failed to create fail2ban jail temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return fmt.Errorf("failed to set fail2ban jail file permissions: %w", err)
-	}
-	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
-		return fmt.Errorf("failed to write fail2ban jail config: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("failed to close fail2ban jail config: %w", err)
-	}
-	if err := os.Rename(tmpPath, fail2banManagedJailPath); err != nil {
+	if err := system.WriteFileAtomically(fail2banManagedJailPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("failed to install fail2ban jail config: %w", err)
 	}
 	return nil

@@ -174,35 +174,11 @@ func backupFile(path string) (backupEntry, error) {
 
 func restoreAll(backups []backupEntry) error {
 	for _, b := range backups {
-		if err := atomicWriteFile(b.path, b.content, b.mode); err != nil {
+		if err := WriteFileAtomically(b.path, b.content, b.mode); err != nil {
 			return fmt.Errorf("restoring %s: %w", b.path, err)
 		}
 	}
 	return nil
-}
-
-func atomicWriteFile(path string, content []byte, mode os.FileMode) error {
-	if err := RejectSymlinkPath(path); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".sys-bootstrap-apt-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(mode.Perm()); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
 }
 
 // isSecuritySource returns true if the line contains a security host or path
@@ -259,7 +235,7 @@ func switchListFile(path string) (bool, backupEntry, error) {
 		mode = info.Mode()
 	}
 
-	if err := atomicWriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), mode); err != nil {
+	if err := WriteFileAtomically(path, []byte(strings.Join(lines, "\n")+"\n"), mode); err != nil {
 		return false, backupEntry{}, err
 	}
 
@@ -343,7 +319,7 @@ func switchSourcesFile(path string) (bool, backupEntry, error) {
 
 	bk := backupEntry{path: path, content: content, mode: mode}
 
-	if err := atomicWriteFile(path, []byte(newContent), mode); err != nil {
+	if err := WriteFileAtomically(path, []byte(newContent), mode); err != nil {
 		return false, backupEntry{}, err
 	}
 
