@@ -551,7 +551,7 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 			continue
 		}
 		log.Infof(i18n.T("uninstall_removing_dir"), dir)
-		if err := os.RemoveAll(dir); err != nil {
+		if err := system.RemoveAllBeneath(homeDir, dir); err != nil {
 			log.Warnf(i18n.T("uninstall_dir_failed"), dir, err)
 			failures = append(failures, fmt.Errorf("remove %s: %w", dir, err))
 		} else {
