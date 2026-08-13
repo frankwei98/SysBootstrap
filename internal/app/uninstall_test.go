@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
@@ -667,6 +669,26 @@ alias ll='ls -la'
 	result, _ := os.ReadFile(rcFile)
 	if string(result) != content {
 		t.Error("file should be unchanged when no patterns match")
+	}
+}
+
+func TestCleanShellRC_RejectsFIFOWithoutBlocking(t *testing.T) {
+	rcFile := filepath.Join(t.TempDir(), ".bashrc")
+	if err := syscall.Mkfifo(rcFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := CleanShellRC([]string{rcFile}, []string{"nvm"}, true, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("FIFO should be rejected")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FIFO validation blocked instead of rejecting the special file")
 	}
 }
 
