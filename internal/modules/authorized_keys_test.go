@@ -218,6 +218,48 @@ func TestRollbackAuthorizedKeyLinesFailsBeforeWriteWithoutLease(t *testing.T) {
 	}
 }
 
+func TestRollbackAuthorizedKeyLinesDoesNotReplayAfterInodeReplacement(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "authorized_keys")
+	replacement := filepath.Join(dir, "replacement")
+	line := "ssh-ed25519 " + testAuthorizedKeyPayload + " transaction"
+	content := []byte(line + "\n")
+	if err := os.WriteFile(keyFile, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replacement, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := defaultAuthorizedKeysFileOps
+	replaced := false
+	ops.sync = func(f *os.File) error {
+		if err := f.Sync(); err != nil {
+			return err
+		}
+		if !replaced {
+			replaced = true
+			return os.Rename(replacement, keyFile)
+		}
+		return nil
+	}
+
+	changed, err := rollbackAuthorizedKeyLinesWithOps(keyFile, []string{line}, ops)
+	if err == nil {
+		t.Fatal("inode replacement after rollback should make attribution ambiguous")
+	}
+	if !changed {
+		t.Fatal("rollback should report that it changed the detached inode")
+	}
+	got, readErr := os.ReadFile(keyFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("rollback replayed onto the replacement inode: %q", got)
+	}
+}
+
 func TestEnsureAuthorizedKeysFileLocalTightensPermissions(t *testing.T) {
 	home := t.TempDir()
 	sshDir := filepath.Join(home, ".ssh")
