@@ -465,12 +465,22 @@ test_install_mode_persists_config_with_trusted_root_tools() {
     attack_dir="$(mktemp -d)"
     install_dir="$(mktemp -d)"
     persisted_config="${attack_dir}/persisted-config.env"
+    # Consumed by sourced installer functions.
+    # shellcheck disable=SC2034
     DOWNLOAD_DIR="$attack_dir"
     DOWNLOAD_PATH="${attack_dir}/sys-bootstrap"
+    # Consumed by sourced installer functions.
+    # shellcheck disable=SC2034
     INSTALL_DIR="$install_dir"
+    # Consumed by sourced installer functions.
+    # shellcheck disable=SC2034
     LANG_CHOICE="zh-CN"
+    # Consumed by sourced installer functions.
+    # shellcheck disable=SC2034
     APT_MIRROR="cernet"
     printf '%s\n' "trusted binary" > "$DOWNLOAD_PATH"
+    # Consumed by sourced installer functions.
+    # shellcheck disable=SC2034
     VERIFIED_SHA256="$(file_sha256 "$DOWNLOAD_PATH")"
 
     # Invoked indirectly by sourced installer functions.
