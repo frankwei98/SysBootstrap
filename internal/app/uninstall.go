@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
@@ -478,7 +479,14 @@ func CleanShellRC(rcFiles []string, itemIDs []string, dryRun bool, log *logging.
 
 var writeShellRCIfUnchanged = replaceShellRCIfUnchanged
 
-func replaceShellRCIfUnchanged(rcFile string, expected []byte, expectedInfo os.FileInfo, cleaned []byte) error {
+type shellRCMetadata struct {
+	info   os.FileInfo
+	uid    int
+	gid    int
+	xattrs map[string][]byte
+}
+
+func replaceShellRCIfUnchanged(rcFile string, expected []byte, metadata shellRCMetadata, cleaned []byte) error {
 	current, currentInfo, err := system.OpenExistingFileNoFollow(rcFile)
 	if err != nil {
 		return fmt.Errorf("shell rc changed during cleanup; cannot verify %s: %w", rcFile, err)
@@ -491,10 +499,12 @@ func replaceShellRCIfUnchanged(rcFile string, expected []byte, expectedInfo os.F
 	if closeErr != nil {
 		return fmt.Errorf("shell rc changed during cleanup; cannot close verification snapshot for %s: %w", rcFile, closeErr)
 	}
-	if !os.SameFile(expectedInfo, currentInfo) || !bytes.Equal(expected, currentData) {
+	if !os.SameFile(metadata.info, currentInfo) || !bytes.Equal(expected, currentData) {
 		return fmt.Errorf("shell rc changed during cleanup; refusing to overwrite concurrent update to %s", rcFile)
 	}
-	return system.WriteFileAtomicallyAsInvokingUser(rcFile, cleaned, expectedInfo.Mode())
+	return system.WriteFileAtomicallyWithOwnerAndXattrs(
+		rcFile, cleaned, metadata.info.Mode(), metadata.uid, metadata.gid, metadata.xattrs,
+	)
 }
 
 // cleanSingleRC cleans a single rc file. Returns lines removed.
@@ -509,12 +519,26 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 		return 0, fmt.Errorf("cannot read %s: %w", rcFile, err)
 	}
 	data, err := io.ReadAll(rc)
+	xattrs, xattrErr := system.CaptureFileXattrs(rc)
 	closeErr := rc.Close()
 	if err != nil {
 		return 0, fmt.Errorf("cannot read %s: %w", rcFile, err)
 	}
+	if xattrErr != nil {
+		return 0, fmt.Errorf("cannot capture metadata for %s: %w", rcFile, xattrErr)
+	}
 	if closeErr != nil {
 		return 0, fmt.Errorf("cannot close %s: %w", rcFile, closeErr)
+	}
+	rcStat, ok := rcInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("cannot capture ownership for %s", rcFile)
+	}
+	metadata := shellRCMetadata{
+		info:   rcInfo,
+		uid:    int(rcStat.Uid),
+		gid:    int(rcStat.Gid),
+		xattrs: xattrs,
 	}
 
 	rawLines := strings.Split(string(data), "\n")
@@ -557,7 +581,9 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	if err := system.RejectSymlinkPath(backupPath); err != nil {
 		return removed, fmt.Errorf("refusing unsafe backup path %s: %w", backupPath, err)
 	}
-	if err := copyFileData(data, backupPath, rcInfo.Mode()); err != nil {
+	if err := system.WriteFileAtomicallyWithOwnerAndXattrs(
+		backupPath, data, rcInfo.Mode(), metadata.uid, metadata.gid, metadata.xattrs,
+	); err != nil {
 		return removed, fmt.Errorf("cannot backup %s: %w", rcFile, err)
 	}
 	if log != nil {
@@ -566,7 +592,7 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 
 	// Write cleaned content atomically so a pre-existing symlink cannot redirect
 	// the privileged write to another file.
-	if err := writeShellRCIfUnchanged(rcFile, data, rcInfo, []byte(strings.Join(lines, "\n")+"\n")); err != nil {
+	if err := writeShellRCIfUnchanged(rcFile, data, metadata, []byte(strings.Join(lines, "\n")+"\n")); err != nil {
 		return removed, fmt.Errorf("cannot write %s: %w", rcFile, err)
 	}
 	return removed, nil
