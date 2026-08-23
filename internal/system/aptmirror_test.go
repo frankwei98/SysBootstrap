@@ -1,6 +1,7 @@
 package system
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,6 +316,62 @@ func TestSwitchListFile_RejectsOversizedLineWithoutChangingFile(t *testing.T) {
 	}
 	if string(result) != content {
 		t.Fatal("oversized source file changed after scan failure")
+	}
+}
+
+func TestRestoreAll_ContinuesAfterOneRestoreFails(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsafePath := filepath.Join(dir, "unsafe")
+	if err := os.Symlink(victim, unsafePath); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	restorablePath := filepath.Join(dir, "restorable")
+	if err := os.WriteFile(restorablePath, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := restoreAll([]backupEntry{
+		{path: unsafePath, content: []byte("must not write"), mode: 0o600},
+		{path: restorablePath, content: []byte("original"), mode: 0o600},
+	})
+	if err == nil {
+		t.Fatal("expected unsafe restore target to fail")
+	}
+	got, readErr := os.ReadFile(restorablePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "original" {
+		t.Fatalf("later backup was not restored after an earlier failure: %q", got)
+	}
+}
+
+func TestRestoreAfterAPTSwitchFailure_ReportsProcessingAndRollbackErrors(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsafePath := filepath.Join(dir, "unsafe")
+	if err := os.Symlink(victim, unsafePath); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	err := restoreAfterAPTSwitchFailure(
+		fmt.Errorf("processing later.sources: parse failed"),
+		[]backupEntry{{path: unsafePath, content: []byte("no"), mode: 0o600}},
+	)
+	if err == nil {
+		t.Fatal("expected combined processing and rollback error")
+	}
+	for _, want := range []string{"processing later.sources", "rolling back APT source changes", "restoring"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("combined error %q does not contain %q", err, want)
+		}
 	}
 }
 

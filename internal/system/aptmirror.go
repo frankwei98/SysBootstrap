@@ -2,6 +2,7 @@ package system
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,8 +80,8 @@ func SwitchAPTMirrorToCernet() (*SwitchResult, func() error, error) {
 	listFiles, _ := filepath.Glob("/etc/apt/sources.list.d/*.list")
 	for _, f := range listFiles {
 		if changed, bk, err := switchListFile(f); err != nil {
-			restoreAll(backups)
-			return result, nil, fmt.Errorf("processing %s: %w", f, err)
+			processErr := fmt.Errorf("processing %s: %w", f, err)
+			return result, nil, restoreAfterAPTSwitchFailure(processErr, backups)
 		} else if changed {
 			result.ChangedFiles = append(result.ChangedFiles, f)
 			backups = append(backups, bk)
@@ -91,8 +92,8 @@ func SwitchAPTMirrorToCernet() (*SwitchResult, func() error, error) {
 	sourcesFiles, _ := filepath.Glob("/etc/apt/sources.list.d/*.sources")
 	for _, f := range sourcesFiles {
 		if changed, bk, err := switchSourcesFile(f); err != nil {
-			restoreAll(backups)
-			return result, nil, fmt.Errorf("processing %s: %w", f, err)
+			processErr := fmt.Errorf("processing %s: %w", f, err)
+			return result, nil, restoreAfterAPTSwitchFailure(processErr, backups)
 		} else if changed {
 			result.ChangedFiles = append(result.ChangedFiles, f)
 			backups = append(backups, bk)
@@ -173,12 +174,21 @@ func backupFile(path string) (backupEntry, error) {
 }
 
 func restoreAll(backups []backupEntry) error {
+	var failures []error
 	for _, b := range backups {
 		if err := WriteFileAtomically(b.path, b.content, b.mode); err != nil {
-			return fmt.Errorf("restoring %s: %w", b.path, err)
+			failures = append(failures, fmt.Errorf("restoring %s: %w", b.path, err))
 		}
 	}
-	return nil
+	return errors.Join(failures...)
+}
+
+func restoreAfterAPTSwitchFailure(processErr error, backups []backupEntry) error {
+	restoreErr := restoreAll(backups)
+	if restoreErr == nil {
+		return processErr
+	}
+	return errors.Join(processErr, fmt.Errorf("rolling back APT source changes: %w", restoreErr))
 }
 
 // isSecuritySource returns true if the line contains a security host or path
