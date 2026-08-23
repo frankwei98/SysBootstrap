@@ -1,11 +1,16 @@
 package system
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestAPTMirrorNeedsSwitchInFiles(t *testing.T) {
@@ -335,8 +340,8 @@ func TestRestoreAll_ContinuesAfterOneRestoreFails(t *testing.T) {
 	}
 
 	err := restoreAll([]backupEntry{
-		{path: unsafePath, content: []byte("must not write"), mode: 0o600},
-		{path: restorablePath, content: []byte("original"), mode: 0o600},
+		{path: unsafePath, content: []byte("must not write"), mode: 0o600, uid: os.Getuid(), gid: os.Getgid()},
+		{path: restorablePath, content: []byte("original"), mode: 0o600, uid: os.Getuid(), gid: os.Getgid()},
 	})
 	if err == nil {
 		t.Fatal("expected unsafe restore target to fail")
@@ -363,7 +368,7 @@ func TestRestoreAfterAPTSwitchFailure_ReportsProcessingAndRollbackErrors(t *test
 
 	err := restoreAfterAPTSwitchFailure(
 		fmt.Errorf("processing later.sources: parse failed"),
-		[]backupEntry{{path: unsafePath, content: []byte("no"), mode: 0o600}},
+		[]backupEntry{{path: unsafePath, content: []byte("no"), mode: 0o600, uid: os.Getuid(), gid: os.Getgid()}},
 	)
 	if err == nil {
 		t.Fatal("expected combined processing and rollback error")
@@ -543,7 +548,7 @@ func TestRestoreAll(t *testing.T) {
 	}
 
 	// Restore with mode preserved
-	bk := backupEntry{path: path, content: []byte(original), mode: 0o644}
+	bk := backupEntry{path: path, content: []byte(original), mode: 0o644, uid: os.Getuid(), gid: os.Getgid()}
 	restoreAll([]backupEntry{bk})
 
 	restored, _ := os.ReadFile(path)
@@ -555,6 +560,93 @@ func TestRestoreAll(t *testing.T) {
 	info, _ := os.Stat(path)
 	if info.Mode().Perm() == 0 {
 		t.Errorf("restored file mode should not be 0000, got: %v", info.Mode())
+	}
+}
+
+func TestSwitchSourcesFileRollbackRestoresOwnershipAndExtendedAttributes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "debian.sources")
+	original := []byte("Types: deb\nURIs: http://deb.debian.org/debian\nSuites: bookworm\nComponents: main\n")
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	xattrName := "user.sys-bootstrap-apt-test"
+	if runtime.GOOS == "darwin" {
+		xattrName = "com.sys-bootstrap.apt-test"
+	}
+	xattrValue := []byte("preserve-me")
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setErr := unix.Fsetxattr(int(f.Fd()), xattrName, xattrValue, 0)
+	_ = f.Close()
+	if errors.Is(setErr, unix.ENOTSUP) || errors.Is(setErr, unix.EOPNOTSUPP) || errors.Is(setErr, unix.EPERM) {
+		t.Skipf("extended attributes unavailable: %v", setErr)
+	}
+	if setErr != nil {
+		t.Fatalf("set xattr: %v", setErr)
+	}
+	originalInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStat, ok := originalInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("cannot inspect original source ownership")
+	}
+
+	changed, backup, err := switchSourcesFile(path)
+	if err != nil {
+		t.Fatalf("switchSourcesFile() failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("switchSourcesFile() did not rewrite the source")
+	}
+	if backup.uid != int(originalStat.Uid) || backup.gid != int(originalStat.Gid) {
+		t.Fatalf("backup owner = %d:%d, want %d:%d", backup.uid, backup.gid, originalStat.Uid, originalStat.Gid)
+	}
+	if os.Geteuid() == 0 {
+		if err := os.Chown(path, int(originalStat.Uid)+1, int(originalStat.Gid)+1); err != nil {
+			t.Fatalf("change source owner before rollback: %v", err)
+		}
+	}
+	if err := restoreAll([]backupEntry{backup}); err != nil {
+		t.Fatalf("restoreAll() failed: %v", err)
+	}
+	restoredContent, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restoredContent) != string(original) {
+		t.Fatalf("restored content = %q, want %q", restoredContent, original)
+	}
+
+	f, err = os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotXattr := make([]byte, len(xattrValue))
+	n, getErr := unix.Fgetxattr(int(f.Fd()), xattrName, gotXattr)
+	_ = f.Close()
+	if getErr != nil {
+		t.Fatalf("read restored xattr: %v", getErr)
+	}
+	if string(gotXattr[:n]) != string(xattrValue) {
+		t.Fatalf("restored xattr = %q, want %q", gotXattr[:n], xattrValue)
+	}
+	restoredInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredStat, ok := restoredInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("cannot inspect restored source ownership")
+	}
+	if restoredStat.Uid != originalStat.Uid || restoredStat.Gid != originalStat.Gid {
+		t.Fatalf("restored owner = %d:%d, want %d:%d", restoredStat.Uid, restoredStat.Gid, originalStat.Uid, originalStat.Gid)
+	}
+	if restoredInfo.Mode().Perm() != originalInfo.Mode().Perm() {
+		t.Fatalf("restored mode = %v, want %v", restoredInfo.Mode().Perm(), originalInfo.Mode().Perm())
 	}
 }
 

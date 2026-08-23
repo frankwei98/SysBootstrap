@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // aptMirrorReplacements defines source -> mirror replacements.
@@ -156,27 +158,49 @@ type backupEntry struct {
 	path    string
 	content []byte
 	mode    os.FileMode
+	uid     int
+	gid     int
+	xattrs  map[string][]byte
 }
 
 func backupFile(path string) (backupEntry, error) {
 	if err := RejectSymlinkPath(path); err != nil {
 		return backupEntry{}, err
 	}
-	content, err := os.ReadFile(path)
+	f, info, err := OpenExistingFileNoFollow(path)
 	if err != nil {
 		return backupEntry{}, err
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return backupEntry{}, err
+	content, readErr := io.ReadAll(f)
+	xattrs, xattrErr := CaptureFileXattrs(f)
+	closeErr := f.Close()
+	if readErr != nil {
+		return backupEntry{}, readErr
 	}
-	return backupEntry{path: path, content: content, mode: info.Mode()}, nil
+	if xattrErr != nil {
+		return backupEntry{}, fmt.Errorf("capturing extended attributes for %s: %w", path, xattrErr)
+	}
+	if closeErr != nil {
+		return backupEntry{}, closeErr
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return backupEntry{}, fmt.Errorf("capturing ownership for %s", path)
+	}
+	return backupEntry{
+		path:    path,
+		content: content,
+		mode:    info.Mode(),
+		uid:     int(stat.Uid),
+		gid:     int(stat.Gid),
+		xattrs:  xattrs,
+	}, nil
 }
 
 func restoreAll(backups []backupEntry) error {
 	var failures []error
 	for _, b := range backups {
-		if err := WriteFileAtomically(b.path, b.content, b.mode); err != nil {
+		if err := WriteFileAtomicallyWithOwnerAndXattrs(b.path, b.content, b.mode, b.uid, b.gid, b.xattrs); err != nil {
 			failures = append(failures, fmt.Errorf("restoring %s: %w", b.path, err))
 		}
 	}
@@ -337,7 +361,10 @@ func switchSourcesFile(path string) (bool, backupEntry, error) {
 		mode = info.Mode()
 	}
 
-	bk := backupEntry{path: path, content: content, mode: mode}
+	bk, err := backupFile(path)
+	if err != nil {
+		return false, backupEntry{}, err
+	}
 
 	if err := WriteFileAtomically(path, []byte(newContent), mode); err != nil {
 		return false, backupEntry{}, err
