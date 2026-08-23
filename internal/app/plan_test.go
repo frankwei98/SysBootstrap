@@ -116,6 +116,13 @@ func TestPlanJSONStructure(t *testing.T) {
 	if plan.Modules[2].Steps[0].Risk != "medium" {
 		t.Errorf("ai step risk = %q, want medium", plan.Modules[2].Steps[0].Risk)
 	}
+	for _, mp := range plan.Modules {
+		for _, step := range mp.Steps {
+			if step.Status != "pending" {
+				t.Errorf("%s step %q status = %q, want pending", mp.ID, step.Title, step.Status)
+			}
+		}
+	}
 
 	// Verify JSON round-trip contains expected fields
 	jsonStr, err := FormatPlanJSON(plan)
