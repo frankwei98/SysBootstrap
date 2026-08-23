@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -48,6 +49,9 @@ type PlanCheck struct {
 
 // GeneratePlan creates a plan for the given module IDs.
 func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, registry *modules.Registry, ids []string) (*PlanResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	ordered, err := registry.ResolveOrder(ids)
 	if err != nil {
 		return nil, err
@@ -57,6 +61,9 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 	plan.SupportTier = string(sys.SupportTier())
 	plan.Checks = buildPlanChecks(sys)
 	for _, id := range ordered {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		m, err := registry.Get(id)
 		if err != nil {
 			return nil, err
@@ -77,6 +84,9 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 		}
 
 		check := m.Check(ctx, sys, moduleCfg)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		mp.CheckMessage = strings.TrimSpace(check.Message)
 		if check.Satisfied {
 			mp.Status = "satisfied"
@@ -87,7 +97,13 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 		}
 
 		steps, err := m.Plan(ctx, sys, moduleCfg)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			mp.Status = "error"
 			mp.Warning = err.Error()
 		} else {
@@ -110,7 +126,7 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 	pending := 0
 	satisfied := 0
 	notConfigured := 0
-	errors := 0
+	errorCount := 0
 	for _, mp := range plan.Modules {
 		switch mp.Status {
 		case "pending":
@@ -120,24 +136,24 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 		case "not_configured":
 			notConfigured++
 		case "error":
-			errors++
+			errorCount++
 		}
 	}
 	plan.Counts = PlanCounts{
 		Pending:       pending,
 		Satisfied:     satisfied,
 		NotConfigured: notConfigured,
-		Error:         errors,
+		Error:         errorCount,
 	}
 	if notConfigured > 0 {
 		plan.Summary = fmt.Sprintf("%d module(s) to execute, %d already satisfied, %d awaiting input", pending, satisfied, notConfigured)
-		if errors > 0 {
-			plan.Summary += fmt.Sprintf(", %d plan error(s)", errors)
+		if errorCount > 0 {
+			plan.Summary += fmt.Sprintf(", %d plan error(s)", errorCount)
 		}
 	} else {
 		plan.Summary = fmt.Sprintf("%d module(s) to execute, %d already satisfied", pending, satisfied)
-		if errors > 0 {
-			plan.Summary += fmt.Sprintf(", %d plan error(s)", errors)
+		if errorCount > 0 {
+			plan.Summary += fmt.Sprintf(", %d plan error(s)", errorCount)
 		}
 	}
 
