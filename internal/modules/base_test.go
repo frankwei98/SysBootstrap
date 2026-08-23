@@ -2,6 +2,8 @@ package modules
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -101,4 +103,29 @@ func TestBaseCheckDoesNotMentionZellij(t *testing.T) {
 	if strings.Contains(result.Message, "zellij") {
 		t.Fatalf("base check should not include zellij state, got: %q", result.Message)
 	}
+}
+
+func TestBaseAlwaysPlansSystemRefreshWhenPackagesAreInstalled(t *testing.T) {
+	binDir := t.TempDir()
+	dpkgPath := filepath.Join(binDir, "dpkg")
+	if err := os.WriteFile(dpkgPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	module := NewBaseModule()
+	check := module.Check(context.Background(), &system.Context{}, &types.Config{})
+	if check.Satisfied {
+		t.Fatal("base check must remain pending until apt indexes and upgrades are refreshed")
+	}
+	steps, err := module.Plan(context.Background(), &system.Context{}, &types.Config{})
+	if err != nil {
+		t.Fatalf("Plan() failed: %v", err)
+	}
+	for _, step := range steps {
+		if step.Title == "Run apt update & upgrade" {
+			return
+		}
+	}
+	t.Fatalf("base plan omitted apt update & upgrade: %#v", steps)
 }
