@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/user"
@@ -1244,6 +1245,66 @@ func TestSSHRunReplacesExplicitLegacyPort(t *testing.T) {
 	env := newSSHRunTestEnvironment(t)
 	if err := env.run(t); err != nil {
 		t.Fatalf("SSH hardening should replace an explicit legacy port: %v", err)
+	}
+}
+
+func TestSSHRunLeavesUnmatchedDormantConfigByteForByte(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	dropInDir := filepath.Dir(env.dropInPath)
+	managedSSHDropIn = filepath.Join(dropInDir, "enabled-00-sys-bootstrap.conf")
+	env.dropInPath = managedSSHDropIn
+	t.Setenv("SYSBOOTSTRAP_TEST_DROPIN", managedSSHDropIn)
+	mainConfig := "Include " + filepath.Join(dropInDir, "enabled-*.conf") + "\nPort 22\n"
+	if err := os.WriteFile(env.configPath, []byte(mainConfig), 0o644); err != nil {
+		t.Fatalf("write selective sshd_config Include: %v", err)
+	}
+	dormantPath := filepath.Join(dropInDir, "dormant.conf")
+	dormant := []byte("# intentionally dormant\r\nPort 22022 # emergency fallback\r\n")
+	if err := os.WriteFile(dormantPath, dormant, 0o640); err != nil {
+		t.Fatalf("write dormant SSH config: %v", err)
+	}
+
+	if err := env.run(t); err != nil {
+		t.Fatalf("SSH hardening with selective Include: %v", err)
+	}
+	got, err := os.ReadFile(dormantPath)
+	if err != nil {
+		t.Fatalf("read dormant SSH config: %v", err)
+	}
+	if !bytes.Equal(got, dormant) {
+		t.Fatalf("dormant SSH config changed:\n got %q\nwant %q", got, dormant)
+	}
+}
+
+func TestSSHRunFollowsNestedRelativeIncludesWithoutLooping(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	dropInDir := filepath.Dir(env.dropInPath)
+	managedSSHDropIn = filepath.Join(dropInDir, "enabled-00-sys-bootstrap.conf")
+	env.dropInPath = managedSSHDropIn
+	t.Setenv("SYSBOOTSTRAP_TEST_DROPIN", managedSSHDropIn)
+	mainConfig := "Include sshd_config.d/enabled-*.conf\nPort 22\n"
+	if err := os.WriteFile(env.configPath, []byte(mainConfig), 0o644); err != nil {
+		t.Fatalf("write relative sshd_config Include: %v", err)
+	}
+	chainPath := filepath.Join(dropInDir, "enabled-chain.conf")
+	if err := os.WriteFile(chainPath, []byte("Include sshd_config.d/nested-*.conf\n"), 0o640); err != nil {
+		t.Fatalf("write first nested SSH Include: %v", err)
+	}
+	nestedPath := filepath.Join(dropInDir, "nested-active.conf")
+	if err := os.WriteFile(nestedPath, []byte("Include sshd_config.d/enabled-chain.conf\nPort 22022 # active fallback\n"), 0o640); err != nil {
+		t.Fatalf("write cyclic nested SSH Include: %v", err)
+	}
+
+	if err := env.run(t); err != nil {
+		t.Fatalf("SSH hardening with nested cyclic Includes: %v", err)
+	}
+	got, err := os.ReadFile(nestedPath)
+	if err != nil {
+		t.Fatalf("read nested active SSH config: %v", err)
+	}
+	want := "# sys-bootstrap: disabled legacy SSH port during managed cutover: Port 22022 # active fallback"
+	if !strings.Contains(string(got), want) {
+		t.Fatalf("nested active SSH Port was not disabled:\n%s", got)
 	}
 }
 
