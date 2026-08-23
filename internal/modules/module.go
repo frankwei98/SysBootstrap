@@ -23,7 +23,14 @@ type Module interface {
 
 // CheckResult describes the current state of a module's prerequisites.
 type CheckResult struct {
-	Satisfied bool
-	Message   string
-	Warnings  []string
+	Satisfied             bool
+	DependenciesSatisfied bool
+	Message               string
+	Warnings              []string
+}
+
+// ReadyForDependencies reports whether this module can be used as a
+// prerequisite even when it still has recurring work to perform.
+func (r CheckResult) ReadyForDependencies() bool {
+	return r.Satisfied || r.DependenciesSatisfied
 }

@@ -534,7 +534,7 @@ func missingDependenciesForModule(
 		if err != nil {
 			return nil, fmt.Errorf("load dependency %s for %s: %w", dependencyID, target.ID(), err)
 		}
-		if check := dependency.Check(ctx, sys, cfg); !check.Satisfied {
+		if check := dependency.Check(ctx, sys, cfg); !check.ReadyForDependencies() {
 			missing = append(missing, dependencyID)
 		}
 	}
