@@ -420,20 +420,18 @@ func buildPkgRemoveCmd(manager, pkg string) string {
 var rcCleanupPatterns = map[string][]*regexp.Regexp{
 	"nvm": {
 		regexp.MustCompile(`(?i)^\s*#\s*SYS_BOOTSTRAP_NODE_ENV\s*$`),
-		regexp.MustCompile(`(?i)^\s*(export\s+)?NVM_DIR=`),
-		regexp.MustCompile(`(?i)\[ -s "\$NVM_DIR/nvm\.sh" \]`),
-		regexp.MustCompile(`(?i)source "\$NVM_DIR/nvm\.sh"`),
-		regexp.MustCompile(`(?i)\[ -s "\$NVM_DIR/bash_completion" \]`),
-		regexp.MustCompile(`(?i)source "\$NVM_DIR/bash_completion"`),
+		regexp.MustCompile(`(?i)^\s*(?:export\s+)?NVM_DIR=["']?(?:\$HOME/\.nvm|\$\{NVM_DIR:-\$HOME/\.nvm\})["']?\s*(?:#.*)?$`),
+		regexp.MustCompile(`(?i)^\s*(?:\[\s+-s\s+["']?\$NVM_DIR/nvm\.sh["']?\s*\]\s*&&\s*)?(?:source|\\?\.)\s+["']?\$NVM_DIR/nvm\.sh["']?\s*(?:#.*)?$`),
+		regexp.MustCompile(`(?i)^\s*(?:\[\s+-s\s+["']?\$NVM_DIR/bash_completion["']?\s*\]\s*&&\s*)?(?:source|\\?\.)\s+["']?\$NVM_DIR/bash_completion["']?\s*(?:#.*)?$`),
 	},
 	"bun": {
-		regexp.MustCompile(`(?i)^\s*(export\s+)?BUN_INSTALL=`),
-		regexp.MustCompile(`(?i)^\s*(export\s+)?PATH=.*\$BUN_INSTALL`), // PATH lines that add BUN_INSTALL
+		regexp.MustCompile(`(?i)^\s*(?:export\s+)?BUN_INSTALL=["']?(?:\$HOME/\.bun|\$\{BUN_INSTALL:-\$HOME/\.bun\})["']?\s*(?:#.*)?$`),
+		regexp.MustCompile(`(?i)^\s*(?:export\s+)?PATH=["']?\$\{?BUN_INSTALL\}?/bin:\$PATH["']?\s*(?:#.*)?$`),
 	},
 	"pnpm": {
 		regexp.MustCompile(`(?i)^\s*#\s*SYS_BOOTSTRAP_PNPM_HOME\s*$`),
-		regexp.MustCompile(`(?i)^\s*(export\s+)?PNPM_HOME=`),
-		regexp.MustCompile(`(?i)^\s*(export\s+)?PATH=.*\$PNPM_HOME`), // PATH lines that add PNPM_HOME
+		regexp.MustCompile(`(?i)^\s*(?:export\s+)?PNPM_HOME=["']?(?:\$HOME/\.local/share/pnpm|\$\{PNPM_HOME:-\$HOME/\.local/share/pnpm\})["']?\s*(?:#.*)?$`),
+		regexp.MustCompile(`(?i)^\s*(?:export\s+)?PATH=["']?(?:\$\{?PNPM_HOME\}?/bin:)?\$\{?PNPM_HOME\}?:\$PATH["']?\s*(?:#.*)?$`),
 	},
 }
 
