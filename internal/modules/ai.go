@@ -17,9 +17,9 @@ type AIModule struct{}
 func NewAIModule() *AIModule { return &AIModule{} }
 
 var (
-	aiToolWorksForCheck   = aiToolWorks
-	nvmCommandExistsForAI = system.NvmCommandExistsForContext
-	runAIShellForContext  = system.RunInNvmShellForContextInHome
+	aiToolWorksForCheck   = aiToolWorksContext
+	nvmCommandExistsForAI = system.NvmCommandExistsForContextWithContext
+	runAIShellForContext  = system.RunInNvmShellForContextInHomeWithContext
 )
 
 func (m *AIModule) ID() string             { return "ai" }
@@ -37,16 +37,16 @@ func (m *AIModule) Check(ctx context.Context, sys *system.Context, cfg *types.Co
 	if _, err := os.Stat(filepath.Join(system.NvmDirForContext(sys), "nvm.sh")); err != nil {
 		return CheckResult{Satisfied: false, Message: "Node.js not installed (run node module first)"}
 	}
-	if !nvmCommandExistsForAI(sys, "node") {
+	if !nvmCommandExistsForAI(ctx, sys, "node") {
 		return CheckResult{Satisfied: false, Message: "Node.js not installed (run node module first)"}
 	}
 
-	hasClaude := aiToolWorksForCheck(sys, "claude")
-	hasCodex := aiToolWorksForCheck(sys, "codex")
+	hasClaude := aiToolWorksForCheck(ctx, sys, "claude")
+	hasCodex := aiToolWorksForCheck(ctx, sys, "codex")
 	requestedToolsReady := (!installClaude || hasClaude) && (!installCodex || hasCodex)
 	if requestedToolsReady {
 		// Only require pnpm shell path if pnpm is actually installed
-		if nvmCommandExistsForAI(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
+		if nvmCommandExistsForAI(ctx, sys, "pnpm") && !pnpmShellPathConfigured(sys) {
 			return CheckResult{Satisfied: false, Message: "Requested AI tools installed, but pnpm global bin is missing from shell startup files"}
 		}
 		return CheckResult{Satisfied: true, Message: requestedAIToolsMessage(installClaude, installCodex, "installed")}
@@ -66,23 +66,38 @@ func requestedAIToolsMessage(claude, codex bool, state string) string {
 }
 
 func (m *AIModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var steps []types.Step
 	installClaude, installCodex := requestedAITools(cfg)
 	pmDetail := "pnpm when available, otherwise npm"
 
-	if installClaude && !aiToolWorksForCheck(sys, "claude") {
+	if installClaude && !aiToolWorksForCheck(ctx, sys, "claude") {
 		steps = append(steps, types.Step{Module: "ai", Title: "Install Claude Code", Detail: "@anthropic-ai/claude-code — " + pmDetail})
 	}
-	if installCodex && !aiToolWorksForCheck(sys, "codex") {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if installCodex && !aiToolWorksForCheck(ctx, sys, "codex") {
 		steps = append(steps, types.Step{Module: "ai", Title: "Install Codex", Detail: "@openai/codex — " + pmDetail})
 	}
-	if (installClaude || installCodex) && nvmCommandExistsForAI(sys, "pnpm") && !pnpmShellPathConfigured(sys) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if (installClaude || installCodex) && nvmCommandExistsForAI(ctx, sys, "pnpm") && !pnpmShellPathConfigured(sys) {
 		steps = append(steps, types.Step{Module: "ai", Title: "Update shell startup", Detail: "Add PNPM_HOME to shell rc files"})
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return steps, nil
 }
 
 func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	installClaude, installCodex := requestedAITools(cfg)
 	if !installClaude && !installCodex {
 		log.Info("No AI CLI tools selected, skipping installation")
@@ -91,23 +106,29 @@ func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Conf
 	if _, err := os.Stat(filepath.Join(system.NvmDirForContext(sys), "nvm.sh")); err != nil {
 		return fmt.Errorf("required Node.js runtime is not installed — please run the node module first")
 	}
-	if !nvmCommandExistsForAI(sys, "node") {
+	if !nvmCommandExistsForAI(ctx, sys, "node") {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("required Node.js runtime is not installed — please run the node module first")
 	}
 
 	// Detect package manager inside nvm-aware shell
 	pm := "npm"
-	if nvmCommandExistsForAI(sys, "pnpm") {
+	if nvmCommandExistsForAI(ctx, sys, "pnpm") {
 		pm = "pnpm"
 	} else {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		log.Warn("pnpm not found in nvm environment, falling back to npm")
 	}
 	log.Infof("Using %s for installation", pm)
 	if pm == "pnpm" {
-		if err := ensurePnpmUserDirs(sys); err != nil {
+		if err := ensurePnpmUserDirsContext(ctx, sys); err != nil {
 			return err
 		}
-		if err := ensurePnpmShellPath(sys); err != nil {
+		if err := ensurePnpmShellPathContext(ctx, sys); err != nil {
 			return err
 		}
 	}
@@ -120,16 +141,19 @@ func (m *AIModule) Run(ctx context.Context, sys *system.Context, cfg *types.Conf
 pnpm config set global-bin-dir "$PNPM_HOME/bin"
 ` + script
 		}
-		if res, err := runAIShellForContext(sys, script); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError("Claude Code installation failed", res, err)
+		if res, err := runAIShellForContext(ctx, sys, script); err != nil || res.ExitCode != 0 {
+			return formatCommandErrorForContext(ctx, "Claude Code installation failed", res, err)
 		}
-		if err := verifyClaudeCode(sys, pm, log); err != nil {
+		if err := verifyClaudeCodeContext(ctx, sys, pm, log); err != nil {
 			return err
 		}
 		log.Success("Claude Code installed")
 	}
 
 	if installCodex {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		log.Info("Installing Codex...")
 		script := fmt.Sprintf("%s install -g @openai/codex", pm)
 		if pm == "pnpm" {
@@ -137,10 +161,13 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 pnpm config set global-bin-dir "$PNPM_HOME/bin"
 ` + script
 		}
-		if res, err := runAIShellForContext(sys, script); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError("Codex installation failed", res, err)
+		if res, err := runAIShellForContext(ctx, sys, script); err != nil || res.ExitCode != 0 {
+			return formatCommandErrorForContext(ctx, "Codex installation failed", res, err)
 		}
-		if err := verifyAITool(sys, "codex"); err != nil {
+		if err := verifyAIToolContext(ctx, sys, "codex"); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return fmt.Errorf("Codex installation verification failed: %v", err)
 		}
 		log.Success("Codex installed")
@@ -164,11 +191,19 @@ func requestedAITools(cfg *types.Config) (installClaude, installCodex bool) {
 }
 
 func aiToolWorks(sys *system.Context, name string) bool {
-	return verifyAITool(sys, name) == nil
+	return aiToolWorksContext(context.Background(), sys, name)
+}
+
+func aiToolWorksContext(ctx context.Context, sys *system.Context, name string) bool {
+	return verifyAIToolContext(ctx, sys, name) == nil
 }
 
 func verifyAITool(sys *system.Context, name string) error {
-	res, err := runAIShellForContext(sys, fmt.Sprintf("%s --version", name))
+	return verifyAIToolContext(context.Background(), sys, name)
+}
+
+func verifyAIToolContext(ctx context.Context, sys *system.Context, name string) error {
+	res, err := runAIShellForContext(ctx, sys, fmt.Sprintf("%s --version", name))
 	if err != nil {
 		return err
 	}
@@ -186,18 +221,27 @@ func verifyAITool(sys *system.Context, name string) error {
 }
 
 func verifyClaudeCode(sys *system.Context, pm string, log *logging.Logger) error {
-	if err := verifyAITool(sys, "claude"); err == nil {
+	return verifyClaudeCodeContext(context.Background(), sys, pm, log)
+}
+
+func verifyClaudeCodeContext(ctx context.Context, sys *system.Context, pm string, log *logging.Logger) error {
+	if err := verifyAIToolContext(ctx, sys, "claude"); err == nil {
 		return nil
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	} else if pm != "pnpm" {
 		return fmt.Errorf("Claude Code installation verification failed: %v", err)
 	} else {
 		log.Warnf("Claude Code verification failed, running postinstall repair: %v", err)
 	}
 
-	if res, err := runAIShellForContext(sys, claudeCodePostinstallScript()); err != nil || res.ExitCode != 0 {
-		return system.FormatCommandError("Claude Code postinstall repair failed", res, err)
+	if res, err := runAIShellForContext(ctx, sys, claudeCodePostinstallScript()); err != nil || res.ExitCode != 0 {
+		return formatCommandErrorForContext(ctx, "Claude Code postinstall repair failed", res, err)
 	}
-	if err := verifyAITool(sys, "claude"); err != nil {
+	if err := verifyAIToolContext(ctx, sys, "claude"); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("Claude Code installation verification failed after postinstall repair: %v", err)
 	}
 	return nil
@@ -238,6 +282,13 @@ func pnpmShellFileConfigured(content string) bool {
 }
 
 func ensurePnpmShellPath(sys *system.Context) error {
+	return ensurePnpmShellPathContext(context.Background(), sys)
+}
+
+func ensurePnpmShellPathContext(ctx context.Context, sys *system.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	home := system.TargetHomeDir(sys)
 	if home == "" {
 		return fmt.Errorf("cannot determine target home directory for pnpm shell setup")
@@ -257,12 +308,12 @@ export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
 EOF
   fi
 done`, shellQuote(home))
-	res, err := system.RunAsUserWithInput(sys, "", "bash", "-c", script)
+	res, err := system.RunAsUserWithInputContext(ctx, sys, "", "bash", "-c", script)
 	if err != nil {
-		return system.FormatCommandError("failed to update shell startup files for pnpm", res, err)
+		return formatCommandErrorForContext(ctx, "failed to update shell startup files for pnpm", res, err)
 	}
 	if res.ExitCode != 0 {
-		return system.FormatCommandError("failed to update shell startup files for pnpm", res, nil)
+		return formatCommandErrorForContext(ctx, "failed to update shell startup files for pnpm", res, nil)
 	}
 	return nil
 }
@@ -280,6 +331,13 @@ func pnpmShellRCFiles(sys *system.Context) []string {
 }
 
 func ensurePnpmUserDirs(sys *system.Context) error {
+	return ensurePnpmUserDirsContext(context.Background(), sys)
+}
+
+func ensurePnpmUserDirsContext(ctx context.Context, sys *system.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	home := system.TargetHomeDir(sys)
 	if home == "" {
 		return fmt.Errorf("cannot determine target home directory for pnpm")
@@ -303,6 +361,9 @@ func ensurePnpmUserDirs(sys *system.Context) error {
 		filepath.Join(home, ".config", "pnpm"),
 	}
 	for _, dir := range dirs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("failed to create pnpm directory %s: %w", dir, err)
 		}
@@ -328,8 +389,8 @@ func ensurePnpmUserDirs(sys *system.Context) error {
 		filepath.Join(home, ".config"),
 	}
 	for _, path := range parentDirs {
-		if res, err := system.Run("chown", owner, path); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError(fmt.Sprintf("failed to chown pnpm directory %s", path), res, err)
+		if res, err := system.RunWithContext(ctx, "chown", owner, path); err != nil || res.ExitCode != 0 {
+			return formatCommandErrorForContext(ctx, fmt.Sprintf("failed to chown pnpm directory %s", path), res, err)
 		}
 	}
 
@@ -338,8 +399,8 @@ func ensurePnpmUserDirs(sys *system.Context) error {
 		filepath.Join(home, ".config", "pnpm"),
 	}
 	for _, path := range pnpmDirs {
-		if res, err := system.Run("chown", "-R", owner, path); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError(fmt.Sprintf("failed to chown pnpm directory %s", path), res, err)
+		if res, err := system.RunWithContext(ctx, "chown", "-R", owner, path); err != nil || res.ExitCode != 0 {
+			return formatCommandErrorForContext(ctx, fmt.Sprintf("failed to chown pnpm directory %s", path), res, err)
 		}
 	}
 	return nil

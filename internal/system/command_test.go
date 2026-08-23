@@ -3,6 +3,7 @@ package system
 import (
 	"context"
 	"errors"
+	"os"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,50 @@ func TestRunInNvmShellForHomeContext_CancelsSubprocess(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("cancelled subprocess returned after %v", elapsed)
+	}
+}
+
+func TestRunInNvmShellForContextWithContextCancelsSubprocess(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	sys := &Context{CurrentUser: &user.User{Username: "testuser", HomeDir: t.TempDir()}}
+
+	_, err := RunInNvmShellForContextWithContext(ctx, sys, "sleep 10")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("cancelled subprocess returned after %v", elapsed)
+	}
+}
+
+func TestRunInNvmShellForContextInHomeWithContextCancelsSubprocess(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	sys := &Context{CurrentUser: &user.User{Username: "testuser", HomeDir: t.TempDir()}}
+
+	_, err := RunInNvmShellForContextInHomeWithContext(ctx, sys, "sleep 10")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("cancelled subprocess returned after %v", elapsed)
+	}
+}
+
+func TestRunWithContextDoesNotStartCommandWhenAlreadyCancelled(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := RunWithContext(ctx, "sh", "-c", ": > \"$1\"", "sh", marker)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context canceled", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("command started despite pre-cancelled context; marker stat error = %v", statErr)
 	}
 }
 
