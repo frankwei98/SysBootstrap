@@ -219,8 +219,11 @@ trusted_system_command() {
         mktemp) candidates=(/usr/bin/mktemp /bin/mktemp) ;;
         install) candidates=(/usr/bin/install /bin/install) ;;
         chmod) candidates=(/usr/bin/chmod /bin/chmod) ;;
+        mkdir) candidates=(/usr/bin/mkdir /bin/mkdir) ;;
+        cp) candidates=(/usr/bin/cp /bin/cp) ;;
         rm) candidates=(/usr/bin/rm /bin/rm) ;;
         rmdir) candidates=(/usr/bin/rmdir /bin/rmdir) ;;
+        apt-get) candidates=(/usr/bin/apt-get /bin/apt-get) ;;
         sha256sum) candidates=(/usr/bin/sha256sum /bin/sha256sum) ;;
         shasum) candidates=(/usr/bin/shasum) ;;
         *) return 1 ;;
@@ -441,12 +444,12 @@ detect_platform() {
 check_deps() {
     if ! command -v curl &>/dev/null; then
         warn "curl not found, attempting to install..."
-        if command -v apt-get &>/dev/null; then
-            run_as_root apt-get update -qq
-            run_as_root apt-get install -y -qq curl ca-certificates
-        else
+        local apt_get_path
+        if ! apt_get_path=$(trusted_system_command apt-get); then
             die "curl is required. Please install it manually."
         fi
+        run_as_root "$apt_get_path" update -qq
+        run_as_root "$apt_get_path" install -y -qq curl ca-certificates
     fi
 }
 
@@ -721,13 +724,20 @@ apt_mirror=${APT_MIRROR}"
                 config_content="${config_content}
 apt_mirror=default"
             fi
-            run_as_root mkdir -p "${config_dir}"
+            local mkdir_path cp_path config_chmod_path
+            mkdir_path=$(trusted_system_command mkdir) \
+                || die "Cannot persist settings: trusted mkdir is unavailable."
+            cp_path=$(trusted_system_command cp) \
+                || die "Cannot persist settings: trusted cp is unavailable."
+            config_chmod_path=$(trusted_system_command chmod) \
+                || die "Cannot persist settings: trusted chmod is unavailable."
+            run_as_root "$mkdir_path" -p "${config_dir}"
             local tmp_config
             tmp_config=$(mktemp "/tmp/sys-bootstrap-config.XXXXXX") || die "Failed to create temporary config file."
             trap 'rm -f "${tmp_config}"' RETURN
             printf '%s\n' "${config_content}" > "${tmp_config}"
-            run_as_root cp "${tmp_config}" "${config_file}"
-            run_as_root chmod 0644 "${config_file}"
+            run_as_root "$cp_path" "${tmp_config}" "${config_file}"
+            run_as_root "$config_chmod_path" 0644 "${config_file}"
             rm -f "${tmp_config}"
             trap - RETURN
 
