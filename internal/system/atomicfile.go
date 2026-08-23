@@ -1,10 +1,12 @@
 package system
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -14,13 +16,20 @@ import (
 // WriteFileAtomically replaces path with data using a unique sibling file.
 // Existing symlinks in the destination path are rejected before any write.
 func WriteFileAtomically(path string, data []byte, mode os.FileMode) error {
-	return writeFileAtomically(path, data, mode, false, nil, nil)
+	return writeReaderAtomically(path, bytes.NewReader(data), mode, false, nil, nil)
+}
+
+// WriteReaderAtomically replaces path with data read from reader using a
+// unique sibling file. Existing symlinks in the destination path are rejected
+// before any write, and the input is copied without buffering it in memory.
+func WriteReaderAtomically(path string, reader io.Reader, mode os.FileMode) error {
+	return writeReaderAtomically(path, reader, mode, false, nil, nil)
 }
 
 // WriteFileAtomicallyAsInvokingUser performs the same descriptor-relative
 // replacement but gives a newly created user-scoped file to SUDO_USER.
 func WriteFileAtomicallyAsInvokingUser(path string, data []byte, mode os.FileMode) error {
-	return writeFileAtomically(path, data, mode, true, nil, nil)
+	return writeReaderAtomically(path, bytes.NewReader(data), mode, true, nil, nil)
 }
 
 // WriteFileAtomicallyWithOwner restores a file with the supplied Unix owner.
@@ -37,7 +46,7 @@ func WriteFileAtomicallyWithOwnerAndXattrs(path string, data []byte, mode os.Fil
 	if uid < 0 || gid < 0 {
 		return fmt.Errorf("invalid file owner %d:%d", uid, gid)
 	}
-	return writeFileAtomically(path, data, mode, false, &fileOwner{uid: uid, gid: gid}, xattrs)
+	return writeReaderAtomically(path, bytes.NewReader(data), mode, false, &fileOwner{uid: uid, gid: gid}, xattrs)
 }
 
 type fileOwner struct {
@@ -45,7 +54,7 @@ type fileOwner struct {
 	gid int
 }
 
-func writeFileAtomically(path string, data []byte, mode os.FileMode, preferInvokingUser bool, explicitOwner *fileOwner, xattrs map[string][]byte) error {
+func writeReaderAtomically(path string, reader io.Reader, mode os.FileMode, preferInvokingUser bool, explicitOwner *fileOwner, xattrs map[string][]byte) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err
@@ -106,7 +115,7 @@ func writeFileAtomically(path string, data []byte, mode os.FileMode, preferInvok
 		_ = tmp.Close()
 		return fmt.Errorf("restore extended attributes for %s: %w", path, err)
 	}
-	if _, err := tmp.Write(data); err != nil {
+	if _, err := io.Copy(tmp, reader); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write temporary file for %s: %w", path, err)
 	}

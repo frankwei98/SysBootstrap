@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -24,6 +25,27 @@ func TestWriteFileAtomicallyReplacesContentAndMode(t *testing.T) {
 	}
 	if string(content) != "new" {
 		t.Fatalf("content = %q, want new", content)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode = %o, want 640", info.Mode().Perm())
+	}
+}
+
+func TestWriteReaderAtomicallyCopiesContentAndMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	if err := WriteReaderAtomically(path, strings.NewReader("streamed"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "streamed" {
+		t.Fatalf("content = %q, want streamed", content)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
