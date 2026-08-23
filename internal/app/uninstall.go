@@ -453,6 +453,15 @@ func detectRCFiles(homeDir string) []string {
 // from the given rc files. Returns the number of lines removed.
 // If dryRun is true, only counts lines without modifying files.
 func CleanShellRC(rcFiles []string, itemIDs []string, dryRun bool, log *logging.Logger) (int, error) {
+	return CleanShellRCContext(context.Background(), rcFiles, itemIDs, dryRun, log)
+}
+
+// CleanShellRCContext is the context-aware form of CleanShellRC. It checks
+// cancellation before and after each file cleanup and around every write.
+func CleanShellRCContext(ctx context.Context, rcFiles []string, itemIDs []string, dryRun bool, log *logging.Logger) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	totalRemoved := 0
 
 	// Collect applicable patterns
@@ -467,11 +476,17 @@ func CleanShellRC(rcFiles []string, itemIDs []string, dryRun bool, log *logging.
 	}
 
 	for _, rcFile := range rcFiles {
-		removed, err := cleanSingleRC(rcFile, patterns, dryRun, log)
+		if err := ctx.Err(); err != nil {
+			return totalRemoved, err
+		}
+		removed, err := cleanSingleRC(ctx, rcFile, patterns, dryRun, log)
 		if err != nil {
 			return totalRemoved, err
 		}
 		totalRemoved += removed
+		if err := ctx.Err(); err != nil {
+			return totalRemoved, err
+		}
 	}
 
 	return totalRemoved, nil
@@ -508,7 +523,10 @@ func replaceShellRCIfUnchanged(rcFile string, expected []byte, metadata shellRCM
 }
 
 // cleanSingleRC cleans a single rc file. Returns lines removed.
-func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *logging.Logger) (int, error) {
+func cleanSingleRC(ctx context.Context, rcFile string, patterns []*regexp.Regexp, dryRun bool, log *logging.Logger) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if err := system.RejectSymlinkPath(rcFile); err != nil {
 		return 0, fmt.Errorf("refusing unsafe shell rc path %s: %w", rcFile, err)
 	}
@@ -529,6 +547,9 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	}
 	if closeErr != nil {
 		return 0, fmt.Errorf("cannot close %s: %w", rcFile, closeErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	rcStat, ok := rcInfo.Sys().(*syscall.Stat_t)
 	if !ok {
@@ -551,6 +572,9 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	var lines []string
 	removed := 0
 	for _, line := range rawLines {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		matched := false
 		for _, pat := range patterns {
 			if pat.MatchString(line) {
@@ -569,10 +593,16 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	}
 
 	if removed == 0 {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		return 0, nil
 	}
 
 	if dryRun {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		return removed, nil
 	}
 
@@ -580,6 +610,9 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	backupPath := rcFile + ".bak.sys-bootstrap"
 	if err := system.RejectSymlinkPath(backupPath); err != nil {
 		return removed, fmt.Errorf("refusing unsafe backup path %s: %w", backupPath, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return removed, err
 	}
 	if err := system.WriteFileAtomicallyWithOwnerAndXattrs(
 		backupPath, data, rcInfo.Mode(), metadata.uid, metadata.gid, metadata.xattrs,
@@ -589,11 +622,17 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 	if log != nil {
 		log.Infof(i18n.T("uninstall_rc_backup"), backupPath)
 	}
+	if err := ctx.Err(); err != nil {
+		return removed, err
+	}
 
 	// Write cleaned content atomically so a pre-existing symlink cannot redirect
 	// the privileged write to another file.
 	if err := writeShellRCIfUnchanged(rcFile, data, metadata, []byte(strings.Join(lines, "\n")+"\n")); err != nil {
 		return removed, fmt.Errorf("cannot write %s: %w", rcFile, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return removed, err
 	}
 	return removed, nil
 }
@@ -638,6 +677,9 @@ func ExecuteUninstall(ctx context.Context, plan UninstallPlan, homeDir string, d
 		return err
 	}
 	if err := ValidateUninstallPlan(plan, homeDir); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	var failures []error
@@ -701,11 +743,14 @@ func ExecuteUninstall(ctx context.Context, plan UninstallPlan, homeDir string, d
 			continue
 		}
 		log.Infof(i18n.T("uninstall_removing_dir"), dir)
-		if err := system.RemoveAllBeneath(homeDir, dir); err != nil {
+		if err := system.RemoveAllBeneathContext(ctx, homeDir, dir); err != nil {
 			log.Warnf(i18n.T("uninstall_dir_failed"), dir, err)
 			failures = append(failures, fmt.Errorf("remove %s: %w", dir, err))
 		} else {
 			log.Successf(i18n.T("uninstall_dir_removed"), dir)
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return joinContextError(ctxErr)
 		}
 	}
 
@@ -717,7 +762,7 @@ func ExecuteUninstall(ctx context.Context, plan UninstallPlan, homeDir string, d
 	for i, item := range plan.Items {
 		itemIDs[i] = item.ID
 	}
-	removed, err := CleanShellRC(plan.RCFiles, itemIDs, dryRun, log)
+	removed, err := CleanShellRCContext(ctx, plan.RCFiles, itemIDs, dryRun, log)
 	if err != nil {
 		log.Warnf(i18n.T("uninstall_rc_failed"), err)
 		failures = append(failures, fmt.Errorf("clean shell rc files: %w", err))
@@ -727,6 +772,9 @@ func ExecuteUninstall(ctx context.Context, plan UninstallPlan, homeDir string, d
 		} else {
 			log.Successf(i18n.T("uninstall_rc_cleaned"), removed)
 		}
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return joinContextError(ctxErr)
 	}
 
 	return errors.Join(failures...)
