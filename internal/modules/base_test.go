@@ -115,11 +115,11 @@ func TestBaseAlwaysPlansSystemRefreshWhenPackagesAreInstalled(t *testing.T) {
 
 	module := NewBaseModule()
 	check := module.Check(context.Background(), &system.Context{}, &types.Config{})
-	if check.Satisfied {
-		t.Fatal("base check must remain pending until apt indexes and upgrades are refreshed")
+	if !check.Satisfied {
+		t.Fatal("installed base packages should satisfy the base configuration check")
 	}
-	if !check.DependenciesSatisfied {
-		t.Fatal("installed base packages should satisfy dependent modules while refresh remains pending")
+	if !check.RunWhenSatisfied {
+		t.Fatal("base should still run its recurring system refresh")
 	}
 	steps, err := module.Plan(context.Background(), &system.Context{}, &types.Config{})
 	if err != nil {

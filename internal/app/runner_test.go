@@ -15,13 +15,14 @@ import (
 )
 
 type runnerTestModule struct {
-	id        string
-	deps      []string
-	satisfied bool
-	runCalled bool
-	runErr    error
-	steps     []types.Step
-	warnings  []string
+	id               string
+	deps             []string
+	satisfied        bool
+	runWhenSatisfied bool
+	runCalled        bool
+	runErr           error
+	steps            []types.Step
+	warnings         []string
 }
 
 func (m *runnerTestModule) ID() string             { return m.id }
@@ -34,7 +35,7 @@ func (m *runnerTestModule) Plan(context.Context, *system.Context, *types.Config)
 	return m.steps, nil
 }
 func (m *runnerTestModule) Check(context.Context, *system.Context, *types.Config) modules.CheckResult {
-	return modules.CheckResult{Satisfied: m.satisfied, Message: "already exists", Warnings: m.warnings}
+	return modules.CheckResult{Satisfied: m.satisfied, RunWhenSatisfied: m.runWhenSatisfied, Message: "already exists", Warnings: m.warnings}
 }
 func (m *runnerTestModule) Run(context.Context, *system.Context, *types.Config, *logging.Logger) error {
 	m.runCalled = true
@@ -138,6 +139,31 @@ func TestRunnerLogsCheckWarningsBeforeSkipOrRun(t *testing.T) {
 				t.Fatalf("runner output = %q, want check warning", output)
 			}
 		})
+	}
+}
+
+func TestRunnerRunsSatisfiedModuleWithRecurringWork(t *testing.T) {
+	registry := modules.NewRegistry()
+	module := &runnerTestModule{
+		id:               "base",
+		satisfied:        true,
+		runWhenSatisfied: true,
+		steps:            []types.Step{{Module: "base", Title: "Refresh packages"}},
+	}
+	registry.Register(module)
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New() failed: %v", err)
+	}
+	defer log.Close()
+
+	runner := NewRunner(registry, &system.Context{}, log)
+	if err := runner.Run(context.Background(), &types.Config{}, []string{"base"}); err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	if !module.runCalled {
+		t.Fatal("satisfied module with recurring work must run")
 	}
 }
 

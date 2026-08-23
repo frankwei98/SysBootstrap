@@ -117,7 +117,7 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			return nil, err
 		}
 		mp.CheckMessage = strings.TrimSpace(check.Message)
-		if check.Satisfied {
+		if check.Satisfied && !check.RunWhenSatisfied {
 			mp.Status = "satisfied"
 			mp.Warning = joinCheckWarnings("", check.Warnings)
 		} else {
@@ -203,7 +203,7 @@ func cloneConfig(cfg *types.Config) *types.Config {
 }
 
 func moduleStateContractError(moduleName string, check modules.CheckResult, steps []types.Step) error {
-	if !check.Satisfied || len(steps) == 0 {
+	if !check.Satisfied || check.RunWhenSatisfied || len(steps) == 0 {
 		return nil
 	}
 	noun := "actions"
