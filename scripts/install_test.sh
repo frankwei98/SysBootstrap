@@ -456,6 +456,74 @@ test_install_staging_remains_private() {
         "install staging binary must stay root-private"
 }
 
+test_install_mode_persists_config_with_trusted_root_tools() {
+    TEST_NAME="install mode: persists config through trusted root tools"
+    reset_state
+
+    local saved_run_as_root attack_dir install_dir persisted_config config_content
+    saved_run_as_root="$(declare -f run_as_root)"
+    attack_dir="$(mktemp -d)"
+    install_dir="$(mktemp -d)"
+    persisted_config="${attack_dir}/persisted-config.env"
+    DOWNLOAD_DIR="$attack_dir"
+    DOWNLOAD_PATH="${attack_dir}/sys-bootstrap"
+    INSTALL_DIR="$install_dir"
+    LANG_CHOICE="zh-CN"
+    APT_MIRROR="cernet"
+    printf '%s\n' "trusted binary" > "$DOWNLOAD_PATH"
+    VERIFIED_SHA256="$(file_sha256 "$DOWNLOAD_PATH")"
+
+    # Invoked indirectly by sourced installer functions.
+    # shellcheck disable=SC2329
+    run_as_root() {
+        if [[ "$1" != /* ]]; then
+            echo "unexpected PATH-resolved root command: $*" >&2
+            return 1
+        fi
+        case "${1##*/}" in
+            mktemp)
+                command mktemp -d "/tmp/sys-bootstrap.root.XXXXXX"
+                ;;
+            install|sha256sum|shasum|rm|rmdir)
+                command "$@"
+                ;;
+            mkdir)
+                # The production target is /etc/sys-bootstrap; keep this test
+                # isolated while still exercising the privileged call.
+                ;;
+            cp)
+                command cp "$2" "$persisted_config"
+                ;;
+            chmod)
+                command chmod "$2" "$persisted_config"
+                ;;
+            *)
+                echo "unexpected root command: $*" >&2
+                return 1
+                ;;
+        esac
+    }
+
+    PROMPT_VALUES=("2")
+    CURRENT_EUID_STUB=0
+    install_or_run >/dev/null
+
+    config_content="$(<"$persisted_config")"
+    assert_contains "$config_content" "lang=zh-CN" \
+        "install mode must persist the selected language"
+    assert_contains "$config_content" "apt_mirror=cernet" \
+        "install mode must persist the selected APT mirror"
+    if [[ ! -x "${install_dir}/sys-bootstrap" ]]; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL: $TEST_NAME - installed binary was not created"
+    else
+        PASS=$((PASS + 1))
+    fi
+
+    eval "$saved_run_as_root"
+    command rm -rf -- "$attack_dir" "$install_dir"
+}
+
 test_privileged_staging_avoids_user_path_tools() {
     TEST_NAME="privileged staging: never resolves root tools through user PATH"
     reset_state
@@ -471,6 +539,10 @@ test_privileged_staging_avoids_user_path_tools() {
     assert_not_contains "$staging_code" "run_as_root chmod"
     assert_not_contains "$staging_code" "run_as_root rm"
     assert_not_contains "$staging_code" "run_as_root rmdir"
+    assert_not_contains "$script" "run_as_root apt-get"
+    assert_not_contains "$script" "run_as_root mkdir"
+    assert_not_contains "$script" "run_as_root cp"
+    assert_not_contains "$script" "run_as_root chmod"
     assert_not_contains "$staging_code" "| awk"
     assert_contains "$staging_code" "builtin printf"
 }
@@ -559,6 +631,7 @@ test_env_vars_full_mode_combined
 test_temp_full_mode_uses_verified_root_staging
 test_install_rejects_replacement_during_privileged_copy
 test_install_staging_remains_private
+test_install_mode_persists_config_with_trusted_root_tools
 test_privileged_staging_avoids_user_path_tools
 test_temp_run_reload_shell_declined
 test_temp_run_reload_shell_default_yes
