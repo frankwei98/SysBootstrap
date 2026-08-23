@@ -2,7 +2,9 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -19,6 +21,20 @@ import (
 )
 
 var fail2banDurationRegex = regexp.MustCompile(`^[1-9][0-9]*(?:[smhdw])?$`)
+
+var errSSHCheckpointInputClosed = errors.New("SSH checkpoint input closed")
+
+type sshCheckpointInput struct {
+	*os.File
+}
+
+func (r sshCheckpointInput) Read(p []byte) (int, error) {
+	n, err := r.File.Read(p)
+	if errors.Is(err, io.EOF) {
+		return n, errSSHCheckpointInputClosed
+	}
+	return n, err
+}
 
 // ModuleSelect shows a multi-select for optional modules.
 func ModuleSelect(registry *modules.Registry) ([]string, error) {
@@ -405,6 +421,10 @@ func selectedSSHKeyPath(sys *system.Context, keyType string) (string, bool) {
 	return keyFile, false
 }
 
+var runSSHCheckpointForm = func(ctx context.Context, form *huh.Form) error {
+	return form.WithTimeout(15 * time.Minute).RunWithContext(ctx)
+}
+
 // NewSSHCheckpointFunc returns a types.CheckpointFunc that displays the
 // replacement access paths and asks the operator to test a new login from
 // another terminal before confirming finalization.
@@ -438,8 +458,9 @@ func NewSSHCheckpointFunc() types.CheckpointFunc {
 		fmt.Println("login as you requested.")
 		fmt.Println()
 
-		// Use a bounded, context-aware yes/no prompt. Timeout/cancellation keeps
-		// the prepared dual-path state and never enters finalization.
+		// Use a bounded, context-aware yes/no prompt. Only an explicit No is a
+		// pending confirmation; cancellation, EOF, and timeout are terminal
+		// errors so the SSH module can roll back the prepared state.
 		var confirmed bool
 		form := huh.NewForm(
 			huh.NewGroup(
@@ -450,10 +471,15 @@ func NewSSHCheckpointFunc() types.CheckpointFunc {
 					Negative("No, leave dual-path state").
 					Value(&confirmed),
 			),
-		)
-		if err := form.WithTimeout(15 * time.Minute).RunWithContext(ctx); err != nil {
-			// Cancellation, EOF, timeout: leave dual-path
-			return false, nil
+		).WithInput(sshCheckpointInput{File: os.Stdin})
+		if err := runSSHCheckpointForm(ctx, form); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return false, ctxErr
+			}
+			if errors.Is(err, errSSHCheckpointInputClosed) {
+				return false, io.EOF
+			}
+			return false, err
 		}
 		return confirmed, nil
 	}

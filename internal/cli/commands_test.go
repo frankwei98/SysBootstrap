@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"runtime"
 	"strings"
@@ -13,6 +15,57 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/settings"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
+
+func TestNormalizeSSHRunnerErrorHandlesOnlyPurePendingAsSuccess(t *testing.T) {
+	if err := normalizeSSHRunnerError(context.Background(), types.ErrSSHPendingConfirmation); err != nil {
+		t.Fatalf("pure pending error = %v, want nil", err)
+	}
+}
+
+func TestNormalizeSSHRunnerErrorDoesNotSwallowTerminalErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{
+			name: "cancellation joined with pending",
+			err:  errors.Join(types.ErrSSHPendingConfirmation, context.Canceled),
+			want: context.Canceled,
+		},
+		{
+			name: "deadline joined with pending",
+			err:  errors.Join(types.ErrSSHPendingConfirmation, context.DeadlineExceeded),
+			want: context.DeadlineExceeded,
+		},
+		{
+			name: "EOF joined with pending",
+			err:  errors.Join(types.ErrSSHPendingConfirmation, io.EOF),
+			want: io.EOF,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := normalizeSSHRunnerError(context.Background(), tt.err)
+			if err == nil {
+				t.Fatalf("normalizeSSHRunnerError returned nil, want %v", tt.want)
+			}
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("normalizeSSHRunnerError error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeSSHRunnerErrorCallerCancellationWinsPending(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := normalizeSSHRunnerError(ctx, types.ErrSSHPendingConfirmation)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("normalizeSSHRunnerError error = %v, want context.Canceled", err)
+	}
+}
 
 func init() {
 	i18n.SetLang(i18n.LangEN)
