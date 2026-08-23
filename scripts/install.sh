@@ -218,6 +218,7 @@ trusted_system_command() {
     case "$name" in
         mktemp) candidates=(/usr/bin/mktemp /bin/mktemp) ;;
         install) candidates=(/usr/bin/install /bin/install) ;;
+        chmod) candidates=(/usr/bin/chmod /bin/chmod) ;;
         rm) candidates=(/usr/bin/rm /bin/rm) ;;
         rmdir) candidates=(/usr/bin/rmdir /bin/rmdir) ;;
         sha256sum) candidates=(/usr/bin/sha256sum /bin/sha256sum) ;;
@@ -309,6 +310,26 @@ stage_verified_binary_as_root() {
         cleanup_root_stage
         die "Root-side checksum verification failed; refusing privileged use."
     fi
+}
+
+expose_root_stage_for_user_execution() {
+    local chmod_path
+
+    case "${ROOT_STAGE_DIR:-}" in
+        /tmp/sys-bootstrap.root.??????) ;;
+        *) die "Cannot expose unexpected privileged staging path." ;;
+    esac
+    if [[ "${ROOT_STAGE_PATH:-}" != "${ROOT_STAGE_DIR}/${BINARY}" ]]; then
+        die "Cannot expose unexpected privileged staging binary path."
+    fi
+    chmod_path=$(trusted_system_command chmod) \
+        || die "Cannot expose binary: trusted chmod is unavailable."
+
+    # Keep the directory private until the verified root-owned file is executable.
+    run_as_root "$chmod_path" 0755 "$ROOT_STAGE_PATH" \
+        || die "Failed to make the staged binary executable by target users."
+    run_as_root "$chmod_path" 0711 "$ROOT_STAGE_DIR" \
+        || die "Failed to make the staging directory traversable by target users."
 }
 
 # --- Language Selection ---
@@ -657,6 +678,7 @@ install_or_run() {
                     fi
                 fi
                 stage_verified_binary_as_root
+                expose_root_stage_for_user_execution
                 if [[ $(current_euid) -eq 0 ]]; then
                     run_with_tty env "${env_args[@]}" "$ROOT_STAGE_PATH"
                 else

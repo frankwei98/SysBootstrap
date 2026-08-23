@@ -44,6 +44,17 @@ assert_equal() {
     fi
 }
 
+path_mode() {
+    local path="$1"
+    local mode
+
+    if mode=$(command stat -c '%a' -- "$path" 2>/dev/null); then
+        builtin printf '%s\n' "$mode"
+        return
+    fi
+    command stat -f '%Lp' "$path"
+}
+
 CAPTURED_CMD=""
 CAPTURED_RELOAD_CMD=""
 PROMPT_VALUES=()
@@ -276,6 +287,7 @@ test_temp_full_mode_uses_verified_root_staging() {
     reset_state
 
     local saved_run_as_root saved_run_with_tty attack_dir executed_content=""
+    local stage_dir_mode="" stage_file_mode=""
     saved_run_as_root="$(declare -f run_as_root)"
     saved_run_with_tty="$(declare -f run_with_tty)"
     attack_dir="$(mktemp -d)"
@@ -295,7 +307,7 @@ test_temp_full_mode_uses_verified_root_staging() {
             mktemp)
                 command mktemp -d "/tmp/sys-bootstrap.root.XXXXXX"
                 ;;
-            install|rm|rmdir)
+            install|chmod|rm|rmdir)
                 command "$@"
                 ;;
             sha256sum|shasum)
@@ -309,6 +321,8 @@ test_temp_full_mode_uses_verified_root_staging() {
     }
     run_with_tty() {
         local privileged_path="${!#}"
+        stage_dir_mode="$(path_mode "${privileged_path%/*}")"
+        stage_file_mode="$(path_mode "$privileged_path")"
         printf '%s\n' "malicious replacement" > "$DOWNLOAD_PATH"
         executed_content="$(command head -n 1 -- "$privileged_path")"
     }
@@ -322,6 +336,10 @@ test_temp_full_mode_uses_verified_root_staging() {
     eval "$saved_run_with_tty"
     assert_equal "$executed_content" "trusted binary" \
         "privileged execution must use content bound to the verified download"
+    assert_equal "$stage_dir_mode" "711" \
+        "temporary full-run staging directory must be traversable but not writable"
+    assert_equal "$stage_file_mode" "755" \
+        "temporary full-run binary must be executable but not writable"
 }
 
 test_install_rejects_replacement_during_privileged_copy() {
@@ -388,6 +406,56 @@ test_install_rejects_replacement_during_privileged_copy() {
     command rm -rf -- "$attack_dir" "$install_dir"
 }
 
+test_install_staging_remains_private() {
+    TEST_NAME="install mode: staging remains root-private"
+    reset_state
+
+    local saved_run_as_root attack_dir stage_dir_mode stage_file_mode
+    saved_run_as_root="$(declare -f run_as_root)"
+    attack_dir="$(mktemp -d)"
+    # Consumed by sourced installer functions.
+    # shellcheck disable=SC2034
+    DOWNLOAD_DIR="$attack_dir"
+    DOWNLOAD_PATH="${attack_dir}/sys-bootstrap"
+    printf '%s\n' "trusted binary" > "$DOWNLOAD_PATH"
+    # Consumed by sourced installer functions.
+    # shellcheck disable=SC2034
+    VERIFIED_SHA256="$(file_sha256 "$DOWNLOAD_PATH")"
+
+    # Invoked indirectly by sourced installer functions.
+    # shellcheck disable=SC2329
+    run_as_root() {
+        if [[ "$1" != /* ]]; then
+            echo "unexpected PATH-resolved root command: $*" >&2
+            return 1
+        fi
+        case "${1##*/}" in
+            mktemp)
+                command mktemp -d "/tmp/sys-bootstrap.root.XXXXXX"
+                ;;
+            install|sha256sum|shasum|rm|rmdir)
+                command "$@"
+                ;;
+            *)
+                echo "unexpected root command: $*" >&2
+                return 1
+                ;;
+        esac
+    }
+
+    stage_verified_binary_as_root
+    stage_dir_mode="$(path_mode "$ROOT_STAGE_DIR")"
+    stage_file_mode="$(path_mode "$ROOT_STAGE_PATH")"
+    cleanup_root_stage
+
+    eval "$saved_run_as_root"
+    command rm -rf -- "$attack_dir"
+    assert_equal "$stage_dir_mode" "700" \
+        "install staging directory must stay root-private"
+    assert_equal "$stage_file_mode" "700" \
+        "install staging binary must stay root-private"
+}
+
 test_privileged_staging_avoids_user_path_tools() {
     TEST_NAME="privileged staging: never resolves root tools through user PATH"
     reset_state
@@ -400,6 +468,7 @@ test_privileged_staging_avoids_user_path_tools() {
 
     assert_not_contains "$staging_code" "run_as_root mktemp"
     assert_not_contains "$staging_code" "run_as_root install"
+    assert_not_contains "$staging_code" "run_as_root chmod"
     assert_not_contains "$staging_code" "run_as_root rm"
     assert_not_contains "$staging_code" "run_as_root rmdir"
     assert_not_contains "$staging_code" "| awk"
@@ -489,6 +558,7 @@ test_env_vars_apt_mirror
 test_env_vars_full_mode_combined
 test_temp_full_mode_uses_verified_root_staging
 test_install_rejects_replacement_during_privileged_copy
+test_install_staging_remains_private
 test_privileged_staging_avoids_user_path_tools
 test_temp_run_reload_shell_declined
 test_temp_run_reload_shell_default_yes
