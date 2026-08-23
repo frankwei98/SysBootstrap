@@ -63,3 +63,55 @@ func TestSSHKeygenCheckTreatsOverwriteAsUnsatisfied(t *testing.T) {
 		t.Fatalf("Check() = %#v, want overwrite request to remain actionable", check)
 	}
 }
+
+func TestSSHKeygenRecoversMissingPublicKey(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	privatePath := filepath.Join(sshDir, "id_ed25519")
+	if err := os.WriteFile(privatePath, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sys := &system.Context{CurrentUser: &user.User{Username: "test-user", HomeDir: home}}
+	cfg := &types.Config{KeygenType: "ed25519"}
+	module := NewSSHKeygenModule()
+
+	if check := module.Check(context.Background(), sys, cfg); check.Satisfied {
+		t.Fatalf("Check() = %#v, want missing public key to remain actionable", check)
+	}
+	steps, err := module.Plan(context.Background(), sys, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].Title != "Recover SSH public key" {
+		t.Fatalf("Plan() = %#v, want public-key recovery step", steps)
+	}
+
+	binDir := t.TempDir()
+	keygenPath := filepath.Join(binDir, "ssh-keygen")
+	if err := os.WriteFile(keygenPath, []byte("#!/bin/sh\n[ \"$1\" = -y ] || exit 99\nprintf '%s\\n' 'ssh-ed25519 AAAATEST recovered'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	originalCommandExists := sshKeygenCommandExistsFn
+	sshKeygenCommandExistsFn = func(name string) bool { return name == "ssh-keygen" }
+	t.Cleanup(func() { sshKeygenCommandExistsFn = originalCommandExists })
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	if err := module.Run(context.Background(), sys, cfg, log); err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	public, err := os.ReadFile(privatePath + ".pub")
+	if err != nil {
+		t.Fatalf("read recovered public key: %v", err)
+	}
+	if string(public) != "ssh-ed25519 AAAATEST recovered\n" {
+		t.Fatalf("recovered public key = %q", public)
+	}
+}
