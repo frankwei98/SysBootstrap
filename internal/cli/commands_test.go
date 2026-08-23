@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/frankwei98/sys-bootstrap/internal/app"
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/modules"
 	"github.com/frankwei98/sys-bootstrap/internal/settings"
@@ -19,6 +21,15 @@ import (
 func TestNormalizeSSHRunnerErrorHandlesOnlyPurePendingAsSuccess(t *testing.T) {
 	if err := normalizeSSHRunnerError(context.Background(), types.ErrSSHPendingConfirmation); err != nil {
 		t.Fatalf("pure pending error = %v, want nil", err)
+	}
+}
+
+func TestIsRecoverableRunnerFailure(t *testing.T) {
+	if !isRecoverableRunnerFailure(fmt.Errorf("%w: zellij", app.ErrModulesFailed)) {
+		t.Fatal("ErrModulesFailed should be treated as recoverable by RunCmd")
+	}
+	if isRecoverableRunnerFailure(context.Canceled) {
+		t.Fatal("context cancellation must remain fatal")
 	}
 }
 

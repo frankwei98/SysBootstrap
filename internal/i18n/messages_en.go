@@ -49,6 +49,7 @@ var enMessages = map[string]string{
 	"runner_failed":                       "%s failed: %v",
 	"runner_failed_continue":              "%s failed: %v; continuing with independent modules",
 	"runner_skipping_failed_dependencies": "%s skipped because required module(s) failed: %v",
+	"runner_completed_with_warnings":      "Run completed with module warnings: %v",
 	"runner_all_done":                     "All done!",
 	"runner_cancelled":                    "Execution cancelled",
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -221,11 +222,16 @@ func RunCmd(ctx context.Context, registry *modules.Registry) error {
 	// Execute
 	runner := app.NewRunner(registry, sys, log)
 	runner.SetSSHCheckpoint(ui.NewSSHCheckpointFunc())
-	if err := runner.Run(ctx, cfg, ordered); err != nil {
-		return normalizeSSHRunnerError(ctx, err)
+	runErr := runner.Run(ctx, cfg, ordered)
+	if runErr != nil && !isRecoverableRunnerFailure(runErr) {
+		return normalizeSSHRunnerError(ctx, runErr)
 	}
 
-	log.Success(i18n.T("runner_all_done"))
+	if runErr == nil {
+		log.Success(i18n.T("runner_all_done"))
+	} else {
+		log.Warnf(i18n.T("runner_completed_with_warnings"), runErr)
+	}
 	if needsShellReloadHint(ordered) {
 		log.Warnf(i18n.T("shell_reload_hint"), shellReloadCommand())
 	}
@@ -498,6 +504,10 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 		log.Warnf(i18n.T("shell_reload_hint"), shellReloadCommand())
 	}
 	return nil
+}
+
+func isRecoverableRunnerFailure(err error) bool {
+	return errors.Is(err, app.ErrModulesFailed)
 }
 
 func normalizeSSHRunnerError(ctx context.Context, err error) error {
