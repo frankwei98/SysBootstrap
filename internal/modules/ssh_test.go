@@ -1120,6 +1120,82 @@ func (e *sshRunTestEnvironment) run(t *testing.T) error {
 	return m.Run(context.Background(), sys, &types.Config{SSHPort: 22122}, newQuietLogger(t))
 }
 
+func runSSHWithUFWStatus(t *testing.T, status string) string {
+	t.Helper()
+	newSSHRunTestEnvironment(t)
+	pathEntries := filepath.SplitList(os.Getenv("PATH"))
+	if len(pathEntries) == 0 {
+		t.Fatal("test PATH is empty")
+	}
+	allowLog := filepath.Join(t.TempDir(), "ufw-allow.log")
+	writeFakeCommand(t, pathEntries[0], "ufw", `#!/bin/sh
+case "$1" in
+  status)
+    printf '%s\n' "$SYSBOOTSTRAP_TEST_UFW_STATUS"
+    exit 0
+    ;;
+  allow)
+    printf '%s\n' "$*" >> "$SYSBOOTSTRAP_TEST_UFW_ALLOW_LOG"
+    exit 0
+    ;;
+esac
+exit 0
+`)
+	t.Setenv("SYSBOOTSTRAP_TEST_UFW_STATUS", status)
+	t.Setenv("SYSBOOTSTRAP_TEST_UFW_ALLOW_LOG", allowLog)
+
+	m := NewSSHModule()
+	m.SetCheckpoint(func(context.Context, []types.AccessPath) (bool, error) { return true, nil })
+	sys := &system.Context{
+		CurrentUser: &user.User{Username: "sys-bootstrap-test-missing-user"},
+		HasUFW:      true,
+		UFWActive:   true,
+	}
+	if err := m.Run(context.Background(), sys, &types.Config{
+		SSHPort:     22122,
+		SSHAllowUFW: true,
+	}, newQuietLogger(t)); err != nil {
+		t.Fatalf("SSH hardening with UFW: %v", err)
+	}
+
+	data, err := os.ReadFile(allowLog)
+	if os.IsNotExist(err) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read fake UFW allow log: %v", err)
+	}
+	return string(data)
+}
+
+func TestSSHRunAddsUFWAllowWhenExistingRuleDeniesPort(t *testing.T) {
+	allowLog := runSSHWithUFWStatus(t, "22122/tcp                 DENY IN     Anywhere")
+	if allowLog != "allow 22122/tcp\n" {
+		t.Fatalf("ufw allow calls = %q, want %q", allowLog, "allow 22122/tcp\n")
+	}
+}
+
+func TestSSHRunSkipsUFWAllowWhenUnrestrictedRuleAllowsPort(t *testing.T) {
+	allowLog := runSSHWithUFWStatus(t, "22122/tcp                 ALLOW IN    Anywhere")
+	if allowLog != "" {
+		t.Fatalf("ufw allow calls = %q, want none", allowLog)
+	}
+}
+
+func TestSSHRunAddsUFWAllowWhenAllowedRuleOnlyContainsPortAsSubstring(t *testing.T) {
+	allowLog := runSSHWithUFWStatus(t, "122122/tcp                ALLOW IN    Anywhere")
+	if allowLog != "allow 22122/tcp\n" {
+		t.Fatalf("ufw allow calls = %q, want %q", allowLog, "allow 22122/tcp\n")
+	}
+}
+
+func TestSSHRunAddsUFWAllowWhenExistingAllowRuleHasRestrictedSource(t *testing.T) {
+	allowLog := runSSHWithUFWStatus(t, "22122/tcp                 ALLOW IN    192.0.2.0/24")
+	if allowLog != "allow 22122/tcp\n" {
+		t.Fatalf("ufw allow calls = %q, want %q", allowLog, "allow 22122/tcp\n")
+	}
+}
+
 func newSSHRunTestAccessPath(t *testing.T) *system.Context {
 	t.Helper()
 	const username = "sys-bootstrap-test-user"
