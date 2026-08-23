@@ -118,6 +118,9 @@ func TestBaseAlwaysPlansSystemRefreshWhenPackagesAreInstalled(t *testing.T) {
 	if check.Satisfied {
 		t.Fatal("base check must remain pending until apt indexes and upgrades are refreshed")
 	}
+	if !check.DependenciesSatisfied {
+		t.Fatal("installed base packages should satisfy dependent modules while refresh remains pending")
+	}
 	steps, err := module.Plan(context.Background(), &system.Context{}, &types.Config{})
 	if err != nil {
 		t.Fatalf("Plan() failed: %v", err)

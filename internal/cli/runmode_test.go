@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,6 +81,29 @@ func TestMissingDependenciesUseTargetExecutionConfig(t *testing.T) {
 	}
 	if dependency.checkCfg != cfg {
 		t.Fatal("dependency Check did not receive the target execution config")
+	}
+}
+
+func TestMissingDependenciesTreatsReadyBaseAsSatisfied(t *testing.T) {
+	binDir := t.TempDir()
+	dpkgPath := filepath.Join(binDir, "dpkg")
+	if err := os.WriteFile(dpkgPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	registry := modules.NewRegistry()
+	base := modules.NewBaseModule()
+	target := &testModule{id: "target", deps: []string{"base"}}
+	registry.Register(base)
+	registry.Register(target)
+
+	missing, err := missingDependenciesForModule(context.Background(), registry, target, &system.Context{}, &types.Config{})
+	if err != nil {
+		t.Fatalf("missingDependenciesForModule returned error: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("missing = %v, want no missing dependencies when only the base refresh is pending", missing)
 	}
 }
 

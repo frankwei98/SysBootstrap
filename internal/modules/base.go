@@ -47,8 +47,9 @@ func (m *BaseModule) Check(ctx context.Context, sys *system.Context, cfg *types.
 		// A read-only check cannot prove package indexes are current or that no
 		// security upgrades are pending. Selecting base therefore always performs
 		// one bounded apt update/upgrade cycle.
-		Satisfied: false,
-		Message:   message,
+		Satisfied:             false,
+		DependenciesSatisfied: len(missing) == 0 && !mirrorNeedsSwitch,
+		Message:               message,
 	}
 }
 
