@@ -166,6 +166,18 @@ func TestGeneratePlan_PropagatesCancellation(t *testing.T) {
 	}
 }
 
+func TestPlanResultErr_RejectsFatalChecksAndModuleErrors(t *testing.T) {
+	tests := []PlanResult{
+		{Checks: []PlanCheck{{Name: "arch", Status: "fatal"}}},
+		{Modules: []ModulePlan{{ID: "node", Status: "error"}}, Counts: PlanCounts{Error: 1}},
+	}
+	for _, plan := range tests {
+		if err := plan.Err(); !errors.Is(err, ErrPlanNotExecutable) {
+			t.Fatalf("PlanResult.Err() = %v, want ErrPlanNotExecutable for %+v", err, plan)
+		}
+	}
+}
+
 func TestPlanTextFormat(t *testing.T) {
 	i18n.SetLang(i18n.LangEN)
 

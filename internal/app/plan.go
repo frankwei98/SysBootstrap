@@ -22,6 +22,35 @@ type PlanResult struct {
 	Counts      PlanCounts   `json:"counts"`
 }
 
+// ErrPlanNotExecutable marks a plan containing fatal environment checks or
+// module planning errors. The plan may still be rendered for diagnostics.
+var ErrPlanNotExecutable = errors.New("plan is not executable")
+
+// Err reports whether a rendered plan is safe to execute.
+func (p *PlanResult) Err() error {
+	if p == nil {
+		return fmt.Errorf("%w: no plan result", ErrPlanNotExecutable)
+	}
+	var reasons []string
+	if p.SupportTier == string(system.SupportTierUnsupported) {
+		reasons = append(reasons, "unsupported operating system")
+	}
+	for _, check := range p.Checks {
+		if check.Status == "fatal" || check.Status == "error" {
+			reasons = append(reasons, fmt.Sprintf("%s check is %s", check.Name, check.Status))
+		}
+	}
+	for _, module := range p.Modules {
+		if module.Status == "error" {
+			reasons = append(reasons, fmt.Sprintf("module %s has a planning error", module.ID))
+		}
+	}
+	if len(reasons) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrPlanNotExecutable, strings.Join(reasons, "; "))
+}
+
 type PlanCounts struct {
 	Pending       int `json:"pending"`
 	Satisfied     int `json:"satisfied"`
