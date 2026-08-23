@@ -91,7 +91,7 @@ func TestSSHKeygenRecoversMissingPublicKey(t *testing.T) {
 
 	binDir := t.TempDir()
 	keygenPath := filepath.Join(binDir, "ssh-keygen")
-	if err := os.WriteFile(keygenPath, []byte("#!/bin/sh\n[ \"$1\" = -y ] || exit 99\nprintf '%s\\n' 'ssh-ed25519 AAAATEST recovered'\n"), 0o755); err != nil {
+	if err := os.WriteFile(keygenPath, []byte("#!/bin/sh\n[ \"$1\" = -y ] || exit 99\nprintf '%s\\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq recovered'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir)
@@ -111,8 +111,45 @@ func TestSSHKeygenRecoversMissingPublicKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read recovered public key: %v", err)
 	}
-	if string(public) != "ssh-ed25519 AAAATEST recovered\n" {
+	if string(public) != "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJjYWFhYmJiY2NjZGRkZWVlZWZmZmdoaGhoaWlpampq recovered\n" {
 		t.Fatalf("recovered public key = %q", public)
+	}
+}
+
+func TestSSHKeygenRejectsMalformedRecoveredPublicKey(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	privatePath := filepath.Join(sshDir, "id_ed25519")
+	if err := os.WriteFile(privatePath, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sys := &system.Context{CurrentUser: &user.User{Username: "test-user", HomeDir: home}}
+	cfg := &types.Config{KeygenType: "ed25519"}
+
+	binDir := t.TempDir()
+	keygenPath := filepath.Join(binDir, "ssh-keygen")
+	if err := os.WriteFile(keygenPath, []byte("#!/bin/sh\nprintf '%s\\n' 'ssh-ed25519 not-base64 recovered'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	originalCommandExists := sshKeygenCommandExistsFn
+	sshKeygenCommandExistsFn = func(name string) bool { return name == "ssh-keygen" }
+	t.Cleanup(func() { sshKeygenCommandExistsFn = originalCommandExists })
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	err = NewSSHKeygenModule().Run(context.Background(), sys, cfg, log)
+	if err == nil || !strings.Contains(err.Error(), "invalid public key") {
+		t.Fatalf("Run() error = %v, want invalid recovered public key error", err)
+	}
+	if _, statErr := os.Stat(privatePath + ".pub"); !os.IsNotExist(statErr) {
+		t.Fatalf("malformed recovered key was written: %v", statErr)
 	}
 }
 

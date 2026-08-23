@@ -122,6 +122,9 @@ func (m *SSHKeygenModule) Run(ctx context.Context, sys *system.Context, cfg *typ
 			if publicKey == "" {
 				return fmt.Errorf("failed to recover SSH public key: ssh-keygen returned empty output")
 			}
+			if !ValidatePublicKey(publicKey) {
+				return fmt.Errorf("failed to recover SSH public key: ssh-keygen returned an invalid public key")
+			}
 			if err := system.WriteFileAtomicallyAsInvokingUser(publicKeyFile, []byte(publicKey+"\n"), 0o644); err != nil {
 				return fmt.Errorf("write recovered SSH public key: %w", err)
 			}
