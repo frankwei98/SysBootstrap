@@ -1339,6 +1339,40 @@ func TestExecuteUninstall_CancelledContextPreventsDeletion(t *testing.T) {
 	}
 }
 
+func TestExecuteUninstall_CancellationPreservesEarlierFailures(t *testing.T) {
+	home := t.TempDir()
+	fakeBin := t.TempDir()
+	fakeNPM := filepath.Join(fakeBin, "npm")
+	if err := os.WriteFile(fakeNPM, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	plan := UninstallPlan{
+		Items: []UninstallItem{
+			{
+				Name:    "missing manager",
+				PkgName: "first-package",
+			},
+			{
+				Name:       "slow package",
+				PkgName:    "second-package",
+				PkgManager: "npm",
+			},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := ExecuteUninstall(ctx, plan, home, false, createTestLogger(t))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ExecuteUninstall error = %v, want context deadline exceeded", err)
+	}
+	if !strings.Contains(err.Error(), "cannot remove first-package: no package manager available") {
+		t.Fatalf("ExecuteUninstall error = %v, want earlier package failure preserved", err)
+	}
+}
+
 // --- FormatUninstallPlan tests ---
 
 func TestFormatUninstallPlan_WithDirsAndCommands(t *testing.T) {

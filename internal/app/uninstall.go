@@ -641,10 +641,16 @@ func ExecuteUninstall(ctx context.Context, plan UninstallPlan, homeDir string, d
 		return err
 	}
 	var failures []error
+	joinContextError := func(ctxErr error) error {
+		if len(failures) == 0 {
+			return ctxErr
+		}
+		return errors.Join(append(append([]error{}, failures...), ctxErr)...)
+	}
 	// 1. Remove package manager packages
 	for _, item := range plan.Items {
 		if err := ctx.Err(); err != nil {
-			return err
+			return joinContextError(err)
 		}
 		if item.PkgName == "" {
 			continue
@@ -666,7 +672,7 @@ func ExecuteUninstall(ctx context.Context, plan UninstallPlan, homeDir string, d
 		log.Infof(i18n.T("uninstall_running_cmd"), cmd)
 		res, err := system.RunInNvmShellForHomeContext(ctx, homeDir, cmd)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
+			return joinContextError(ctxErr)
 		}
 		if err != nil || res == nil || res.ExitCode != 0 {
 			stderr := ""
@@ -683,7 +689,7 @@ func ExecuteUninstall(ctx context.Context, plan UninstallPlan, homeDir string, d
 	// 2. Remove directories
 	for _, dir := range plan.DirsToDelete {
 		if err := ctx.Err(); err != nil {
-			return err
+			return joinContextError(err)
 		}
 		if err := ValidatePathSafety(dir, homeDir); err != nil {
 			log.Warnf(i18n.T("uninstall_path_unsafe"), dir, err)
@@ -705,7 +711,7 @@ func ExecuteUninstall(ctx context.Context, plan UninstallPlan, homeDir string, d
 
 	// 3. Clean shell rc files
 	if err := ctx.Err(); err != nil {
-		return err
+		return joinContextError(err)
 	}
 	itemIDs := make([]string, len(plan.Items))
 	for i, item := range plan.Items {
