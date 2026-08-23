@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -278,7 +279,7 @@ func writeConfig(path string, s Settings, userScoped bool) error {
 		fmt.Fprintf(&b, "apt_mirror=%s\n", s.AptMirror)
 	}
 
-	if err := system.WriteFileAtomically(path, []byte(b.String()), 0o644); err != nil {
+	if err := writeConfigAtomically(path, []byte(b.String())); err != nil {
 		return fmt.Errorf("cannot write config %s: %w", path, err)
 	}
 	if userScoped {
@@ -287,6 +288,29 @@ func writeConfig(path string, s Settings, userScoped bool) error {
 		}
 	}
 	return nil
+}
+
+func writeConfigAtomically(path string, data []byte) error {
+	f, info, err := system.OpenExistingFileNoFollow(path)
+	if os.IsNotExist(err) {
+		return system.WriteFileAtomically(path, data, 0o644)
+	}
+	if err != nil {
+		return err
+	}
+	xattrs, xattrErr := system.CaptureFileXattrs(f)
+	closeErr := f.Close()
+	if xattrErr != nil {
+		return fmt.Errorf("capture existing extended attributes: %w", xattrErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close existing config: %w", closeErr)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("capture existing config ownership")
+	}
+	return system.WriteFileAtomicallyWithOwnerAndXattrs(path, data, 0o644, int(stat.Uid), int(stat.Gid), xattrs)
 }
 
 func rejectConfigSymlinks(path string, userScoped bool) error {
