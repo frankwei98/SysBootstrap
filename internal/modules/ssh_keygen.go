@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -39,6 +40,9 @@ func (m *SSHKeygenModule) Check(ctx context.Context, sys *system.Context, cfg *t
 		if overwrite {
 			return CheckResult{Satisfied: false, Message: fmt.Sprintf("%s key exists and overwrite was requested", keyType)}
 		}
+		if _, err := os.Stat(keyFile + ".pub"); err != nil {
+			return CheckResult{Satisfied: false, Message: fmt.Sprintf("%s public key is missing", keyType)}
+		}
 		return CheckResult{Satisfied: true, Message: fmt.Sprintf("%s key already exists", keyType)}
 	}
 	return CheckResult{Satisfied: false, Message: "No SSH key found"}
@@ -54,7 +58,14 @@ func (m *SSHKeygenModule) Plan(ctx context.Context, sys *system.Context, cfg *ty
 	}
 	keyFile := filepath.Join(system.TargetHomeDir(sys), ".ssh", "id_"+keyType)
 	if _, err := os.Stat(keyFile); err == nil && !cfg.KeygenOverwrite {
-		return nil, nil
+		if _, err := os.Stat(keyFile + ".pub"); err == nil {
+			return nil, nil
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("inspect SSH public key: %w", err)
+		}
+		return []types.Step{
+			{Module: "ssh_keygen", Title: "Recover SSH public key", Detail: keyFile + ".pub"},
+		}, nil
 	}
 	return []types.Step{
 		{Module: "ssh_keygen", Title: "Generate SSH keypair", Detail: fmt.Sprintf("Type: %s", keyType)},
@@ -89,8 +100,27 @@ func (m *SSHKeygenModule) Run(ctx context.Context, sys *system.Context, cfg *typ
 	// Check if key already exists
 	if _, err := os.Stat(keyFile); err == nil {
 		if !cfg.KeygenOverwrite {
-			log.Warnf("Key already exists: %s", keyFile)
-			log.Info("Skipping key generation (use overwrite option to replace)")
+			publicKeyFile := keyFile + ".pub"
+			if _, err := os.Stat(publicKeyFile); err == nil {
+				log.Warnf("Key already exists: %s", keyFile)
+				log.Info("Skipping key generation (use overwrite option to replace)")
+				return nil
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("inspect SSH public key: %w", err)
+			}
+
+			res, err := system.RunAsUserWithInputContext(ctx, sys, "", "ssh-keygen", "-y", "-f", keyFile)
+			if err != nil || res == nil || res.ExitCode != 0 {
+				return system.FormatCommandError("failed to recover SSH public key", res, err)
+			}
+			publicKey := strings.TrimSpace(res.Stdout)
+			if publicKey == "" {
+				return fmt.Errorf("failed to recover SSH public key: ssh-keygen returned empty output")
+			}
+			if err := system.WriteFileAtomicallyAsInvokingUser(publicKeyFile, []byte(publicKey+"\n"), 0o644); err != nil {
+				return fmt.Errorf("write recovered SSH public key: %w", err)
+			}
+			log.Successf("SSH public key recovered: %s", publicKeyFile)
 			return nil
 		}
 		log.Warnf("Overwriting existing key: %s", keyFile)
