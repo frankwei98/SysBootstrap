@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -23,6 +24,7 @@ var dockerRepoConfiguredFn = dockerRepoConfigured
 var ensureDockerRepoFn = ensureDockerRepo
 var dockerRunWithContextFn = system.RunWithContext
 var dockerRunAptFn = system.RunApt
+var dockerLookupUserFn = user.Lookup
 
 func NewDockerModule() *DockerModule { return &DockerModule{} }
 
@@ -79,6 +81,11 @@ func (m *DockerModule) Plan(ctx context.Context, sys *system.Context, cfg *types
 }
 
 func (m *DockerModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+	targetUser := dockerTargetUsername(sys, cfg)
+	if err := ValidateDockerTargetUser(targetUser); err != nil {
+		return err
+	}
+
 	hasDocker := dockerInstalledFn()
 	hasCompose := dockerComposePluginInstalledFn()
 	repoReady := dockerRepoConfiguredFn(sys)
@@ -121,8 +128,8 @@ func (m *DockerModule) Run(ctx context.Context, sys *system.Context, cfg *types.
 		log.Info("Docker service already enabled, skipping")
 	}
 
-	groupReady, targetUser := dockerGroupSatisfiedWithConfigFn(sys, cfg)
-	if targetUser != "" && !groupReady {
+	groupReady, _ := dockerGroupSatisfiedWithConfigFn(sys, cfg)
+	if !groupReady {
 		log.Infof("Adding %s to docker group...", targetUser)
 		if res, err := system.Run("usermod", "-aG", "docker", targetUser); err != nil || res.ExitCode != 0 {
 			return system.FormatCommandError(fmt.Sprintf("failed to add %s to docker group", targetUser), res, err)
@@ -175,12 +182,7 @@ func dockerNeedsRepo(hasDocker, hasCompose, repoReady bool) bool {
 }
 
 func dockerGroupSatisfiedWithConfig(sys *system.Context, cfg *types.Config) (bool, string) {
-	targetUser := ""
-	if cfg != nil && cfg.DockerUser != "" {
-		targetUser = cfg.DockerUser
-	} else {
-		targetUser = system.TargetUsername(sys)
-	}
+	targetUser := dockerTargetUsername(sys, cfg)
 	if targetUser == "" {
 		return true, ""
 	}
@@ -195,6 +197,35 @@ func dockerGroupSatisfiedWithConfig(sys *system.Context, cfg *types.Config) (boo
 		}
 	}
 	return false, targetUser
+}
+
+func dockerTargetUsername(sys *system.Context, cfg *types.Config) string {
+	if cfg != nil {
+		if targetUser := strings.TrimSpace(cfg.DockerUser); targetUser != "" {
+			return targetUser
+		}
+	}
+	return strings.TrimSpace(system.TargetUsername(sys))
+}
+
+// ValidateDockerTargetUser verifies that Docker group configuration targets
+// an existing Debian/Ubuntu-style local account.
+func ValidateDockerTargetUser(username string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return fmt.Errorf("Docker target username is required")
+	}
+	if !ValidateLinuxUsername(username) {
+		return fmt.Errorf("invalid Docker target username %q: use 1-32 lowercase letters, digits, hyphens, or underscores, starting with a letter", username)
+	}
+	account, err := dockerLookupUserFn(username)
+	if err != nil {
+		return fmt.Errorf("Docker target user %q does not exist: %w", username, err)
+	}
+	if account == nil {
+		return fmt.Errorf("Docker target user %q does not exist", username)
+	}
+	return nil
 }
 
 func buildDockerCheckMessage(hasDocker, hasCompose, serviceEnabled bool, targetUser string, groupReady bool) string {

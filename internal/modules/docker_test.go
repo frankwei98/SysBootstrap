@@ -2,6 +2,7 @@ package modules
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -193,6 +194,7 @@ func TestDockerRunInstallsAndConfiguresGroup(t *testing.T) {
 	origRepo := dockerRepoConfiguredFn
 	origEnsureRepo := ensureDockerRepoFn
 	origRunWithContext := dockerRunWithContextFn
+	origLookupUser := dockerLookupUserFn
 	t.Cleanup(func() {
 		_ = os.Setenv("PATH", origPath)
 		dockerInstalledFn = origInstalled
@@ -202,6 +204,7 @@ func TestDockerRunInstallsAndConfiguresGroup(t *testing.T) {
 		dockerRepoConfiguredFn = origRepo
 		ensureDockerRepoFn = origEnsureRepo
 		dockerRunWithContextFn = origRunWithContext
+		dockerLookupUserFn = origLookupUser
 	})
 
 	tempBin := t.TempDir()
@@ -237,6 +240,9 @@ exit 0
 		return false, cfg.DockerUser
 	}
 	dockerRepoConfiguredFn = func(_ *system.Context) bool { return false }
+	dockerLookupUserFn = func(username string) (*user.User, error) {
+		return &user.User{Username: username}, nil
+	}
 	ensureDockerRepoFn = func(context.Context, *system.Context) error {
 		return os.WriteFile(logFile, []byte("ensureDockerRepo\n"), 0o644)
 	}
@@ -270,6 +276,65 @@ exit 0
 		if !strings.Contains(text, want) {
 			t.Fatalf("docker run log missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestDockerRunPreflightsTargetUserBeforeSystemMutation(t *testing.T) {
+	origInstalled := dockerInstalledFn
+	origCompose := dockerComposePluginInstalledFn
+	origRepo := dockerRepoConfiguredFn
+	origEnsureRepo := ensureDockerRepoFn
+	origLookupUser := dockerLookupUserFn
+	t.Cleanup(func() {
+		dockerInstalledFn = origInstalled
+		dockerComposePluginInstalledFn = origCompose
+		dockerRepoConfiguredFn = origRepo
+		ensureDockerRepoFn = origEnsureRepo
+		dockerLookupUserFn = origLookupUser
+	})
+
+	dockerInstalledFn = func() bool { return false }
+	dockerComposePluginInstalledFn = func() bool { return false }
+	dockerRepoConfiguredFn = func(_ *system.Context) bool { return false }
+	dockerLookupUserFn = func(username string) (*user.User, error) {
+		return nil, user.UnknownUserError(username)
+	}
+
+	tests := []struct {
+		name     string
+		username string
+	}{
+		{name: "empty", username: ""},
+		{name: "invalid format", username: "Bad User"},
+		{name: "unknown account", username: "sysbootstrapmissinguser"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mutationCount := 0
+			ensureDockerRepoFn = func(context.Context, *system.Context) error {
+				mutationCount++
+				return errors.New("mutation sentinel")
+			}
+
+			log, err := logging.New(true)
+			if err != nil {
+				t.Fatalf("logging.New failed: %v", err)
+			}
+			defer log.Close()
+
+			err = NewDockerModule().Run(
+				context.Background(),
+				&system.Context{},
+				&types.Config{DockerUser: tt.username},
+				log,
+			)
+			if err == nil {
+				t.Fatal("Run succeeded for an invalid Docker target user")
+			}
+			if mutationCount != 0 {
+				t.Fatalf("Docker system mutation ran %d time(s) before target-user validation", mutationCount)
+			}
+		})
 	}
 }
 
