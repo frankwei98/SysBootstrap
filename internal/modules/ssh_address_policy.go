@@ -11,20 +11,20 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
 
-type sshAddressPolicyConflict struct {
+type sshAuthPolicyConflict struct {
 	path           string
 	line           int
 	matchCriterion string
 	directive      string
 }
 
-type sshAddressPolicyScanner struct {
+type sshAuthPolicyScanner struct {
 	includeRoot string
 	wanted      map[string]bool
 	stack       map[string]bool
 }
 
-func rejectAddressDependentSSHAuthPolicy(cfg *types.Config) error {
+func rejectUnverifiableSSHAuthPolicy(cfg *types.Config) error {
 	if cfg == nil || (!cfg.SSHDisableRoot && !cfg.SSHDisablePass) {
 		return nil
 	}
@@ -48,7 +48,7 @@ func rejectAddressDependentSSHAuthPolicy(cfg *types.Config) error {
 		wanted["skeyauthentication"] = true
 	}
 
-	conflict, err := findSSHAddressPolicyConflict(sshConfigPath, wanted)
+	conflict, err := findSSHAuthPolicyConflict(sshConfigPath, wanted)
 	if err != nil {
 		return fmt.Errorf("cannot inspect conditional SSH authentication policy: %w", err)
 	}
@@ -64,8 +64,8 @@ func rejectAddressDependentSSHAuthPolicy(cfg *types.Config) error {
 	)
 }
 
-func findSSHAddressPolicyConflict(rootPath string, wanted map[string]bool) (*sshAddressPolicyConflict, error) {
-	scanner := sshAddressPolicyScanner{
+func findSSHAuthPolicyConflict(rootPath string, wanted map[string]bool) (*sshAuthPolicyConflict, error) {
+	scanner := sshAuthPolicyScanner{
 		includeRoot: filepath.Dir(rootPath),
 		wanted:      wanted,
 		stack:       make(map[string]bool),
@@ -73,7 +73,7 @@ func findSSHAddressPolicyConflict(rootPath string, wanted map[string]bool) (*ssh
 	return scanner.scanFile(rootPath, "", 0)
 }
 
-func (s *sshAddressPolicyScanner) scanFile(path, matchCriterion string, depth int) (*sshAddressPolicyConflict, error) {
+func (s *sshAuthPolicyScanner) scanFile(path, matchCriterion string, depth int) (*sshAuthPolicyConflict, error) {
 	if depth > 16 {
 		return nil, fmt.Errorf("too many recursive SSH Includes")
 	}
@@ -141,7 +141,7 @@ func (s *sshAddressPolicyScanner) scanFile(path, matchCriterion string, depth in
 		default:
 			keyword := strings.ToLower(fields[0])
 			if matchCriterion != "" && s.wanted[keyword] {
-				return &sshAddressPolicyConflict{
+				return &sshAuthPolicyConflict{
 					path:           canonicalPath,
 					line:           lineNumber,
 					matchCriterion: matchCriterion,
