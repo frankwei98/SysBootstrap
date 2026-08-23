@@ -314,7 +314,7 @@ func readGlobalPackageInventory(homeDir, manager string) (map[string]struct{}, b
 		return nil, false
 	}
 	res, err := system.RunInNvmShellForHome(homeDir, script)
-	if err != nil || res == nil || res.ExitCode != 0 {
+	if err != nil || res == nil {
 		return nil, false
 	}
 	inventory, err := parseGlobalPackageInventory([]byte(res.Stdout))
