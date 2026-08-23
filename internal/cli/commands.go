@@ -614,7 +614,7 @@ func validateUninstallFlags(f uninstallFlags, interactive bool) error {
 }
 
 // UninstallCmd handles the `uninstall` command.
-func UninstallCmd(args []string) error {
+func UninstallCmd(ctx context.Context, args []string) error {
 	flags, err := parseUninstallFlags(args)
 	if err != nil {
 		return err
@@ -661,7 +661,7 @@ func UninstallCmd(args []string) error {
 			return fmt.Errorf("logger init failed: %w", err)
 		}
 		defer log.Close()
-		if err := app.ExecuteUninstall(plan, info.HomeDir, true, log); err != nil {
+		if err := app.ExecuteUninstall(ctx, plan, info.HomeDir, true, log); err != nil {
 			return err
 		}
 		return nil
@@ -740,7 +740,7 @@ func UninstallCmd(args []string) error {
 	defer log.Close()
 
 	// Execute uninstall
-	if err := app.ExecuteUninstall(plan, info.HomeDir, false, log); err != nil {
+	if err := app.ExecuteUninstall(ctx, plan, info.HomeDir, false, log); err != nil {
 		return err
 	}
 

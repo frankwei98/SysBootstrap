@@ -357,15 +357,21 @@ func RunInNvmShell(script string) (*Result, error) {
 // that user's home is the requested target. This prevents package-manager
 // operations during uninstall from creating root-owned files in that home.
 func RunInNvmShellForHome(home, script string) (*Result, error) {
+	return RunInNvmShellForHomeContext(context.Background(), home, script)
+}
+
+// RunInNvmShellForHomeContext executes an nvm-aware shell against an explicit
+// home and terminates the full subprocess group when ctx is cancelled.
+func RunInNvmShellForHomeContext(ctx context.Context, home, script string) (*Result, error) {
 	if os.Geteuid() == 0 {
 		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
 			if target, err := user.Lookup(sudoUser); err == nil && target.HomeDir != "" && filepath.Clean(home) == filepath.Clean(target.HomeDir) {
 				args := []string{"-n", "-H", "-u", target.Username, "env", "HOME=" + target.HomeDir, "bash", "-c", NvmShellScriptForHome(home, script)}
-				return RunWithInput("", "sudo", args...)
+				return RunWithInputContext(ctx, "", "sudo", args...)
 			}
 		}
 	}
-	return RunWithInput("", "bash", "-c", NvmShellScriptForHome(home, script))
+	return RunWithInputContext(ctx, "", "bash", "-c", NvmShellScriptForHome(home, script))
 }
 
 // RunInNvmShellForContext executes an nvm-aware shell as the user-level target.

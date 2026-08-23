@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -913,7 +915,7 @@ func TestExecuteUninstall_RemovesDirs(t *testing.T) {
 	}
 
 	log := createTestLogger(t)
-	err := ExecuteUninstall(plan, home, false, log)
+	err := ExecuteUninstall(context.Background(), plan, home, false, log)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -934,7 +936,7 @@ func TestExecuteUninstall_DryRunDoesNotRemove(t *testing.T) {
 	}
 
 	log := createTestLogger(t)
-	err := ExecuteUninstall(plan, home, true, log)
+	err := ExecuteUninstall(context.Background(), plan, home, true, log)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -948,7 +950,7 @@ func TestExecuteUninstall_DryRunRejectsUnsafePath(t *testing.T) {
 	home := t.TempDir()
 	plan := UninstallPlan{DirsToDelete: []string{"/tmp/outside-home"}}
 
-	err := ExecuteUninstall(plan, home, true, createTestLogger(t))
+	err := ExecuteUninstall(context.Background(), plan, home, true, createTestLogger(t))
 	if err == nil || !strings.Contains(err.Error(), "unsafe uninstall path") {
 		t.Fatalf("dry-run error = %v, want unsafe path rejection", err)
 	}
@@ -997,7 +999,7 @@ func TestExecuteUninstall_SkipsUnsafePaths(t *testing.T) {
 	}
 
 	log := createTestLogger(t)
-	err := ExecuteUninstall(plan, home, false, log)
+	err := ExecuteUninstall(context.Background(), plan, home, false, log)
 	if err == nil {
 		t.Fatal("expected unsafe path error")
 	}
@@ -1015,7 +1017,7 @@ func TestExecuteUninstall_CleansRC(t *testing.T) {
 	}
 
 	log := createTestLogger(t)
-	err := ExecuteUninstall(plan, home, false, log)
+	err := ExecuteUninstall(context.Background(), plan, home, false, log)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1043,9 +1045,31 @@ func TestExecuteUninstall_SkipsPkgRemovalWhenPkgManagerUnavailable(t *testing.T)
 	}
 
 	log := createTestLogger(t)
-	err := ExecuteUninstall(plan, home, false, log)
+	err := ExecuteUninstall(context.Background(), plan, home, false, log)
 	if err == nil {
 		t.Fatal("expected missing package manager error")
+	}
+}
+
+func TestExecuteUninstall_CancelledContextPreventsDeletion(t *testing.T) {
+	home := t.TempDir()
+	targetDir := filepath.Join(home, ".must-remain")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan := UninstallPlan{
+		Items:        []UninstallItem{{ID: "test", Dirs: []string{targetDir}}},
+		DirsToDelete: []string{targetDir},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := ExecuteUninstall(ctx, plan, home, false, createTestLogger(t))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ExecuteUninstall error = %v, want context.Canceled", err)
+	}
+	if _, statErr := os.Stat(targetDir); statErr != nil {
+		t.Fatalf("cancelled uninstall modified target: %v", statErr)
 	}
 }
 

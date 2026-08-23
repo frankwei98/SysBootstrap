@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -496,13 +497,19 @@ func ValidateUninstallPlan(plan UninstallPlan, homeDir string) error {
 
 // ExecuteUninstall performs the actual uninstallation.
 // If dryRun is true, only prints what would be done without making changes.
-func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logging.Logger) error {
+func ExecuteUninstall(ctx context.Context, plan UninstallPlan, homeDir string, dryRun bool, log *logging.Logger) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := ValidateUninstallPlan(plan, homeDir); err != nil {
 		return err
 	}
 	var failures []error
 	// 1. Remove package manager packages
 	for _, item := range plan.Items {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if item.PkgName == "" {
 			continue
 		}
@@ -521,7 +528,10 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 			continue
 		}
 		log.Infof(i18n.T("uninstall_running_cmd"), cmd)
-		res, err := system.RunInNvmShellForHome(homeDir, cmd)
+		res, err := system.RunInNvmShellForHomeContext(ctx, homeDir, cmd)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil || res == nil || res.ExitCode != 0 {
 			stderr := ""
 			if res != nil {
@@ -536,6 +546,9 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 
 	// 2. Remove directories
 	for _, dir := range plan.DirsToDelete {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := ValidatePathSafety(dir, homeDir); err != nil {
 			log.Warnf(i18n.T("uninstall_path_unsafe"), dir, err)
 			failures = append(failures, fmt.Errorf("unsafe uninstall path %s: %w", dir, err))
@@ -555,6 +568,9 @@ func ExecuteUninstall(plan UninstallPlan, homeDir string, dryRun bool, log *logg
 	}
 
 	// 3. Clean shell rc files
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	itemIDs := make([]string, len(plan.Items))
 	for i, item := range plan.Items {
 		itemIDs[i] = item.ID
