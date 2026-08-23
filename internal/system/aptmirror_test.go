@@ -270,6 +270,54 @@ func TestSwitchListFile(t *testing.T) {
 	}
 }
 
+func TestSwitchListFile_PreservesLinesLargerThanScannerLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sources.list")
+	longComment := "# " + strings.Repeat("x", 70*1024)
+	tail := "deb https://packages.example.com stable main"
+	content := "deb http://deb.debian.org/debian bookworm main\n" + longComment + "\n" + tail + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, _, err := switchListFile(path)
+	if err != nil {
+		t.Fatalf("switchListFile() failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected official source to be rewritten")
+	}
+	result, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(result), longComment) || !strings.Contains(string(result), tail) {
+		t.Fatal("source rewrite truncated the long line or following content")
+	}
+}
+
+func TestSwitchListFile_RejectsOversizedLineWithoutChangingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sources.list")
+	content := "deb http://deb.debian.org/debian bookworm main\n# " + strings.Repeat("x", 5*1024*1024) + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, _, err := switchListFile(path)
+	if err == nil {
+		t.Fatal("expected an oversized source line to be rejected")
+	}
+	if changed {
+		t.Fatal("oversized source file must not be reported as changed")
+	}
+	result, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(result) != content {
+		t.Fatal("oversized source file changed after scan failure")
+	}
+}
+
 func TestSwitchListFile_NoChange(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sources.list")

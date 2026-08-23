@@ -209,6 +209,10 @@ func switchListFile(path string) (bool, backupEntry, error) {
 	var lines []string
 	changed := false
 	scanner := bufio.NewScanner(f)
+	// APT options and signed-by values can make source lines larger than the
+	// Scanner default. Accept reasonably large lines and fail before writing if
+	// a malformed file exceeds the explicit bound.
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		newLine := rewriteListLine(line)
@@ -217,7 +221,13 @@ func switchListFile(path string) (bool, backupEntry, error) {
 		}
 		lines = append(lines, newLine)
 	}
-	f.Close()
+	if err := scanner.Err(); err != nil {
+		_ = f.Close()
+		return false, backupEntry{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return false, backupEntry{}, fmt.Errorf("closing %s: %w", path, err)
+	}
 
 	if !changed {
 		return false, backupEntry{}, nil
