@@ -322,9 +322,14 @@ func buildPlanChecks(sys *system.Context) []PlanCheck {
 		}
 		return "warning"
 	}
+	osTier := sys.SupportTier()
+	osStatus := "ok"
+	if osTier == system.SupportTierUnsupported {
+		osStatus = "fatal"
+	}
 
 	checks := []PlanCheck{
-		{Name: "os", Status: string(sys.SupportTier()), Detail: fmt.Sprintf("%s %s", sys.OSID, sys.OSVersion)},
+		{Name: "os", Status: osStatus, Detail: fmt.Sprintf("%s: %s %s", osTier, sys.OSID, sys.OSVersion)},
 		{Name: "arch", Status: fatalStatus(system.IsSupportedArchitecture(sys.Arch)), Detail: sys.Arch},
 		{Name: "apt-get", Status: fatalStatus(sys.HasApt), Detail: boolDetail(sys.HasApt, "available", "missing")},
 		{Name: "network", Status: fatalStatus(sys.HasNetwork), Detail: boolDetail(sys.HasNetwork, "dns ok", "dns failed")},
