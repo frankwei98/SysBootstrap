@@ -2,14 +2,18 @@ package modules
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
+	"golang.org/x/sys/unix"
 )
 
 func TestFail2banModuleInterface(t *testing.T) {
@@ -396,6 +400,309 @@ exit 0
 	for _, want := range []string{"port = 22000", "maxretry = 3", "backend = auto"} {
 		if !strings.Contains(jailText, want) {
 			t.Fatalf("jail.local missing %q:\n%s", want, jailText)
+		}
+	}
+}
+
+func TestFail2banRunRollsBackExistingJailOnValidationFailure(t *testing.T) {
+	origPath := os.Getenv("PATH")
+	origJailPath := fail2banManagedJailPath
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", origPath)
+		fail2banManagedJailPath = origJailPath
+	})
+
+	tempBin := t.TempDir()
+	commandLog := filepath.Join(t.TempDir(), "commands.log")
+	fail2banManagedJailPath = filepath.Join(t.TempDir(), "jail.d", "99-sys-bootstrap.local")
+	if err := os.MkdirAll(filepath.Dir(fail2banManagedJailPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("[sshd]\nenabled = false\n# administrator state\n")
+	if err := os.WriteFile(fail2banManagedJailPath, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(fail2banManagedJailPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStat, ok := originalInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("cannot inspect original jail ownership")
+	}
+	xattrName := "user.sys-bootstrap-fail2ban-test"
+	if runtime.GOOS == "darwin" {
+		xattrName = "com.sys-bootstrap.fail2ban-test"
+	}
+	xattrValue := []byte("preserve-me")
+	f, err := os.OpenFile(fail2banManagedJailPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xattrErr := unix.Fsetxattr(int(f.Fd()), xattrName, xattrValue, 0)
+	_ = f.Close()
+	xattrSupported := xattrErr == nil
+	if xattrErr != nil && !errors.Is(xattrErr, unix.ENOTSUP) && !errors.Is(xattrErr, unix.EOPNOTSUPP) && !errors.Is(xattrErr, unix.EPERM) {
+		t.Fatalf("set test xattr: %v", xattrErr)
+	}
+
+	writeFakeCommand(t, tempBin, "dpkg", "#!/bin/sh\nexit 0\n")
+	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
+echo "systemctl $*" >> "$SYSBOOTSTRAP_TEST_LOG"
+case "$1" in
+  is-enabled) echo enabled; exit 0 ;;
+  is-active) echo active; exit 0 ;;
+  restart) exit 0 ;;
+esac
+exit 0
+`)
+	writeFakeCommand(t, tempBin, "fail2ban-client", "#!/bin/sh\nexit 1\n")
+	t.Setenv("SYSBOOTSTRAP_TEST_LOG", commandLog)
+	t.Setenv("PATH", tempBin+":"+origPath)
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	err = NewFail2banModule().Run(context.Background(), &system.Context{}, &types.Config{SSHPort: 22000}, log)
+	if err == nil {
+		t.Fatal("Run succeeded despite fail2ban-client validation failure")
+	}
+
+	got, readErr := os.ReadFile(fail2banManagedJailPath)
+	if readErr != nil {
+		t.Fatalf("read restored jail: %v", readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("managed jail was not restored:\n%s", got)
+	}
+	info, statErr := os.Stat(fail2banManagedJailPath)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("restored jail mode = %o, want 640", info.Mode().Perm())
+	}
+	restoredStat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("cannot inspect restored jail ownership")
+	}
+	if restoredStat.Uid != originalStat.Uid || restoredStat.Gid != originalStat.Gid {
+		t.Fatalf("restored jail owner = %d:%d, want %d:%d", restoredStat.Uid, restoredStat.Gid, originalStat.Uid, originalStat.Gid)
+	}
+	if xattrSupported {
+		f, err = os.Open(fail2banManagedJailPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotXattr := make([]byte, len(xattrValue))
+		n, getErr := unix.Fgetxattr(int(f.Fd()), xattrName, gotXattr)
+		_ = f.Close()
+		if getErr != nil {
+			t.Fatalf("read restored xattr: %v", getErr)
+		}
+		if string(gotXattr[:n]) != string(xattrValue) {
+			t.Fatalf("restored xattr = %q, want %q", gotXattr[:n], xattrValue)
+		}
+	}
+	commands, readErr := os.ReadFile(commandLog)
+	if readErr != nil {
+		t.Fatalf("read command log: %v", readErr)
+	}
+	if !strings.Contains(string(commands), "systemctl restart fail2ban") {
+		t.Fatalf("rollback did not restore the originally active service:\n%s", commands)
+	}
+}
+
+func TestFail2banRunRollsBackExistingJailAfterRestartFailure(t *testing.T) {
+	origPath := os.Getenv("PATH")
+	origJailPath := fail2banManagedJailPath
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", origPath)
+		fail2banManagedJailPath = origJailPath
+	})
+
+	tempBin := t.TempDir()
+	stateDir := t.TempDir()
+	commandLog := filepath.Join(stateDir, "commands.log")
+	restartCount := filepath.Join(stateDir, "restart-count")
+	fail2banManagedJailPath = filepath.Join(t.TempDir(), "jail.d", "99-sys-bootstrap.local")
+	if err := os.MkdirAll(filepath.Dir(fail2banManagedJailPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("[sshd]\nenabled = false\n# original before restart\n")
+	if err := os.WriteFile(fail2banManagedJailPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFakeCommand(t, tempBin, "dpkg", "#!/bin/sh\nexit 0\n")
+	writeFakeCommand(t, tempBin, "fail2ban-client", "#!/bin/sh\nexit 0\n")
+	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
+echo "systemctl $*" >> "$SYSBOOTSTRAP_TEST_LOG"
+case "$1" in
+  is-enabled) echo enabled; exit 0 ;;
+  is-active) echo active; exit 0 ;;
+  restart)
+    count=0
+    [ ! -f "$SYSBOOTSTRAP_RESTART_COUNT" ] || count=$(cat "$SYSBOOTSTRAP_RESTART_COUNT")
+    count=$((count + 1))
+    echo "$count" > "$SYSBOOTSTRAP_RESTART_COUNT"
+    [ "$count" -gt 1 ]
+    exit $?
+    ;;
+esac
+exit 0
+`)
+	t.Setenv("SYSBOOTSTRAP_TEST_LOG", commandLog)
+	t.Setenv("SYSBOOTSTRAP_RESTART_COUNT", restartCount)
+	t.Setenv("PATH", tempBin+":"+origPath)
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	err = NewFail2banModule().Run(context.Background(), &system.Context{}, &types.Config{SSHPort: 22000}, log)
+	if err == nil {
+		t.Fatal("Run succeeded despite restart failure")
+	}
+	got, readErr := os.ReadFile(fail2banManagedJailPath)
+	if readErr != nil {
+		t.Fatalf("read restored jail: %v", readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("managed jail was not restored after restart failure:\n%s", got)
+	}
+	count, readErr := os.ReadFile(restartCount)
+	if readErr != nil {
+		t.Fatalf("read restart count: %v", readErr)
+	}
+	if strings.TrimSpace(string(count)) != "2" {
+		t.Fatalf("restart count = %q, want primary attempt plus rollback attempt", count)
+	}
+}
+
+func TestFail2banRunRestoresServiceWhenMatchingJailRestartFails(t *testing.T) {
+	origPath := os.Getenv("PATH")
+	origJailPath := fail2banManagedJailPath
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", origPath)
+		fail2banManagedJailPath = origJailPath
+	})
+
+	tempBin := t.TempDir()
+	stateDir := t.TempDir()
+	restartCount := filepath.Join(stateDir, "restart-count")
+	fail2banManagedJailPath = filepath.Join(t.TempDir(), "jail.d", "99-sys-bootstrap.local")
+	cfg := &types.Config{SSHPort: 22000}
+	if err := writeFail2banManagedJail(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFakeCommand(t, tempBin, "dpkg", "#!/bin/sh\nexit 0\n")
+	writeFakeCommand(t, tempBin, "fail2ban-client", "#!/bin/sh\nexit 0\n")
+	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
+case "$1" in
+  is-enabled) echo enabled; exit 0 ;;
+  is-active) echo active; exit 0 ;;
+  restart)
+    count=0
+    [ ! -f "$SYSBOOTSTRAP_RESTART_COUNT" ] || count=$(cat "$SYSBOOTSTRAP_RESTART_COUNT")
+    count=$((count + 1))
+    echo "$count" > "$SYSBOOTSTRAP_RESTART_COUNT"
+    [ "$count" -gt 1 ]
+    exit $?
+    ;;
+esac
+exit 0
+`)
+	t.Setenv("SYSBOOTSTRAP_RESTART_COUNT", restartCount)
+	t.Setenv("PATH", tempBin+":"+origPath)
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	if err := NewFail2banModule().Run(context.Background(), &system.Context{}, cfg, log); err == nil {
+		t.Fatal("Run succeeded despite primary restart failure")
+	}
+	count, err := os.ReadFile(restartCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(count)) != "2" {
+		t.Fatalf("restart count = %q, want primary attempt plus rollback attempt", count)
+	}
+}
+
+func TestFail2banRunRemovesNewJailOnValidationFailure(t *testing.T) {
+	origPath := os.Getenv("PATH")
+	origJailPath := fail2banManagedJailPath
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", origPath)
+		fail2banManagedJailPath = origJailPath
+	})
+
+	tempBin := t.TempDir()
+	fail2banManagedJailPath = filepath.Join(t.TempDir(), "jail.d", "99-sys-bootstrap.local")
+	writeFakeCommand(t, tempBin, "dpkg", "#!/bin/sh\nexit 0\n")
+	writeFakeCommand(t, tempBin, "fail2ban-client", "#!/bin/sh\nexit 1\n")
+	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
+case "$1" in
+  is-enabled) echo disabled; exit 1 ;;
+  is-active) echo inactive; exit 3 ;;
+esac
+exit 0
+`)
+	t.Setenv("PATH", tempBin+":"+origPath)
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	err = NewFail2banModule().Run(context.Background(), &system.Context{}, &types.Config{SSHPort: 22000}, log)
+	if err == nil {
+		t.Fatal("Run succeeded despite fail2ban-client validation failure")
+	}
+	if _, statErr := os.Stat(fail2banManagedJailPath); !os.IsNotExist(statErr) {
+		t.Fatalf("new managed jail remains after rollback: %v", statErr)
+	}
+}
+
+func TestFail2banRollbackErrorIsCombinedWithPrimaryFailure(t *testing.T) {
+	origPath := os.Getenv("PATH")
+	origJailPath := fail2banManagedJailPath
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", origPath)
+		fail2banManagedJailPath = origJailPath
+	})
+
+	tempBin := t.TempDir()
+	fail2banManagedJailPath = filepath.Join(t.TempDir(), "99-sys-bootstrap.local")
+	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
+case "$1" in
+	  restart) echo "rollback restart failed" >&2; exit 1 ;;
+	  start) echo "rollback start failed" >&2; exit 1 ;;
+	  is-enabled) echo disabled; exit 1 ;;
+  is-active) echo inactive; exit 3 ;;
+esac
+exit 0
+`)
+	t.Setenv("PATH", tempBin+":"+origPath)
+
+	primaryErr := errors.New("primary validation failed")
+	err := fail2banErrorWithRollback(primaryErr, &fail2banTransactionJournal{
+		serviceWasActive: true,
+	})
+	if err == nil {
+		t.Fatal("expected combined primary and rollback failure")
+	}
+	for _, want := range []string{"primary validation failed", "fail2ban rollback failed", "restore active fail2ban service", "rollback restart failed", "rollback start failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("combined error %q missing %q", err, want)
 		}
 	}
 }

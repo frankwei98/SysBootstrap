@@ -2,13 +2,16 @@ package modules
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -26,6 +29,17 @@ var fail2banDurationRegex = regexp.MustCompile(`^[1-9][0-9]*(?:[smhdw])?$`)
 const fail2banEffectiveSSHPortFallbackWarning = "warning: sshd -T could not resolve effective SSH ports, so this preview may omit sshd_config.d drop-ins; run as root to verify"
 
 type Fail2banModule struct{}
+
+type fail2banTransactionJournal struct {
+	hadManagedJail    bool
+	managedJailBytes  []byte
+	managedJailMode   os.FileMode
+	managedJailUID    int
+	managedJailGID    int
+	managedJailXattrs map[string][]byte
+	serviceWasEnabled bool
+	serviceWasActive  bool
+}
 
 func NewFail2banModule() *Fail2banModule { return &Fail2banModule{} }
 
@@ -93,6 +107,12 @@ func (m *Fail2banModule) Run(ctx context.Context, sys *system.Context, cfg *type
 	if err := validateFail2banPolicy(cfg); err != nil {
 		return err
 	}
+	jailConfigured, _ := fail2banSSHDJailMatchesConfig(cfg)
+	journal, err := captureFail2banTransactionJournal()
+	if err != nil {
+		return err
+	}
+
 	if !system.DpkgInstalled("fail2ban") {
 		log.Info("Installing fail2ban...")
 		if res, err := fail2banRunAptFn(ctx, "update", "-y"); err != nil || res == nil || res.ExitCode != 0 {
@@ -106,43 +126,146 @@ func (m *Fail2banModule) Run(ctx context.Context, sys *system.Context, cfg *type
 		log.Info("fail2ban already installed, skipping package installation")
 	}
 
-	jailConfigured, _ := fail2banSSHDJailMatchesConfig(cfg)
 	if !jailConfigured {
 		log.Info("Writing fail2ban sshd jail configuration...")
 		if err := writeFail2banManagedJail(cfg); err != nil {
-			return err
+			return fail2banErrorWithRollback(err, journal)
 		}
 		log.Success("fail2ban sshd jail configured")
 	}
 
 	log.Info("Validating fail2ban configuration before service changes...")
 	if err := validateFail2banConfig("fail2ban configuration validation failed before service changes"); err != nil {
-		return err
+		return fail2banErrorWithRollback(err, journal)
 	}
 
 	if !fail2banServiceEnabled() {
 		log.Info("Enabling fail2ban service...")
-		if res, err := system.Run("systemctl", "enable", "--now", "fail2ban"); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError("failed to enable fail2ban service", res, err)
+		if res, err := system.Run("systemctl", "enable", "--now", "fail2ban"); err != nil || res == nil || res.ExitCode != 0 {
+			primaryErr := system.FormatCommandError("failed to enable fail2ban service", res, err)
+			return fail2banErrorWithRollback(primaryErr, journal)
 		}
 		log.Success("fail2ban service enabled")
 	} else {
 		log.Info("fail2ban service already enabled, restarting")
-		if res, err := system.Run("systemctl", "restart", "fail2ban"); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError("failed to restart fail2ban service", res, err)
+		if res, err := system.Run("systemctl", "restart", "fail2ban"); err != nil || res == nil || res.ExitCode != 0 {
+			primaryErr := system.FormatCommandError("failed to restart fail2ban service", res, err)
+			return fail2banErrorWithRollback(primaryErr, journal)
 		}
 		log.Success("fail2ban service restarted")
 	}
 
 	log.Info("Validating fail2ban configuration after service changes...")
 	if err := validateFail2banConfig("fail2ban configuration validation failed after service changes"); err != nil {
-		return err
+		return fail2banErrorWithRollback(err, journal)
 	}
 
 	return nil
 }
 
+func captureFail2banTransactionJournal() (*fail2banTransactionJournal, error) {
+	journal := &fail2banTransactionJournal{
+		serviceWasEnabled: fail2banUnitEnabled(),
+		serviceWasActive:  fail2banServiceActive(),
+	}
+
+	f, info, err := system.OpenExistingFileNoFollow(fail2banManagedJailPath)
+	if os.IsNotExist(err) {
+		return journal, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("capture existing fail2ban managed jail: %w", err)
+	}
+	data, readErr := io.ReadAll(f)
+	xattrs, xattrErr := system.CaptureFileXattrs(f)
+	closeErr := f.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("read existing fail2ban managed jail: %w", readErr)
+	}
+	if xattrErr != nil {
+		return nil, fmt.Errorf("capture fail2ban managed jail extended attributes: %w", xattrErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close existing fail2ban managed jail: %w", closeErr)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, fmt.Errorf("capture ownership for fail2ban managed jail")
+	}
+	journal.hadManagedJail = true
+	journal.managedJailBytes = append([]byte(nil), data...)
+	journal.managedJailMode = info.Mode()
+	journal.managedJailUID = int(stat.Uid)
+	journal.managedJailGID = int(stat.Gid)
+	journal.managedJailXattrs = xattrs
+	return journal, nil
+}
+
+func fail2banErrorWithRollback(primaryErr error, journal *fail2banTransactionJournal) error {
+	if primaryErr == nil || journal == nil {
+		return primaryErr
+	}
+	rollbackErr := rollbackFail2banTransaction(journal)
+	if rollbackErr == nil {
+		return primaryErr
+	}
+	return errors.Join(primaryErr, fmt.Errorf("fail2ban rollback failed: %w", rollbackErr))
+}
+
+func rollbackFail2banTransaction(journal *fail2banTransactionJournal) error {
+	if journal == nil {
+		return nil
+	}
+	var rollbackErrs []error
+	if journal.hadManagedJail {
+		if err := system.WriteFileAtomicallyWithOwnerAndXattrs(
+			fail2banManagedJailPath,
+			journal.managedJailBytes,
+			journal.managedJailMode,
+			journal.managedJailUID,
+			journal.managedJailGID,
+			journal.managedJailXattrs,
+		); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore managed jail: %w", err))
+		}
+	} else if err := os.Remove(fail2banManagedJailPath); err != nil && !os.IsNotExist(err) {
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("remove newly created managed jail: %w", err))
+	}
+
+	if journal.serviceWasActive {
+		if res, err := system.Run("systemctl", "restart", "fail2ban"); err != nil || res == nil || res.ExitCode != 0 {
+			restartErr := system.FormatCommandError("restart restored fail2ban service", res, err)
+			if startRes, startErr := system.Run("systemctl", "start", "fail2ban"); startErr != nil || startRes == nil || startRes.ExitCode != 0 {
+				rollbackErrs = append(rollbackErrs, errors.Join(
+					fmt.Errorf("restore active fail2ban service: %w", restartErr),
+					system.FormatCommandError("start restored fail2ban service", startRes, startErr),
+				))
+			}
+		}
+	} else if fail2banServiceActive() {
+		if res, err := system.Run("systemctl", "stop", "fail2ban"); err != nil || res == nil || res.ExitCode != 0 {
+			rollbackErrs = append(rollbackErrs, system.FormatCommandError("restore inactive fail2ban service", res, err))
+		}
+	}
+
+	currentlyEnabled := fail2banUnitEnabled()
+	if journal.serviceWasEnabled && !currentlyEnabled {
+		if res, err := system.Run("systemctl", "enable", "fail2ban"); err != nil || res == nil || res.ExitCode != 0 {
+			rollbackErrs = append(rollbackErrs, system.FormatCommandError("restore enabled fail2ban service", res, err))
+		}
+	} else if !journal.serviceWasEnabled && currentlyEnabled {
+		if res, err := system.Run("systemctl", "disable", "fail2ban"); err != nil || res == nil || res.ExitCode != 0 {
+			rollbackErrs = append(rollbackErrs, system.FormatCommandError("restore disabled fail2ban service", res, err))
+		}
+	}
+	return errors.Join(rollbackErrs...)
+}
+
 func fail2banServiceEnabled() bool {
+	return fail2banUnitEnabled() && fail2banServiceActive()
+}
+
+func fail2banUnitEnabled() bool {
 	if !system.CommandExists("systemctl") {
 		return false
 	}
@@ -150,7 +273,7 @@ func fail2banServiceEnabled() bool {
 	if err != nil || enabledRes == nil || enabledRes.ExitCode != 0 || strings.TrimSpace(enabledRes.Stdout) != "enabled" {
 		return false
 	}
-	return fail2banServiceActive()
+	return true
 }
 
 func fail2banServiceActive() bool {
