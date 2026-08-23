@@ -576,6 +576,7 @@ func DockerConfigForm(cfg *types.Config, sys *system.Context) error {
 				Title(i18n.T("form_docker_user")).
 				Description(i18n.T("form_docker_user_desc")).
 				Placeholder(system.TargetUsername(sys)).
+				Validate(validateDockerTargetUserInput).
 				Value(&targetUser),
 		),
 	).Run(); err != nil {
@@ -583,6 +584,10 @@ func DockerConfigForm(cfg *types.Config, sys *system.Context) error {
 	}
 	cfg.DockerUser = strings.TrimSpace(targetUser)
 	return nil
+}
+
+func validateDockerTargetUserInput(value string) error {
+	return modules.ValidateDockerTargetUser(strings.TrimSpace(value))
 }
 
 // TimezoneConfigForm collects timezone module configuration.

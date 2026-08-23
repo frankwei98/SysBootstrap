@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/frankwei98/sys-bootstrap/internal/modules"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
@@ -96,5 +97,24 @@ func TestFail2banInputValidators(t *testing.T) {
 	}
 	if err := validateFail2banIgnoreIP("127.0.0.1/8 invalid-host"); err == nil {
 		t.Fatal("expected invalid ignoreip token to be rejected")
+	}
+}
+
+func TestValidateDockerTargetUserInput(t *testing.T) {
+	for _, input := range []string{"", "Bad User", "-deploy"} {
+		if err := validateDockerTargetUserInput(input); err == nil {
+			t.Errorf("validateDockerTargetUserInput(%q) succeeded, want validation error", input)
+		}
+	}
+
+	root, err := user.Lookup("root")
+	if err != nil {
+		t.Fatalf("lookup root account: %v", err)
+	}
+	if !modules.ValidateLinuxUsername(root.Username) {
+		t.Fatalf("root account username %q does not match supported Linux format", root.Username)
+	}
+	if err := validateDockerTargetUserInput("  " + root.Username + "  "); err != nil {
+		t.Fatalf("validate existing Docker target user: %v", err)
 	}
 }
