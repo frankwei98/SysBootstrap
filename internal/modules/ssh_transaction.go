@@ -837,11 +837,62 @@ func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Confi
 }
 
 func sshConfigPaths(configPath string) ([]string, error) {
-	dropIns, err := filepath.Glob(filepath.Join(filepath.Dir(configPath), "sshd_config.d", "*.conf"))
+	root, err := filepath.Abs(configPath)
 	if err != nil {
 		return nil, err
 	}
-	return append([]string{configPath}, dropIns...), nil
+	var paths []string
+	seen := make(map[string]bool)
+	includeBase := filepath.Dir(root)
+	var visit func(string) error
+	visit = func(path string) error {
+		path, err = filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		if seen[path] {
+			return nil
+		}
+		seen[path] = true
+		if err := system.RejectSymlinkPath(path); err != nil {
+			return fmt.Errorf("refusing unsafe SSH config path %s: %w", path, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, path)
+		for lineNumber, line := range strings.Split(string(data), "\n") {
+			fields, err := splitSSHConfigFields(line)
+			if err != nil {
+				return fmt.Errorf("parse %s:%d: %w", path, lineNumber+1, err)
+			}
+			if len(fields) < 2 || !strings.EqualFold(fields[0], "Include") {
+				continue
+			}
+			for _, pattern := range fields[1:] {
+				if !filepath.IsAbs(pattern) {
+					// OpenSSH resolves relative sshd_config Include paths from
+					// the server configuration directory, including nested ones.
+					pattern = filepath.Join(includeBase, pattern)
+				}
+				matches, err := filepath.Glob(pattern)
+				if err != nil {
+					return fmt.Errorf("expand Include pattern %q in %s:%d: %w", pattern, path, lineNumber+1, err)
+				}
+				for _, match := range matches {
+					if err := visit(match); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
+	}
+	if err := visit(root); err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 func disableLegacyPortDirectives(configPath string, managedPort int, j *sshTransactionJournal) ([]int, error) {
@@ -849,10 +900,14 @@ func disableLegacyPortDirectives(configPath string, managedPort int, j *sshTrans
 	if err != nil {
 		return nil, err
 	}
+	managedPath, err := filepath.Abs(managedSSHDropIn)
+	if err != nil {
+		return nil, err
+	}
 
 	seen := make(map[int]bool)
 	for _, path := range paths {
-		if path == managedSSHDropIn {
+		if path == managedPath {
 			continue
 		}
 		if err := system.RejectSymlinkPath(path); err != nil {
