@@ -115,3 +115,39 @@ func TestSSHKeygenRecoversMissingPublicKey(t *testing.T) {
 		t.Fatalf("recovered public key = %q", public)
 	}
 }
+
+func TestSSHKeygenSkipsEncryptedKeyWithoutPassphrase(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	privatePath := filepath.Join(sshDir, "id_ed25519")
+	if err := os.WriteFile(privatePath, []byte("encrypted private key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sys := &system.Context{CurrentUser: &user.User{Username: "test-user", HomeDir: home}}
+	cfg := &types.Config{KeygenType: "ed25519"}
+
+	binDir := t.TempDir()
+	keygenPath := filepath.Join(binDir, "ssh-keygen")
+	if err := os.WriteFile(keygenPath, []byte("#!/bin/sh\nprintf '%s\\n' 'Enter passphrase for key:' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	originalCommandExists := sshKeygenCommandExistsFn
+	sshKeygenCommandExistsFn = func(name string) bool { return name == "ssh-keygen" }
+	t.Cleanup(func() { sshKeygenCommandExistsFn = originalCommandExists })
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	if err := NewSSHKeygenModule().Run(context.Background(), sys, cfg, log); err != nil {
+		t.Fatalf("Run() failed for an encrypted existing key: %v", err)
+	}
+	if _, err := os.Stat(privatePath + ".pub"); !os.IsNotExist(err) {
+		t.Fatalf("unexpected public key after passphrase-protected recovery: %v", err)
+	}
+}

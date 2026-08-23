@@ -111,7 +111,12 @@ func (m *SSHKeygenModule) Run(ctx context.Context, sys *system.Context, cfg *typ
 
 			res, err := system.RunAsUserWithInputContext(ctx, sys, "", "ssh-keygen", "-y", "-f", keyFile)
 			if err != nil || res == nil || res.ExitCode != 0 {
-				return system.FormatCommandError("failed to recover SSH public key", res, err)
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				recoveryErr := system.FormatCommandError("failed to recover SSH public key", res, err)
+				log.Warnf("Unable to recover SSH public key for existing private key; keeping the private key unchanged: %v", recoveryErr)
+				return nil
 			}
 			publicKey := strings.TrimSpace(res.Stdout)
 			if publicKey == "" {
