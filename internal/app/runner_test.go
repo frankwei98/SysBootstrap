@@ -237,8 +237,8 @@ func TestRunnerWarnsAndContinuesAfterNonBaseModuleFailure(t *testing.T) {
 
 	capture := newCapturedRunnerLog(t)
 	runner := NewRunner(registry, &system.Context{}, capture.log)
-	if err := runner.Run(context.Background(), &types.Config{}, []string{"zellij", "node"}); err != nil {
-		t.Fatalf("Run() should continue after non-base module failure, got: %v", err)
+	if err := runner.Run(context.Background(), &types.Config{}, []string{"zellij", "node"}); !errors.Is(err, ErrModulesFailed) {
+		t.Fatalf("Run() error = %v, want ErrModulesFailed", err)
 	}
 	if !following.runCalled {
 		t.Fatal("expected independent module to run after zellij failure")
@@ -292,6 +292,9 @@ func TestRunnerSkipsModuleWhoseDependencyFailed(t *testing.T) {
 	}
 	if !result.ModuleFailed("node") {
 		t.Fatal("expected result to report the failed node dependency")
+	}
+	if !errors.Is(result.Err(), ErrModulesFailed) {
+		t.Fatalf("RunResult.Err() = %v, want ErrModulesFailed", result.Err())
 	}
 	if ai.runCalled {
 		t.Fatal("expected dependent module to be skipped after its dependency failed")
