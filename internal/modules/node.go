@@ -420,13 +420,11 @@ func extractZipEntry(f *zip.File, destPath string) error {
 	}
 	defer rc.Close()
 
-	outFile, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	content, err := io.ReadAll(rc)
 	if err != nil {
-		return fmt.Errorf("cannot create destination file: %w", err)
+		return fmt.Errorf("cannot read %s: %w", f.Name, err)
 	}
-	defer outFile.Close()
-
-	if _, err := io.Copy(outFile, rc); err != nil {
+	if err := system.WriteFileAtomically(destPath, content, 0o755); err != nil {
 		return fmt.Errorf("cannot write %s: %w", f.Name, err)
 	}
 	return nil
