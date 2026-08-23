@@ -587,7 +587,7 @@ type uninstallFlags struct {
 }
 
 // parseUninstallFlags parses uninstall command args into flags.
-func parseUninstallFlags(args []string) uninstallFlags {
+func parseUninstallFlags(args []string) (uninstallFlags, error) {
 	var f uninstallFlags
 	for _, a := range args {
 		switch a {
@@ -597,9 +597,11 @@ func parseUninstallFlags(args []string) uninstallFlags {
 			f.All = true
 		case "--yes":
 			f.Yes = true
+		default:
+			return uninstallFlags{}, fmt.Errorf("unknown uninstall option %q", a)
 		}
 	}
-	return f
+	return f, nil
 }
 
 // validateUninstallFlags checks flag combinations. interactive indicates whether
@@ -613,7 +615,10 @@ func validateUninstallFlags(f uninstallFlags, interactive bool) error {
 
 // UninstallCmd handles the `uninstall` command.
 func UninstallCmd(args []string) error {
-	flags := parseUninstallFlags(args)
+	flags, err := parseUninstallFlags(args)
+	if err != nil {
+		return err
+	}
 
 	if err := validateUninstallFlags(flags, isInteractiveTerminal()); err != nil {
 		return err

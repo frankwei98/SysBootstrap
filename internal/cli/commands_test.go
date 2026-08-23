@@ -148,21 +148,30 @@ func TestResolveAptMirror_EnvOverridesSettings(t *testing.T) {
 // --- Uninstall flag parsing and validation tests ---
 
 func TestParseUninstallFlags_Empty(t *testing.T) {
-	f := parseUninstallFlags(nil)
+	f, err := parseUninstallFlags(nil)
+	if err != nil {
+		t.Fatalf("parseUninstallFlags: %v", err)
+	}
 	if f.DryRun || f.All || f.Yes {
 		t.Errorf("expected all false, got dryRun=%v all=%v yes=%v", f.DryRun, f.All, f.Yes)
 	}
 }
 
 func TestParseUninstallFlags_All(t *testing.T) {
-	f := parseUninstallFlags([]string{"--all", "--yes"})
+	f, err := parseUninstallFlags([]string{"--all", "--yes"})
+	if err != nil {
+		t.Fatalf("parseUninstallFlags: %v", err)
+	}
 	if !f.All || !f.Yes {
 		t.Errorf("expected all=true yes=true, got all=%v yes=%v", f.All, f.Yes)
 	}
 }
 
 func TestParseUninstallFlags_DryRun(t *testing.T) {
-	f := parseUninstallFlags([]string{"--dry-run"})
+	f, err := parseUninstallFlags([]string{"--dry-run"})
+	if err != nil {
+		t.Fatalf("parseUninstallFlags: %v", err)
+	}
 	if !f.DryRun {
 		t.Error("expected dryRun=true")
 	}
@@ -172,9 +181,22 @@ func TestParseUninstallFlags_DryRun(t *testing.T) {
 }
 
 func TestParseUninstallFlags_Mixed(t *testing.T) {
-	f := parseUninstallFlags([]string{"--all", "--dry-run", "--yes"})
+	f, err := parseUninstallFlags([]string{"--all", "--dry-run", "--yes"})
+	if err != nil {
+		t.Fatalf("parseUninstallFlags: %v", err)
+	}
 	if !f.DryRun || !f.All || !f.Yes {
 		t.Errorf("expected all true, got dryRun=%v all=%v yes=%v", f.DryRun, f.All, f.Yes)
+	}
+}
+
+func TestParseUninstallFlags_RejectsUnknownFlag(t *testing.T) {
+	_, err := parseUninstallFlags([]string{"--dryrun", "--all", "--yes"})
+	if err == nil {
+		t.Fatal("expected misspelled --dryrun to be rejected")
+	}
+	if !strings.Contains(err.Error(), "--dryrun") {
+		t.Fatalf("error %q does not name the rejected flag", err)
 	}
 }
 
