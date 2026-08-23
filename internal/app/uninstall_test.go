@@ -384,6 +384,98 @@ func TestScanUninstallItems_AIOnlyWhenInstalled(t *testing.T) {
 	}
 }
 
+func TestScanUninstallItemsSelectsActualAIPackageOwner(t *testing.T) {
+	tests := []struct {
+		name       string
+		pnpmScript string
+		npmScript  string
+		wantClaude string
+		wantCodex  string
+	}{
+		{
+			name: "split inventories",
+			pnpmScript: `#!/bin/sh
+printf '%s\n' '[{"dependencies":{"@anthropic-ai/claude-code":{"version":"1.0.0"}}}]'
+`,
+			npmScript: `#!/bin/sh
+printf '%s\n' '{"dependencies":{"@openai/codex":{"version":"1.0.0"}}}'
+`,
+			wantClaude: "pnpm",
+			wantCodex:  "npm",
+		},
+		{
+			name: "inventory probes fail",
+			pnpmScript: `#!/bin/sh
+exit 17
+`,
+			npmScript: `#!/bin/sh
+exit 18
+`,
+			wantClaude: "",
+			wantCodex:  "",
+		},
+		{
+			name: "inventory output is invalid",
+			pnpmScript: `#!/bin/sh
+printf '%s\n' 'not-json'
+`,
+			npmScript: `#!/bin/sh
+printf '%s\n' '{invalid-json'
+`,
+			wantClaude: "",
+			wantCodex:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			fakeBin := filepath.Join(home, "fake-bin")
+			nvmDir := filepath.Join(home, ".nvm")
+			if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+				t.Fatalf("create fake bin: %v", err)
+			}
+			if err := os.MkdirAll(nvmDir, 0o755); err != nil {
+				t.Fatalf("create fake nvm dir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(nvmDir, "nvm.sh"), []byte("export PATH=\"$HOME/fake-bin:$PATH\"\n"), 0o644); err != nil {
+				t.Fatalf("write fake nvm.sh: %v", err)
+			}
+			for _, name := range []string{"claude", "codex"} {
+				writeAppTestExecutable(t, filepath.Join(fakeBin, name), "#!/bin/sh\nexit 0\n")
+			}
+			writeAppTestExecutable(t, filepath.Join(fakeBin, "pnpm"), tt.pnpmScript)
+			writeAppTestExecutable(t, filepath.Join(fakeBin, "npm"), tt.npmScript)
+
+			items := make(map[string]UninstallItem)
+			for _, item := range ScanUninstallItems(home) {
+				items[item.ID] = item
+			}
+			claude, ok := items["ai-claude"]
+			if !ok {
+				t.Fatal("Claude command exists but scan omitted ai-claude")
+			}
+			codex, ok := items["ai-codex"]
+			if !ok {
+				t.Fatal("Codex command exists but scan omitted ai-codex")
+			}
+			if claude.PkgManager != tt.wantClaude {
+				t.Errorf("Claude package manager = %q, want %q", claude.PkgManager, tt.wantClaude)
+			}
+			if codex.PkgManager != tt.wantCodex {
+				t.Errorf("Codex package manager = %q, want %q", codex.PkgManager, tt.wantCodex)
+			}
+		})
+	}
+}
+
+func writeAppTestExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+}
+
 // --- FilterInstalledItems tests ---
 
 func TestFilterInstalledItems_WithDirs(t *testing.T) {

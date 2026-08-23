@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -185,24 +186,36 @@ func ScanUninstallItems(homeDir string) []UninstallItem {
 		})
 	}
 
-	// 4-5. AI CLI: only include if actually installed (command exists in nvm shell)
-	pm := detectAIPkgManager(homeDir)
-	if system.NvmCommandExistsForHome(homeDir, "claude") {
+	// 4-5. AI CLI: command presence controls whether the item is visible, but
+	// package-manager ownership must come from that manager's global inventory.
+	const claudePackage = "@anthropic-ai/claude-code"
+	const codexPackage = "@openai/codex"
+	hasClaude := system.NvmCommandExistsForHome(homeDir, "claude")
+	hasCodex := system.NvmCommandExistsForHome(homeDir, "codex")
+	var aiPackages []string
+	if hasClaude {
+		aiPackages = append(aiPackages, claudePackage)
+	}
+	if hasCodex {
+		aiPackages = append(aiPackages, codexPackage)
+	}
+	packageManagers := detectAIPackageManagers(homeDir, aiPackages)
+	if hasClaude {
 		items = append(items, UninstallItem{
 			ID:          "ai-claude",
 			Name:        "Claude Code",
 			Description: i18n.T("uninstall_item_claude_desc"),
-			PkgManager:  pm,
-			PkgName:     "@anthropic-ai/claude-code",
+			PkgManager:  packageManagers[claudePackage],
+			PkgName:     claudePackage,
 		})
 	}
-	if system.NvmCommandExistsForHome(homeDir, "codex") {
+	if hasCodex {
 		items = append(items, UninstallItem{
 			ID:          "ai-codex",
 			Name:        "Codex",
 			Description: i18n.T("uninstall_item_codex_desc"),
-			PkgManager:  pm,
-			PkgName:     "@openai/codex",
+			PkgManager:  packageManagers[codexPackage],
+			PkgName:     codexPackage,
 		})
 	}
 
@@ -248,16 +261,93 @@ func userScopedEnvDir(envName, homeDir, fallback string) string {
 	return fallback
 }
 
-// detectAIPkgManager returns the best available package manager for AI CLI removal.
-// Returns "pnpm" if available in nvm shell, "npm" if available, or "" if neither.
-func detectAIPkgManager(homeDir string) string {
-	if system.NvmCommandExistsForHome(homeDir, "pnpm") {
-		return "pnpm"
+type globalPackageList struct {
+	Dependencies         map[string]json.RawMessage `json:"dependencies"`
+	DevDependencies      map[string]json.RawMessage `json:"devDependencies"`
+	OptionalDependencies map[string]json.RawMessage `json:"optionalDependencies"`
+}
+
+// detectAIPackageManagers returns a manager only when its global inventory
+// positively identifies the package. Failed probes and ownership conflicts are
+// deliberately left unresolved rather than guessed from command availability.
+func detectAIPackageManagers(homeDir string, packages []string) map[string]string {
+	owners := make(map[string]string)
+	if len(packages) == 0 {
+		return owners
 	}
-	if system.NvmCommandExistsForHome(homeDir, "npm") {
-		return "npm"
+
+	inventories := make(map[string]map[string]struct{})
+	for _, manager := range []string{"pnpm", "npm"} {
+		if inventory, ok := readGlobalPackageInventory(homeDir, manager); ok {
+			inventories[manager] = inventory
+		}
 	}
-	return ""
+	for _, packageName := range packages {
+		owner := ""
+		ambiguous := false
+		for _, manager := range []string{"pnpm", "npm"} {
+			if _, installed := inventories[manager][packageName]; !installed {
+				continue
+			}
+			if owner != "" {
+				ambiguous = true
+				break
+			}
+			owner = manager
+		}
+		if owner != "" && !ambiguous {
+			owners[packageName] = owner
+		}
+	}
+	return owners
+}
+
+func readGlobalPackageInventory(homeDir, manager string) (map[string]struct{}, bool) {
+	var script string
+	switch manager {
+	case "pnpm":
+		script = "pnpm list --global --depth=0 --json"
+	case "npm":
+		script = "npm list --global --depth=0 --json"
+	default:
+		return nil, false
+	}
+	res, err := system.RunInNvmShellForHome(homeDir, script)
+	if err != nil || res == nil || res.ExitCode != 0 {
+		return nil, false
+	}
+	inventory, err := parseGlobalPackageInventory([]byte(res.Stdout))
+	return inventory, err == nil
+}
+
+func parseGlobalPackageInventory(data []byte) (map[string]struct{}, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty package inventory")
+	}
+
+	var lists []globalPackageList
+	if data[0] == '[' {
+		if err := json.Unmarshal(data, &lists); err != nil {
+			return nil, err
+		}
+	} else {
+		var list globalPackageList
+		if err := json.Unmarshal(data, &list); err != nil {
+			return nil, err
+		}
+		lists = append(lists, list)
+	}
+
+	packages := make(map[string]struct{})
+	for _, list := range lists {
+		for _, dependencies := range []map[string]json.RawMessage{list.Dependencies, list.DevDependencies, list.OptionalDependencies} {
+			for packageName := range dependencies {
+				packages[packageName] = struct{}{}
+			}
+		}
+	}
+	return packages, nil
 }
 
 // FilterInstalledItems returns only items that have something to uninstall
