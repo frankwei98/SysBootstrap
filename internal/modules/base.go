@@ -41,9 +41,13 @@ func (m *BaseModule) Check(ctx context.Context, sys *system.Context, cfg *types.
 	if cfg != nil && cfg.AptMirror == "cernet" {
 		message += ". CERNET mirror " + boolWord(!mirrorNeedsSwitch, "configured", "pending")
 	}
+	message += ". System package refresh pending"
 
 	return CheckResult{
-		Satisfied: len(missing) == 0 && !mirrorNeedsSwitch,
+		// A read-only check cannot prove package indexes are current or that no
+		// security upgrades are pending. Selecting base therefore always performs
+		// one bounded apt update/upgrade cycle.
+		Satisfied: false,
 		Message:   message,
 	}
 }
@@ -64,11 +68,9 @@ func (m *BaseModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 			Detail: "Rewrite Debian/Ubuntu official sources to mirrors.cernet.edu.cn (security sources unchanged)",
 		})
 	}
-	if len(missing) > 0 || mirrorNeedsSwitch {
-		steps = append(steps,
-			types.Step{Module: "base", Title: "Run apt update & upgrade", Detail: "Update package lists and upgrade installed packages"},
-		)
-	}
+	steps = append(steps,
+		types.Step{Module: "base", Title: "Run apt update & upgrade", Detail: "Update package lists and upgrade installed packages"},
+	)
 	steps = append(steps, buildBasePackageSteps(missing)...)
 	return steps, nil
 }
