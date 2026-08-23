@@ -413,7 +413,7 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 		if len(failedDeps) > 0 {
 			log.SetModule(m.Name())
 			log.Warnf(i18n.T("runner_skipping_failed_dependencies"), m.Name(), failedDeps)
-			return nil
+			return fmt.Errorf("cannot run %s: %w", m.Name(), result.Err())
 		}
 	}
 

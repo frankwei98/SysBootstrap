@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
@@ -27,10 +28,38 @@ type RunResult struct {
 	failedModules map[string]bool
 }
 
+// ErrModulesFailed marks a run that continued past recoverable module failures
+// but did not fully complete the requested work.
+var ErrModulesFailed = errors.New("one or more modules failed")
+
 // ModuleFailed reports whether a module failed or was skipped because one of
 // its required modules failed during this run.
 func (r *RunResult) ModuleFailed(moduleID string) bool {
 	return r != nil && r.failedModules[moduleID]
+}
+
+// FailedModuleIDs returns failed and dependency-skipped module IDs in stable
+// order so CLI errors are deterministic for humans and automation.
+func (r *RunResult) FailedModuleIDs() []string {
+	if r == nil || len(r.failedModules) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(r.failedModules))
+	for id := range r.failedModules {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// Err reports whether any requested module failed or was skipped because a
+// required module failed. The runner still executes independent modules first.
+func (r *RunResult) Err() error {
+	ids := r.FailedModuleIDs()
+	if len(ids) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrModulesFailed, strings.Join(ids, ", "))
 }
 
 // NewRunner creates a new module runner.
@@ -51,8 +80,11 @@ func (r *Runner) SetSSHCheckpoint(f types.CheckpointFunc) {
 
 // Run executes the given modules in dependency order.
 func (r *Runner) Run(ctx context.Context, cfg *types.Config, ids []string) error {
-	_, err := r.RunWithResult(ctx, cfg, ids)
-	return err
+	result, err := r.RunWithResult(ctx, cfg, ids)
+	if err != nil {
+		return err
+	}
+	return result.Err()
 }
 
 // RunWithResult executes the given modules in dependency order and returns
