@@ -857,10 +857,11 @@ func sshConfigPaths(configPath string) ([]string, error) {
 	includeBase := filepath.Dir(root)
 	var visit func(string) error
 	visit = func(path string) error {
-		path, err = filepath.Abs(path)
-		if err != nil {
-			return err
+		absPath, absErr := filepath.Abs(path)
+		if absErr != nil {
+			return absErr
 		}
+		path = absPath
 		if seen[path] {
 			return nil
 		}
@@ -868,15 +869,15 @@ func sshConfigPaths(configPath string) ([]string, error) {
 		if err := system.RejectSymlinkPath(path); err != nil {
 			return fmt.Errorf("refusing unsafe SSH config path %s: %w", path, err)
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
 		}
 		paths = append(paths, path)
 		for lineNumber, line := range strings.Split(string(data), "\n") {
-			fields, err := splitSSHConfigFields(line)
-			if err != nil {
-				return fmt.Errorf("parse %s:%d: %w", path, lineNumber+1, err)
+			fields, parseErr := splitSSHConfigFields(line)
+			if parseErr != nil {
+				return fmt.Errorf("parse %s:%d: %w", path, lineNumber+1, parseErr)
 			}
 			if len(fields) < 2 || !strings.EqualFold(fields[0], "Include") {
 				continue
@@ -887,9 +888,9 @@ func sshConfigPaths(configPath string) ([]string, error) {
 					// the server configuration directory, including nested ones.
 					pattern = filepath.Join(includeBase, pattern)
 				}
-				matches, err := filepath.Glob(pattern)
-				if err != nil {
-					return fmt.Errorf("expand Include pattern %q in %s:%d: %w", pattern, path, lineNumber+1, err)
+				matches, globErr := filepath.Glob(pattern)
+				if globErr != nil {
+					return fmt.Errorf("expand Include pattern %q in %s:%d: %w", pattern, path, lineNumber+1, globErr)
 				}
 				for _, match := range matches {
 					if err := visit(match); err != nil {
