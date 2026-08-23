@@ -1,11 +1,15 @@
 package settings
 
 import (
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestParseLine(t *testing.T) {
@@ -156,6 +160,51 @@ func TestSaveUser_EmptyFieldsOmitted(t *testing.T) {
 	content := string(data)
 	if strings.Contains(content, "apt_mirror") {
 		t.Errorf("config should not contain apt_mirror when empty: %s", content)
+	}
+}
+
+func TestSaveUserPreservesExistingExtendedAttributes(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.env")
+	if err := os.WriteFile(configPath, []byte("lang=en\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	xattrName := "user.sys-bootstrap-settings-test"
+	if runtime.GOOS == "darwin" {
+		xattrName = "com.sys-bootstrap.settings-test"
+	}
+	xattrValue := []byte("preserve-me")
+	f, err := os.OpenFile(configPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = unix.Fsetxattr(int(f.Fd()), xattrName, xattrValue, 0)
+	_ = f.Close()
+	if err != nil {
+		if errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EPERM) {
+			t.Skipf("extended attributes unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+
+	originalPath := UserConfigPath
+	UserConfigPath = func() string { return configPath }
+	t.Cleanup(func() { UserConfigPath = originalPath })
+	if err := SaveUser(Settings{Lang: "zh-CN"}); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err = os.Open(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(xattrValue))
+	n, err := unix.Fgetxattr(int(f.Fd()), xattrName, got)
+	_ = f.Close()
+	if err != nil {
+		t.Fatalf("read preserved xattr: %v", err)
+	}
+	if string(got[:n]) != string(xattrValue) {
+		t.Fatalf("xattr = %q, want %q", got[:n], xattrValue)
 	}
 }
 
