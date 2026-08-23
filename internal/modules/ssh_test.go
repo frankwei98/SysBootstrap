@@ -1196,6 +1196,13 @@ func TestSSHRunSkipsUFWAllowWhenUnrestrictedRuleAllowsPort(t *testing.T) {
 	}
 }
 
+func TestSSHRunSkipsUFWAllowWhenBarePortRuleAllowsPort(t *testing.T) {
+	allowLog := runSSHWithUFWStatus(t, "22122                    ALLOW IN    Anywhere")
+	if allowLog != "" {
+		t.Fatalf("ufw allow calls = %q, want none for a bare-port rule", allowLog)
+	}
+}
+
 func TestSSHRunAddsUFWAllowWhenAllowedRuleOnlyContainsPortAsSubstring(t *testing.T) {
 	allowLog := runSSHWithUFWStatus(t, "122122/tcp                ALLOW IN    Anywhere")
 	if allowLog != "allow 22122/tcp\n" {
