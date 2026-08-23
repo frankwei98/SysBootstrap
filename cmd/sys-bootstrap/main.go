@@ -43,6 +43,10 @@ func main() {
 		}
 		return
 	}
+	if err := validateTopLevelArgs(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	switch args[0] {
 	case "run":
@@ -99,6 +103,29 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+func validateTopLevelArgs(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	command := args[0]
+	switch command {
+	case "run", "doctor", "version", "help", "--help", "-h":
+		if len(args) != 1 {
+			return fmt.Errorf("%s does not accept arguments", command)
+		}
+	case "plan":
+		if len(args) == 1 || (len(args) == 2 && args[1] == "--json") {
+			return nil
+		}
+		return fmt.Errorf("plan accepts only --json")
+	case "module":
+		if len(args) != 2 {
+			return fmt.Errorf("module requires exactly one module ID")
+		}
+	}
+	return nil
 }
 
 // mainMenu runs the doctor check then shows a menu with provisioning, settings, and exit.

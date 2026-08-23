@@ -61,3 +61,39 @@ func TestExtractLangFlag_MultipleFlags(t *testing.T) {
 		t.Errorf("args = %v, want %v", args, want)
 	}
 }
+
+func TestValidateTopLevelArgsRejectsIgnoredArguments(t *testing.T) {
+	tests := [][]string{
+		{"module", "node", "--dry-run"},
+		{"plan", "--jsno"},
+		{"plan", "--json", "extra"},
+		{"run", "extra"},
+		{"doctor", "extra"},
+		{"version", "unexpected"},
+		{"help", "unexpected"},
+	}
+	for _, args := range tests {
+		if err := validateTopLevelArgs(args); err == nil {
+			t.Errorf("validateTopLevelArgs(%v) succeeded, want error", args)
+		}
+	}
+}
+
+func TestValidateTopLevelArgsAcceptsSupportedForms(t *testing.T) {
+	tests := [][]string{
+		{"run"},
+		{"plan"},
+		{"plan", "--json"},
+		{"doctor"},
+		{"module", "node"},
+		{"uninstall", "--dry-run"},
+		{"config", "language", "en"},
+		{"version"},
+		{"--help"},
+	}
+	for _, args := range tests {
+		if err := validateTopLevelArgs(args); err != nil {
+			t.Errorf("validateTopLevelArgs(%v) failed: %v", args, err)
+		}
+	}
+}
