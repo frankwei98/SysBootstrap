@@ -427,6 +427,19 @@ printf '%s\n' '{invalid-json'
 			wantClaude: "",
 			wantCodex:  "",
 		},
+		{
+			name: "valid inventory despite nonzero exit",
+			pnpmScript: `#!/bin/sh
+printf '%s\n' '{"dependencies":{"@anthropic-ai/claude-code":{"version":"1.0.0"}}}'
+exit 1
+`,
+			npmScript: `#!/bin/sh
+printf '%s\n' '{"dependencies":{"@openai/codex":{"version":"1.0.0"}}}'
+exit 1
+`,
+			wantClaude: "pnpm",
+			wantCodex:  "npm",
+		},
 	}
 
 	for _, tt := range tests {
