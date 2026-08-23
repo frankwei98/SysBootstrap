@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"archive/zip"
 	"context"
 	"os"
 	"os/user"
@@ -12,6 +13,100 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
+
+func TestExtractBunFromZipRejectsSymlinkDestinationWithoutModifyingTarget(t *testing.T) {
+	replacement := []byte("replacement bun binary")
+	zipPath := writeTestBunZip(t, replacement)
+
+	externalPath := filepath.Join(t.TempDir(), "must-not-change")
+	original := []byte("external file contents")
+	if err := os.WriteFile(externalPath, original, 0o600); err != nil {
+		t.Fatalf("write external target: %v", err)
+	}
+
+	destPath := filepath.Join(t.TempDir(), "bun")
+	if err := os.Symlink(externalPath, destPath); err != nil {
+		t.Skipf("cannot create destination symlink: %v", err)
+	}
+
+	err := extractBunFromZip(zipPath, destPath)
+	if err == nil {
+		t.Error("extractBunFromZip accepted a symlink destination")
+	}
+	got, readErr := os.ReadFile(externalPath)
+	if readErr != nil {
+		t.Fatalf("read external target after extraction: %v", readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("external target was modified through destination symlink: got %q, want %q", got, original)
+	}
+	info, statErr := os.Lstat(destPath)
+	if statErr != nil {
+		t.Fatalf("lstat destination symlink after extraction: %v", statErr)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("destination symlink was replaced; mode = %v", info.Mode())
+	}
+}
+
+func TestExtractBunFromZipAtomicallyReplacesExistingFileWithoutModifyingHardlinkTarget(t *testing.T) {
+	replacement := []byte("replacement bun binary")
+	zipPath := writeTestBunZip(t, replacement)
+
+	dir := t.TempDir()
+	externalPath := filepath.Join(dir, "external")
+	original := []byte("external file contents")
+	if err := os.WriteFile(externalPath, original, 0o600); err != nil {
+		t.Fatalf("write external target: %v", err)
+	}
+	destPath := filepath.Join(dir, "bun")
+	if err := os.Link(externalPath, destPath); err != nil {
+		t.Skipf("cannot create destination hardlink: %v", err)
+	}
+
+	if err := extractBunFromZip(zipPath, destPath); err != nil {
+		t.Fatalf("extractBunFromZip failed: %v", err)
+	}
+	external, err := os.ReadFile(externalPath)
+	if err != nil {
+		t.Fatalf("read hardlink target after extraction: %v", err)
+	}
+	if string(external) != string(original) {
+		t.Fatalf("hardlink target was modified in place: got %q, want %q", external, original)
+	}
+	dest, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("read extracted bun destination: %v", err)
+	}
+	if string(dest) != string(replacement) {
+		t.Fatalf("bun destination = %q, want %q", dest, replacement)
+	}
+}
+
+func writeTestBunZip(t *testing.T, content []byte) string {
+	t.Helper()
+
+	zipPath := filepath.Join(t.TempDir(), "bun.zip")
+	zipFile, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("create bun zip: %v", err)
+	}
+	zipWriter := zip.NewWriter(zipFile)
+	entry, err := zipWriter.Create("bun-linux-x64/bun")
+	if err != nil {
+		t.Fatalf("create bun zip entry: %v", err)
+	}
+	if _, err := entry.Write(content); err != nil {
+		t.Fatalf("write bun zip entry: %v", err)
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatalf("close bun zip writer: %v", err)
+	}
+	if err := zipFile.Close(); err != nil {
+		t.Fatalf("close bun zip: %v", err)
+	}
+	return zipPath
+}
 
 func TestNodeModuleCheckNoNvm(t *testing.T) {
 	t.Setenv("NVM_DIR", filepath.Join(t.TempDir(), ".nvm"))
