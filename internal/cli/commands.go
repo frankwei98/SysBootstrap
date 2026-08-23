@@ -136,7 +136,10 @@ func RunCmd(ctx context.Context, registry *modules.Registry) error {
 
 	// APT mirror: env > settings > interactive prompt (skip in user mode)
 	if mode == RunModeFull {
-		st := settings.Load()
+		st, err := settings.Load()
+		if err != nil {
+			return err
+		}
 		resolved, saveNeeded := resolveAptMirror(cfg, st, isInteractiveTerminal())
 		if !resolved {
 			if saveNeeded {
@@ -241,7 +244,10 @@ func PlanCmd(ctx context.Context, registry *modules.Registry, jsonOutput bool) e
 	ids := registry.IDs()
 
 	cfg := previewPlanConfig(sys)
-	st := settings.Load()
+	st, err := settings.Load()
+	if err != nil {
+		return err
+	}
 	resolveAptMirror(cfg, st, false)
 	plan, err := app.GeneratePlan(ctx, sys, cfg, registry, ids)
 	if err != nil {
@@ -352,7 +358,10 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 	// used for dependency inspection, dependency execution, target forms, and
 	// final execution so requested settings cannot drift between phases.
 	cfg := moduleDefaultConfig(moduleID, sys)
-	st := settings.Load()
+	st, err := settings.Load()
+	if err != nil {
+		return err
+	}
 	resolveAptMirror(cfg, st, false)
 
 	// Ask for the AI selection before resolving its Node dependency. An explicit
@@ -830,7 +839,10 @@ func aptMirrorForm(cfg *types.Config) (string, error) {
 
 // ConfigCmd handles the `config` command.
 func ConfigCmd(args []string) error {
-	st := settings.Load()
+	st, err := settings.Load()
+	if err != nil {
+		return err
+	}
 
 	// Direct set: config language <lang>
 	if len(args) == 2 && args[0] == "language" {

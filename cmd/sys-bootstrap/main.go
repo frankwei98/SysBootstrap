@@ -20,7 +20,11 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	// Load persistent settings first
-	cfg := settings.Load()
+	cfg, err := settings.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Initialize i18n: --lang flag > SYS_BOOTSTRAP_LANG env > settings > default en
 	langFlag, filteredArgs := extractLangFlag(os.Args[1:])
