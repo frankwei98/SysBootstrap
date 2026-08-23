@@ -486,6 +486,64 @@ func TestBuildUninstallPlan_DetectsRCFiles(t *testing.T) {
 
 // --- CleanShellRC tests ---
 
+func TestCleanShellRCRefusesToOverwriteConcurrentChanges(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(string, []byte) error
+	}{
+		{
+			name: "same inode content change",
+			mutate: func(path string, content []byte) error {
+				return os.WriteFile(path, content, 0o644)
+			},
+		},
+		{
+			name: "inode replacement",
+			mutate: func(path string, content []byte) error {
+				if err := os.Rename(path, path+".before-concurrent-replace"); err != nil {
+					return err
+				}
+				return os.WriteFile(path, content, 0o644)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rcFile := filepath.Join(t.TempDir(), ".bashrc")
+			original := []byte("export NVM_DIR=\"$HOME/.nvm\"\nalias keep='original'\n")
+			concurrent := []byte("# concurrent update\nalias keep='concurrent'\n")
+			if err := os.WriteFile(rcFile, original, 0o644); err != nil {
+				t.Fatalf("write original rc: %v", err)
+			}
+
+			originalWriter := writeShellRCIfUnchanged
+			writeShellRCIfUnchanged = func(path string, expected []byte, info os.FileInfo, cleaned []byte) error {
+				if err := tt.mutate(path, concurrent); err != nil {
+					return err
+				}
+				return originalWriter(path, expected, info, cleaned)
+			}
+			t.Cleanup(func() { writeShellRCIfUnchanged = originalWriter })
+
+			_, err := CleanShellRC([]string{rcFile}, []string{"nvm"}, false, nil)
+			if err == nil {
+				t.Fatal("CleanShellRC overwrote a concurrent rc update; want conflict error")
+			}
+			if !strings.Contains(err.Error(), "changed during cleanup") {
+				t.Fatalf("CleanShellRC error = %v, want clear concurrent-change conflict", err)
+			}
+			got, readErr := os.ReadFile(rcFile)
+			if readErr != nil {
+				t.Fatalf("read rc after conflict: %v", readErr)
+			}
+			if !bytes.Equal(got, concurrent) {
+				t.Fatalf("concurrent rc update was overwritten:\ngot:  %q\nwant: %q", got, concurrent)
+			}
+		})
+	}
+}
+
 func TestCleanShellRC_RemovesNVMLines(t *testing.T) {
 	home := t.TempDir()
 	rcFile := filepath.Join(home, ".bashrc")
