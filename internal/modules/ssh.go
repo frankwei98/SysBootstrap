@@ -125,7 +125,7 @@ func (m *SSHModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Co
 			return nil, err
 		}
 	}
-	if err := rejectAddressDependentSSHAuthPolicy(cfg); err != nil {
+	if err := rejectUnverifiableSSHAuthPolicy(cfg); err != nil {
 		return nil, err
 	}
 
@@ -209,7 +209,7 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	}
 	// Reject an existing unsupported policy before package installation or
 	// any other mutation. A second check after installation covers fresh hosts.
-	if err := rejectAddressDependentSSHAuthPolicy(cfg); err != nil {
+	if err := rejectUnverifiableSSHAuthPolicy(cfg); err != nil {
 		return err
 	}
 	if m.checkpoint == nil {
@@ -222,7 +222,7 @@ func (m *SSHModule) Run(ctx context.Context, sys *system.Context, cfg *types.Con
 	if err := ensureOpenSSHServer(ctx, log); err != nil {
 		return err
 	}
-	if err := rejectAddressDependentSSHAuthPolicy(cfg); err != nil {
+	if err := rejectUnverifiableSSHAuthPolicy(cfg); err != nil {
 		return err
 	}
 
