@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -508,11 +507,7 @@ func extractZipEntry(f *zip.File, destPath string) error {
 	}
 	defer rc.Close()
 
-	content, err := io.ReadAll(rc)
-	if err != nil {
-		return fmt.Errorf("cannot read %s: %w", f.Name, err)
-	}
-	if err := system.WriteFileAtomically(destPath, content, 0o755); err != nil {
+	if err := system.WriteReaderAtomically(destPath, rc, 0o755); err != nil {
 		return fmt.Errorf("cannot write %s: %w", f.Name, err)
 	}
 	return nil
