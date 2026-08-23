@@ -136,7 +136,12 @@ func GeneratePlan(ctx context.Context, sys *system.Context, cfg *types.Config, r
 			mp.Status = "error"
 			mp.Warning = err.Error()
 		} else {
-			mp.Steps = steps
+			mp.Steps = append([]types.Step(nil), steps...)
+			for i := range mp.Steps {
+				if mp.Steps[i].Status == "" {
+					mp.Steps[i].Status = "pending"
+				}
+			}
 			if contractErr := moduleStateContractError(m.Name(), check, steps); contractErr != nil {
 				mp.Status = "error"
 				mp.Warning = contractErr.Error()
