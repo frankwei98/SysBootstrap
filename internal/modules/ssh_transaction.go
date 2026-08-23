@@ -653,7 +653,7 @@ func reloadSSH(target sshReloadTarget) error {
 // duplicate entries and track only the delta.
 func ufwAllowIfMissing(port int, log *logging.Logger) (added bool, err error) {
 	if res, err := system.Run("ufw", "status", "verbose"); err == nil && res != nil {
-		if strings.Contains(res.Stdout, fmt.Sprintf("%d/tcp", port)) {
+		if ufwStatusAllowsPort(res.Stdout, port) {
 			return false, nil // Already allowed
 		}
 	}
@@ -665,6 +665,31 @@ func ufwAllowIfMissing(port int, log *logging.Logger) (added bool, err error) {
 		return false, fmt.Errorf("ufw allow %d/tcp failed: %s", port, detail)
 	}
 	return true, nil
+}
+
+func ufwStatusAllowsPort(status string, port int) bool {
+	needle := fmt.Sprintf("%d/tcp", port)
+	for _, line := range strings.Split(status, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != needle {
+			continue
+		}
+		actionIndex := 1
+		if fields[actionIndex] == "(v6)" {
+			actionIndex++
+		}
+		if actionIndex+2 >= len(fields) || fields[actionIndex] != "ALLOW" || fields[actionIndex+1] != "IN" {
+			continue
+		}
+		from := fields[actionIndex+2:]
+		if len(from) == 1 && from[0] == "Anywhere" {
+			return true
+		}
+		if len(from) == 2 && from[0] == "Anywhere" && from[1] == "(v6)" {
+			return true
+		}
+	}
+	return false
 }
 
 // prepareSSHPhase performs the prepare phase of SSH hardening:
