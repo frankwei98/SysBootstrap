@@ -1062,6 +1062,12 @@ case "$1" in
           ;;
       esac
     fi
+    if [ -n "$SYSBOOTSTRAP_TEST_STUBBORN_EFFECTIVE_PORT" ] && [ -f "$SYSBOOTSTRAP_TEST_RELOAD_COUNT" ]; then
+      count=$(awk 'NR == 1 { print $1 }' "$SYSBOOTSTRAP_TEST_RELOAD_COUNT")
+      if [ "$count" -ge 2 ]; then
+        echo "port $SYSBOOTSTRAP_TEST_STUBBORN_EFFECTIVE_PORT"
+      fi
+    fi
     exit 0
     ;;
 esac
@@ -1074,6 +1080,12 @@ for file in "$SYSBOOTSTRAP_TEST_DROPIN" "$SYSBOOTSTRAP_TEST_SSHD_CONFIG"; do
 done | sort -nu | while read -r port; do
   echo "LISTEN 0 128 0.0.0.0:$port 0.0.0.0:* users:((\"sshd\",pid=100,fd=3))"
 done
+if [ -n "$SYSBOOTSTRAP_TEST_STUBBORN_LISTENER_PORT" ] && [ -f "$SYSBOOTSTRAP_TEST_RELOAD_COUNT" ]; then
+  count=$(awk 'NR == 1 { print $1 }' "$SYSBOOTSTRAP_TEST_RELOAD_COUNT")
+  if [ "$count" -ge 2 ]; then
+    echo "LISTEN 0 128 0.0.0.0:$SYSBOOTSTRAP_TEST_STUBBORN_LISTENER_PORT 0.0.0.0:* users:((\"sshd\",pid=101,fd=4))"
+  fi
+fi
 `)
 	writeFakeCommand(t, tempBin, "systemctl", `#!/bin/sh
 case "$1" in
@@ -1569,6 +1581,38 @@ func TestSSHRunRestoresExplicitLegacyPortWhenFinalReloadFails(t *testing.T) {
 	}
 	if _, err := os.Stat(env.dropInPath); !os.IsNotExist(err) {
 		t.Fatalf("managed drop-in should be removed after rollback: %v", err)
+	}
+}
+
+func TestSSHRunReportsEmergencyWhenRollbackLeavesNewEffectivePort(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	if err := os.WriteFile(env.configPath, []byte(env.originalConfig+"Port 22022\n"), 0o644); err != nil {
+		t.Fatalf("add second pre-existing SSH port: %v", err)
+	}
+	t.Setenv("SYSBOOTSTRAP_TEST_FAIL_FINAL_RELOAD", "1")
+	t.Setenv("SYSBOOTSTRAP_TEST_STUBBORN_EFFECTIVE_PORT", "22122")
+	err := env.run(t)
+	if err == nil || !strings.Contains(err.Error(), "EMERGENCY") {
+		t.Fatalf("Run error = %v, want emergency rollback verification failure", err)
+	}
+	if !strings.Contains(err.Error(), "effective sshd") || !strings.Contains(err.Error(), "22122") {
+		t.Fatalf("Run error = %v, want residual effective-port evidence", err)
+	}
+}
+
+func TestSSHRunReportsEmergencyWhenRollbackLeavesNewListeningPort(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	if err := os.WriteFile(env.configPath, []byte(env.originalConfig+"Port 22022\n"), 0o644); err != nil {
+		t.Fatalf("add second pre-existing SSH port: %v", err)
+	}
+	t.Setenv("SYSBOOTSTRAP_TEST_FAIL_FINAL_RELOAD", "1")
+	t.Setenv("SYSBOOTSTRAP_TEST_STUBBORN_LISTENER_PORT", "22122")
+	err := env.run(t)
+	if err == nil || !strings.Contains(err.Error(), "EMERGENCY") {
+		t.Fatalf("Run error = %v, want emergency rollback verification failure", err)
+	}
+	if !strings.Contains(err.Error(), "observed SSH ports: [22 22022 22122]") {
+		t.Fatalf("Run error = %v, want residual listener evidence", err)
 	}
 }
 

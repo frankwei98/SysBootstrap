@@ -949,9 +949,9 @@ func rollbackPrepare(ctx context.Context, j *sshTransactionJournal) error {
 	} else if err := reloadSSH(j.reloadTarget); err != nil {
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("reload restored sshd config: %w", err))
 	} else if len(j.oldPorts) > 0 {
-		if err := verifyEffectivePorts(cleanupCtx, j.oldPorts); err != nil {
+		if err := verifyOnlyEffectivePorts(cleanupCtx, j.oldPorts); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("verify restored SSH ports: %w", err))
-		} else if err := verifyListeningPorts(cleanupCtx, j.oldPorts, j.reloadTarget); err != nil {
+		} else if err := verifyOnlyListeningPorts(cleanupCtx, j.oldPorts, j.reloadTarget); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("verify restored SSH listeners: %w", err))
 		}
 	}
