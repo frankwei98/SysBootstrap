@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -387,6 +388,27 @@ func CleanShellRC(rcFiles []string, itemIDs []string, dryRun bool, log *logging.
 	return totalRemoved, nil
 }
 
+var writeShellRCIfUnchanged = replaceShellRCIfUnchanged
+
+func replaceShellRCIfUnchanged(rcFile string, expected []byte, expectedInfo os.FileInfo, cleaned []byte) error {
+	current, currentInfo, err := system.OpenExistingFileNoFollow(rcFile)
+	if err != nil {
+		return fmt.Errorf("shell rc changed during cleanup; cannot verify %s: %w", rcFile, err)
+	}
+	currentData, readErr := io.ReadAll(current)
+	closeErr := current.Close()
+	if readErr != nil {
+		return fmt.Errorf("shell rc changed during cleanup; cannot verify %s: %w", rcFile, readErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("shell rc changed during cleanup; cannot close verification snapshot for %s: %w", rcFile, closeErr)
+	}
+	if !os.SameFile(expectedInfo, currentInfo) || !bytes.Equal(expected, currentData) {
+		return fmt.Errorf("shell rc changed during cleanup; refusing to overwrite concurrent update to %s", rcFile)
+	}
+	return system.WriteFileAtomicallyAsInvokingUser(rcFile, cleaned, expectedInfo.Mode())
+}
+
 // cleanSingleRC cleans a single rc file. Returns lines removed.
 func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *logging.Logger) (int, error) {
 	if err := system.RejectSymlinkPath(rcFile); err != nil {
@@ -456,7 +478,7 @@ func cleanSingleRC(rcFile string, patterns []*regexp.Regexp, dryRun bool, log *l
 
 	// Write cleaned content atomically so a pre-existing symlink cannot redirect
 	// the privileged write to another file.
-	if err := system.WriteFileAtomicallyAsInvokingUser(rcFile, []byte(strings.Join(lines, "\n")+"\n"), rcInfo.Mode()); err != nil {
+	if err := writeShellRCIfUnchanged(rcFile, data, rcInfo, []byte(strings.Join(lines, "\n")+"\n")); err != nil {
 		return removed, fmt.Errorf("cannot write %s: %w", rcFile, err)
 	}
 	return removed, nil
