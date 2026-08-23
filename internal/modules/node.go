@@ -41,19 +41,19 @@ func (m *NodeModule) Check(ctx context.Context, sys *system.Context, cfg *types.
 		allInstalled = false
 		msg += "nvm missing. "
 	}
-	if system.NvmCommandExistsForContext(sys, "node") {
+	if system.NvmCommandExistsForContextWithContext(ctx, sys, "node") {
 		msg += "Node.js installed. "
 	} else {
 		allInstalled = false
 		msg += "Node.js missing. "
 	}
-	if system.NvmCommandExistsForContext(sys, "pnpm") {
+	if system.NvmCommandExistsForContextWithContext(ctx, sys, "pnpm") {
 		msg += "pnpm installed. "
 	} else {
 		allInstalled = false
 		msg += "pnpm missing. "
 	}
-	if system.NvmCommandExistsForContext(sys, "bun") {
+	if system.NvmCommandExistsForContextWithContext(ctx, sys, "bun") {
 		msg += "bun installed. "
 	} else {
 		allInstalled = false
@@ -72,20 +72,32 @@ func (m *NodeModule) Check(ctx context.Context, sys *system.Context, cfg *types.
 }
 
 func (m *NodeModule) Plan(ctx context.Context, sys *system.Context, cfg *types.Config) ([]types.Step, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var steps []types.Step
 	nvmScript := filepath.Join(system.NvmDirForContext(sys), "nvm.sh")
 
 	if _, err := os.Stat(nvmScript); err != nil {
 		steps = append(steps, types.Step{Module: "node", Title: "Install nvm", Detail: fmt.Sprintf("nvm %s", nvmVersion)})
 	}
-	if !system.NvmCommandExistsForContext(sys, "node") {
+	if !system.NvmCommandExistsForContextWithContext(ctx, sys, "node") {
 		steps = append(steps, types.Step{Module: "node", Title: "Install Node.js LTS", Detail: "via nvm install --lts"})
 	}
-	if !system.NvmCommandExistsForContext(sys, "pnpm") {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !system.NvmCommandExistsForContextWithContext(ctx, sys, "pnpm") {
 		steps = append(steps, types.Step{Module: "node", Title: "Install pnpm", Detail: "via corepack"})
 	}
-	if !system.NvmCommandExistsForContext(sys, "bun") {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !system.NvmCommandExistsForContextWithContext(ctx, sys, "bun") {
 		steps = append(steps, types.Step{Module: "node", Title: "Install bun", Detail: "via official installer"})
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if !nodeShellPathConfigured(sys) {
 		steps = append(steps, types.Step{Module: "node", Title: "Update shell startup", Detail: "Load nvm and bun paths from rc files"})
@@ -94,6 +106,9 @@ func (m *NodeModule) Plan(ctx context.Context, sys *system.Context, cfg *types.C
 }
 
 func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Config, log *logging.Logger) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	for _, command := range []string{"bash", "curl"} {
 		if !nodeCommandExistsFn(command) {
 			return fmt.Errorf("required command %s is unavailable; install %s before running the node module", command, command)
@@ -116,8 +131,11 @@ func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 		tmpFile.Close()
 		defer os.Remove(tmpPath)
 
-		if res, err := system.Run("curl", "-fsSL", "-o", tmpPath, downloadURL); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError("failed to download nvm install script", res, err)
+		if res, err := system.RunWithContext(ctx, "curl", "-fsSL", "-o", tmpPath, downloadURL); err != nil || res.ExitCode != 0 {
+			return formatCommandErrorForContext(ctx, "failed to download nvm install script", res, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if err := verifyFileSHA256(tmpPath, nvmInstallSHA256); err != nil {
 			return fmt.Errorf("nvm install script verification failed: %w", err)
@@ -126,8 +144,8 @@ func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 			return fmt.Errorf("failed to make nvm install script readable: %w", err)
 		}
 		cmd := fmt.Sprintf("bash %s", shellQuote(tmpPath))
-		if res, err := system.RunAsUserWithInput(sys, "", "bash", "-c", cmd); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError("nvm installation failed", res, err)
+		if res, err := system.RunAsUserWithInputContext(ctx, sys, "", "bash", "-c", cmd); err != nil || res.ExitCode != 0 {
+			return formatCommandErrorForContext(ctx, "nvm installation failed", res, err)
 		}
 		log.Success("nvm installed")
 	}
@@ -135,53 +153,75 @@ func (m *NodeModule) Run(ctx context.Context, sys *system.Context, cfg *types.Co
 	if _, err := os.Stat(nvmScript); err != nil {
 		return fmt.Errorf("nvm.sh not found at %s after installation", nvmScript)
 	}
-	if err := ensureNodeShellPath(sys); err != nil {
+	if err := ensureNodeShellPathContext(ctx, sys); err != nil {
 		return err
 	}
 
 	// Install Node.js LTS (must go through nvm-aware shell)
-	if system.NvmCommandExistsForContext(sys, "node") {
+	if system.NvmCommandExistsForContextWithContext(ctx, sys, "node") {
 		log.Info("Node.js already installed, skipping")
 	} else {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		log.Info("Installing Node.js LTS...")
 		script := "nvm install --lts && nvm use --lts && nvm alias default lts/*"
-		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError("Node.js installation failed", res, err)
+		if res, err := system.RunInNvmShellForContextWithContext(ctx, sys, script); err != nil || res.ExitCode != 0 {
+			return formatCommandErrorForContext(ctx, "Node.js installation failed", res, err)
 		}
 		log.Success("Node.js LTS installed")
 	}
 
 	// Install pnpm
-	if system.NvmCommandExistsForContext(sys, "pnpm") {
+	if system.NvmCommandExistsForContextWithContext(ctx, sys, "pnpm") {
 		log.Info("pnpm already installed, skipping")
 	} else {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		log.Info("Installing pnpm...")
 		script := `corepack enable
 corepack prepare pnpm@latest --activate`
-		if res, err := system.RunInNvmShellForContext(sys, script); err != nil || res.ExitCode != 0 {
-			return system.FormatCommandError("pnpm installation failed", res, err)
+		if res, err := system.RunInNvmShellForContextWithContext(ctx, sys, script); err != nil || res.ExitCode != 0 {
+			return formatCommandErrorForContext(ctx, "pnpm installation failed", res, err)
 		}
-		if !system.NvmCommandExistsForContext(sys, "pnpm") {
+		if !system.NvmCommandExistsForContextWithContext(ctx, sys, "pnpm") {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("pnpm installation completed but pnpm is still not available on PATH")
 		}
 		log.Success("pnpm installed")
 	}
 
 	// Install bun
-	if system.NvmCommandExistsForContext(sys, "bun") {
+	if system.NvmCommandExistsForContextWithContext(ctx, sys, "bun") {
 		log.Info("bun already installed, skipping")
 	} else {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		log.Info("Installing bun...")
-		if err := installBun(sys, log); err != nil {
+		if err := installBunContext(ctx, sys, log); err != nil {
 			return fmt.Errorf("bun installation failed: %w", err)
 		}
-		if !system.NvmCommandExistsForContext(sys, "bun") {
+		if !system.NvmCommandExistsForContextWithContext(ctx, sys, "bun") {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return fmt.Errorf("bun installation completed but bun is still not available on PATH")
 		}
 		log.Success("bun installed")
 	}
 
 	return nil
+}
+
+func formatCommandErrorForContext(ctx context.Context, action string, res *system.Result, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return system.FormatCommandError(action, res, err)
 }
 
 func nodeShellPathConfigured(sys *system.Context) bool {
@@ -209,6 +249,13 @@ func nodeShellFileConfigured(content string) bool {
 }
 
 func ensureNodeShellPath(sys *system.Context) error {
+	return ensureNodeShellPathContext(context.Background(), sys)
+}
+
+func ensureNodeShellPathContext(ctx context.Context, sys *system.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	home := system.TargetHomeDir(sys)
 	if home == "" {
 		return fmt.Errorf("cannot determine target home directory for node shell setup")
@@ -234,12 +281,12 @@ for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
     printf '%%s\n' 'export PATH="$BUN_INSTALL/bin:$PATH"' >> "$rc"
   fi
 done`, shellQuote(home))
-	res, err := system.RunAsUserWithInput(sys, "", "bash", "-c", script)
+	res, err := system.RunAsUserWithInputContext(ctx, sys, "", "bash", "-c", script)
 	if err != nil {
-		return system.FormatCommandError("failed to update shell startup files for node", res, err)
+		return formatCommandErrorForContext(ctx, "failed to update shell startup files for node", res, err)
 	}
 	if res.ExitCode != 0 {
-		return system.FormatCommandError("failed to update shell startup files for node", res, nil)
+		return formatCommandErrorForContext(ctx, "failed to update shell startup files for node", res, nil)
 	}
 	return nil
 }
@@ -259,6 +306,13 @@ func nodeShellRCFiles(sys *system.Context) []string {
 // installBun downloads the bun binary from GitHub releases, verifies its
 // checksum, and extracts it to ~/.bun/bin.
 func installBun(sys *system.Context, log *logging.Logger) error {
+	return installBunContext(context.Background(), sys, log)
+}
+
+func installBunContext(ctx context.Context, sys *system.Context, log *logging.Logger) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	home := system.TargetHomeDir(sys)
 	if home == "" {
 		return fmt.Errorf("cannot determine target home directory for bun")
@@ -290,7 +344,10 @@ func installBun(sys *system.Context, log *logging.Logger) error {
 
 	zipPath := filepath.Join(tmpDir, assetName)
 	log.Infof("Downloading bun %s...", bunVersion)
-	if res, err := system.Run("curl", "-fsSL", "-o", zipPath, downloadURL); err != nil || res.ExitCode != 0 {
+	if res, err := system.RunWithContext(ctx, "curl", "-fsSL", "-o", zipPath, downloadURL); err != nil || res.ExitCode != 0 {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		// If x64 download fails, try baseline as fallback
 		if normalizedArch == "amd64" && assetName != "bun-linux-x64-baseline.zip" {
 			log.Warn("x64 bun download failed, trying baseline variant...")
@@ -298,12 +355,18 @@ func installBun(sys *system.Context, log *logging.Logger) error {
 			checksum = bunLinuxX64BaselineSHA256
 			downloadURL = fmt.Sprintf("https://github.com/oven-sh/bun/releases/download/bun-%s/%s", bunVersion, assetName)
 			zipPath = filepath.Join(tmpDir, assetName)
-			if res2, err2 := system.Run("curl", "-fsSL", "-o", zipPath, downloadURL); err2 != nil || res2.ExitCode != 0 {
+			if res2, err2 := system.RunWithContext(ctx, "curl", "-fsSL", "-o", zipPath, downloadURL); err2 != nil || res2.ExitCode != 0 {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
 				return fmt.Errorf("failed to download bun from GitHub releases")
 			}
 		} else {
 			return fmt.Errorf("failed to download bun from GitHub releases")
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// Verify checksum
@@ -311,6 +374,9 @@ func installBun(sys *system.Context, log *logging.Logger) error {
 		return fmt.Errorf("bun checksum verification failed: %w", err)
 	}
 	log.Info("bun checksum verified")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Extract zip using Go's native archive/zip (no unzip dependency)
 	bunDir := filepath.Join(home, ".bun")
@@ -326,14 +392,23 @@ func installBun(sys *system.Context, log *logging.Logger) error {
 	if err := extractBunFromZip(zipPath, destPath); err != nil {
 		return fmt.Errorf("failed to extract bun binary: %w", err)
 	}
-	if err := verifyBunBinary(sys, destPath); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := verifyBunBinaryContext(ctx, sys, destPath); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if normalizedArch == "amd64" && assetName != "bun-linux-x64-baseline.zip" {
 			log.Warnf("bun failed to run after install, trying baseline variant: %v", err)
 			assetName = "bun-linux-x64-baseline.zip"
 			checksum = bunLinuxX64BaselineSHA256
 			downloadURL = fmt.Sprintf("https://github.com/oven-sh/bun/releases/download/bun-%s/%s", bunVersion, assetName)
 			zipPath = filepath.Join(tmpDir, assetName)
-			if res, err := system.Run("curl", "-fsSL", "-o", zipPath, downloadURL); err != nil || res.ExitCode != 0 {
+			if res, err := system.RunWithContext(ctx, "curl", "-fsSL", "-o", zipPath, downloadURL); err != nil || res.ExitCode != 0 {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
 				return fmt.Errorf("failed to download bun baseline from GitHub releases")
 			}
 			if err := verifyFileSHA256(zipPath, checksum); err != nil {
@@ -342,7 +417,13 @@ func installBun(sys *system.Context, log *logging.Logger) error {
 			if err := extractBunFromZip(zipPath, destPath); err != nil {
 				return fmt.Errorf("failed to extract bun baseline binary: %w", err)
 			}
-			if err := verifyBunBinary(sys, destPath); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := verifyBunBinaryContext(ctx, sys, destPath); err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
 				return fmt.Errorf("bun baseline verification failed: %w", err)
 			}
 		} else {
@@ -351,6 +432,9 @@ func installBun(sys *system.Context, log *logging.Logger) error {
 	}
 
 	// Chown to target user when running as root
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if os.Geteuid() == 0 {
 		username := system.TargetUsername(sys)
 		if username != "" && username != "root" {
@@ -362,8 +446,8 @@ func installBun(sys *system.Context, log *logging.Logger) error {
 					owner = fmt.Sprintf("%s:%s", targetUser.Uid, targetUser.Gid)
 				}
 			}
-			if res, err := system.Run("chown", "-R", owner, bunDir); err != nil || res.ExitCode != 0 {
-				return system.FormatCommandError("failed to chown bun directory", res, err)
+			if res, err := system.RunWithContext(ctx, "chown", "-R", owner, bunDir); err != nil || res.ExitCode != 0 {
+				return formatCommandErrorForContext(ctx, "failed to chown bun directory", res, err)
 			}
 		}
 	}
@@ -372,7 +456,11 @@ func installBun(sys *system.Context, log *logging.Logger) error {
 }
 
 func verifyBunBinary(sys *system.Context, path string) error {
-	res, err := system.RunAsUserWithInput(sys, "", path, "--version")
+	return verifyBunBinaryContext(context.Background(), sys, path)
+}
+
+func verifyBunBinaryContext(ctx context.Context, sys *system.Context, path string) error {
+	res, err := system.RunAsUserWithInputContext(ctx, sys, "", path, "--version")
 	if err != nil {
 		return err
 	}

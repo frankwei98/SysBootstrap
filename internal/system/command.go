@@ -98,6 +98,9 @@ func Run(name string, args ...string) (*Result, error) {
 // The entire process group is killed on cancellation, and the context error
 // is preserved for the caller to distinguish cancellation from normal failure.
 func RunWithContext(ctx context.Context, name string, args ...string) (*Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stdout, stderr bytes.Buffer
@@ -151,6 +154,9 @@ func RunWithInput(input string, name string, args ...string) (*Result, error) {
 
 // RunWithInputContext executes a command with stdin input and context cancellation.
 func RunWithInputContext(ctx context.Context, input string, name string, args ...string) (*Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdin = strings.NewReader(input)
@@ -376,13 +382,27 @@ func RunInNvmShellForHomeContext(ctx context.Context, home, script string) (*Res
 
 // RunInNvmShellForContext executes an nvm-aware shell as the user-level target.
 func RunInNvmShellForContext(sys *Context, script string) (*Result, error) {
-	return RunAsUserWithInput(sys, "", "bash", "-c", NvmShellScriptForContext(sys, script))
+	return RunInNvmShellForContextWithContext(context.Background(), sys, script)
+}
+
+// RunInNvmShellForContextWithContext executes an nvm-aware shell as the
+// user-level target and terminates the full subprocess group when ctx is
+// cancelled.
+func RunInNvmShellForContextWithContext(ctx context.Context, sys *Context, script string) (*Result, error) {
+	return RunAsUserWithInputContext(ctx, sys, "", "bash", "-c", NvmShellScriptForContext(sys, script))
 }
 
 // RunInNvmShellForContextInHome executes an nvm-aware shell as the user-level
 // target after first changing into that user's home directory.
 func RunInNvmShellForContextInHome(sys *Context, script string) (*Result, error) {
-	return RunAsUserWithInput(sys, "", "bash", "-c", NvmShellScriptForContextInHome(sys, script))
+	return RunInNvmShellForContextInHomeWithContext(context.Background(), sys, script)
+}
+
+// RunInNvmShellForContextInHomeWithContext executes an nvm-aware shell as the
+// user-level target from that user's home directory and terminates the full
+// subprocess group when ctx is cancelled.
+func RunInNvmShellForContextInHomeWithContext(ctx context.Context, sys *Context, script string) (*Result, error) {
+	return RunAsUserWithInputContext(ctx, sys, "", "bash", "-c", NvmShellScriptForContextInHome(sys, script))
 }
 
 // NvmCommandExists checks if a binary is available inside an nvm-aware shell.
@@ -400,8 +420,14 @@ func NvmCommandExistsForHome(home, name string) bool {
 
 // NvmCommandExistsForContext checks command availability for the user-level target.
 func NvmCommandExistsForContext(sys *Context, name string) bool {
-	res, err := RunInNvmShellForContext(sys, fmt.Sprintf("command -v %s", name))
-	return err == nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != ""
+	return NvmCommandExistsForContextWithContext(context.Background(), sys, name)
+}
+
+// NvmCommandExistsForContextWithContext checks command availability for the
+// user-level target while honoring caller cancellation.
+func NvmCommandExistsForContextWithContext(ctx context.Context, sys *Context, name string) bool {
+	res, err := RunInNvmShellForContextWithContext(ctx, sys, fmt.Sprintf("command -v %s", name))
+	return err == nil && res != nil && res.ExitCode == 0 && strings.TrimSpace(res.Stdout) != ""
 }
 
 // RunApt executes apt-get with one bounded, noninteractive policy. Acquire

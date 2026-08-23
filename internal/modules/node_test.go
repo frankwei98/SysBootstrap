@@ -3,16 +3,186 @@ package modules
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
+
+func TestNodeModuleRunCancellationStopsNVMDownload(t *testing.T) {
+	originalCommandExists := nodeCommandExistsFn
+	nodeCommandExistsFn = func(string) bool { return true }
+	t.Cleanup(func() { nodeCommandExistsFn = originalCommandExists })
+
+	home := t.TempDir()
+	t.Setenv("NVM_DIR", filepath.Join(home, ".nvm"))
+	binDir := t.TempDir()
+	started := filepath.Join(t.TempDir(), "curl-started")
+	release := filepath.Join(t.TempDir(), "release-curl")
+	t.Setenv("NODE_TEST_CURL_STARTED", started)
+	t.Setenv("NODE_TEST_CURL_RELEASE", release)
+	writeTestExecutable(t, filepath.Join(binDir, "curl"), `#!/bin/sh
+: > "$NODE_TEST_CURL_STARTED"
+while [ ! -e "$NODE_TEST_CURL_RELEASE" ]; do
+  /bin/sleep 0.01
+done
+exit 22
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New failed: %v", err)
+	}
+	t.Cleanup(log.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewNodeModule().Run(ctx, &system.Context{
+			CurrentUser: &user.User{Username: "testuser", HomeDir: home},
+		}, &types.Config{}, log)
+	}()
+
+	waitForTestPath(t, started)
+	cancel()
+	runErr, returnedAfterCancel := waitForCancellationResult(t, done, release)
+	if !returnedAfterCancel {
+		t.Error("NodeModule.Run did not stop the active curl command after cancellation")
+	}
+	if !errors.Is(runErr, context.Canceled) {
+		t.Errorf("NodeModule.Run error = %v, want context.Canceled", runErr)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".nvm")); !os.IsNotExist(err) {
+		t.Fatalf("Node setup continued after cancellation; .nvm stat error = %v", err)
+	}
+}
+
+func TestAIModuleRunCancellationStopsActiveInstallAndDoesNotStartNextTool(t *testing.T) {
+	home := t.TempDir()
+	writeFakeNvmScript(t, home)
+	started := filepath.Join(t.TempDir(), "claude-install-started")
+	release := filepath.Join(t.TempDir(), "release-claude-install")
+	t.Setenv("AI_TEST_INSTALL_STARTED", started)
+	t.Setenv("AI_TEST_INSTALL_RELEASE", release)
+
+	originalRun := runAIShellForContext
+	originalCommandExists := nvmCommandExistsForAI
+	var scripts []string
+	runAIShellForContext = func(commandCtx context.Context, _ *system.Context, script string) (*system.Result, error) {
+		scripts = append(scripts, script)
+		if strings.Contains(script, "install -g @anthropic-ai/claude-code") {
+			return system.RunWithContext(commandCtx, "sh", "-c", `
+: > "$AI_TEST_INSTALL_STARTED"
+while [ ! -e "$AI_TEST_INSTALL_RELEASE" ]; do
+  /bin/sleep 0.01
+done
+`)
+		}
+		return &system.Result{}, nil
+	}
+	nvmCommandExistsForAI = func(_ context.Context, _ *system.Context, name string) bool {
+		return name == "node" || name == "pnpm"
+	}
+	t.Cleanup(func() {
+		runAIShellForContext = originalRun
+		nvmCommandExistsForAI = originalCommandExists
+	})
+
+	log, err := logging.New(true)
+	if err != nil {
+		t.Fatalf("logging.New failed: %v", err)
+	}
+	t.Cleanup(log.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewAIModule().Run(ctx, &system.Context{
+			CurrentUser: &user.User{Username: "testuser", HomeDir: home},
+		}, &types.Config{
+			AISelectionSet:    true,
+			InstallClaudeCode: true,
+			InstallCodex:      true,
+		}, log)
+	}()
+
+	waitForTestPathOrResult(t, started, done)
+	cancel()
+	runErr, returnedAfterCancel := waitForCancellationResult(t, done, release)
+	if !returnedAfterCancel {
+		t.Error("AIModule.Run did not stop the active pnpm command after cancellation")
+	}
+	if !errors.Is(runErr, context.Canceled) {
+		t.Errorf("AIModule.Run error = %v, want context.Canceled", runErr)
+	}
+	if strings.Contains(strings.Join(scripts, "\n"), "@openai/codex") {
+		t.Fatalf("Codex installation started after cancellation:\n%s", strings.Join(scripts, "\n"))
+	}
+}
+
+func waitForCancellationResult(t *testing.T, done <-chan error, release string) (error, bool) {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err, true
+	case <-time.After(300 * time.Millisecond):
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Fatalf("release blocked test command: %v", err)
+		}
+		select {
+		case err := <-done:
+			return err, false
+		case <-time.After(2 * time.Second):
+			t.Fatal("module did not return after releasing blocked test command")
+			return nil, false
+		}
+	}
+}
+
+func waitForTestPath(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for test marker %s", path)
+}
+
+func waitForTestPathOrResult(t *testing.T, path string, done <-chan error) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			t.Fatalf("module returned before test marker %s: %v", path, err)
+		case <-ticker.C:
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for test marker %s", path)
+		}
+	}
+}
+
+func writeTestExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write test executable %s: %v", path, err)
+	}
+}
 
 func TestExtractBunFromZipRejectsSymlinkDestinationWithoutModifyingTarget(t *testing.T) {
 	replacement := []byte("replacement bun binary")
@@ -560,16 +730,16 @@ func TestAIModuleRunUsesHomeSafeShell(t *testing.T) {
 	oldRun := runAIShellForContext
 	oldCmdExists := nvmCommandExistsForAI
 	oldToolWorks := aiToolWorksForCheck
-	runAIShellForContext = func(_ *system.Context, script string) (*system.Result, error) {
+	runAIShellForContext = func(_ context.Context, _ *system.Context, script string) (*system.Result, error) {
 		if strings.Contains(script, "install -g @openai/codex") || strings.Contains(script, "codex --version") {
 			return &system.Result{ExitCode: 0}, nil
 		}
 		return &system.Result{ExitCode: 0}, nil
 	}
-	nvmCommandExistsForAI = func(_ *system.Context, name string) bool {
+	nvmCommandExistsForAI = func(_ context.Context, _ *system.Context, name string) bool {
 		return name == "node"
 	}
-	aiToolWorksForCheck = func(_ *system.Context, _ string) bool {
+	aiToolWorksForCheck = func(_ context.Context, _ *system.Context, _ string) bool {
 		return false
 	}
 	t.Cleanup(func() {
@@ -599,10 +769,10 @@ func setupAICheckStubs(t *testing.T, commands map[string]bool, tools map[string]
 
 	oldCommandExists := nvmCommandExistsForAI
 	oldToolWorks := aiToolWorksForCheck
-	nvmCommandExistsForAI = func(_ *system.Context, name string) bool {
+	nvmCommandExistsForAI = func(_ context.Context, _ *system.Context, name string) bool {
 		return commands[name]
 	}
-	aiToolWorksForCheck = func(_ *system.Context, name string) bool {
+	aiToolWorksForCheck = func(_ context.Context, _ *system.Context, name string) bool {
 		return tools[name]
 	}
 	t.Cleanup(func() {
