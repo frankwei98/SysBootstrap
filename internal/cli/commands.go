@@ -204,6 +204,10 @@ func RunCmd(ctx context.Context, registry *modules.Registry) error {
 	}
 
 	planText := app.FormatPlanText(plan)
+	if err := plan.Err(); err != nil {
+		fmt.Print(planText)
+		return err
+	}
 
 	// Confirm execution
 	confirmed, err := ui.ConfirmRun(planText)
@@ -264,7 +268,7 @@ func PlanCmd(ctx context.Context, registry *modules.Registry, jsonOutput bool) e
 		fmt.Print(app.FormatPlanText(plan))
 	}
 
-	return nil
+	return plan.Err()
 }
 
 // DoctorCmd handles the `doctor` command.
