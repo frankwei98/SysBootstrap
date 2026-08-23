@@ -55,12 +55,15 @@ func New(quiet bool) (*Logger, error) {
 
 	// Open log file in user state directory
 	stateDir, err := stateHomeDir()
-	if err == nil {
-		logFile := filepath.Join(".local", "state", "sys-bootstrap", "logs", fmt.Sprintf("sys-bootstrap-%s.log", time.Now().Format("20060102-150405")))
-		if f, openErr := system.OpenInvokingUserFileBeneath(stateDir, logFile, 0o644); openErr == nil {
-			l.file = f
-		}
+	if err != nil {
+		return nil, fmt.Errorf("determine log home directory: %w", err)
 	}
+	logFile := filepath.Join(".local", "state", "sys-bootstrap", "logs", fmt.Sprintf("sys-bootstrap-%s.log", time.Now().Format("20060102-150405")))
+	f, err := system.OpenInvokingUserFileBeneath(stateDir, logFile, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open log file: %w", err)
+	}
+	l.file = f
 
 	return l, nil
 }
