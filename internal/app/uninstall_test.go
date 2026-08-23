@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/frankwei98/sys-bootstrap/internal/i18n"
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
+	"golang.org/x/sys/unix"
 )
 
 func init() {
@@ -610,11 +612,11 @@ func TestCleanShellRCRefusesToOverwriteConcurrentChanges(t *testing.T) {
 			}
 
 			originalWriter := writeShellRCIfUnchanged
-			writeShellRCIfUnchanged = func(path string, expected []byte, info os.FileInfo, cleaned []byte) error {
+			writeShellRCIfUnchanged = func(path string, expected []byte, metadata shellRCMetadata, cleaned []byte) error {
 				if err := tt.mutate(path, concurrent); err != nil {
 					return err
 				}
-				return originalWriter(path, expected, info, cleaned)
+				return originalWriter(path, expected, metadata, cleaned)
 			}
 			t.Cleanup(func() { writeShellRCIfUnchanged = originalWriter })
 
@@ -800,6 +802,74 @@ export PATH="$PNPM_HOME:$PATH:/keep-pnpm"
 	}
 	if string(got) != content {
 		t.Fatalf("composite commands changed:\n got %q\nwant %q", got, content)
+	}
+}
+
+func TestCleanShellRCPreservesOriginalMetadataInFileAndBackup(t *testing.T) {
+	rcFile := filepath.Join(t.TempDir(), ".bashrc")
+	if err := os.WriteFile(rcFile, []byte("export NVM_DIR=\"$HOME/.nvm\"\nalias keep='yes'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(rcFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStat, ok := originalInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("cannot inspect original rc ownership")
+	}
+	xattrName := "user.sys-bootstrap-rc-test"
+	if runtime.GOOS == "darwin" {
+		xattrName = "com.sys-bootstrap.rc-test"
+	}
+	xattrValue := []byte("preserve-me")
+	f, err := os.OpenFile(rcFile, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = unix.Fsetxattr(int(f.Fd()), xattrName, xattrValue, 0)
+	_ = f.Close()
+	if err != nil {
+		if errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EPERM) {
+			t.Skipf("extended attributes unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+
+	removed, err := CleanShellRC([]string{rcFile}, []string{"nvm"}, false, createTestLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	for _, path := range []string{rcFile, rcFile + ".bak.sys-bootstrap"} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != originalInfo.Mode().Perm() {
+			t.Errorf("%s mode = %v, want %v", path, info.Mode().Perm(), originalInfo.Mode().Perm())
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			t.Fatalf("cannot inspect ownership for %s", path)
+		}
+		if stat.Uid != originalStat.Uid || stat.Gid != originalStat.Gid {
+			t.Errorf("%s owner = %d:%d, want %d:%d", path, stat.Uid, stat.Gid, originalStat.Uid, originalStat.Gid)
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make([]byte, len(xattrValue))
+		n, err := unix.Fgetxattr(int(f.Fd()), xattrName, got)
+		_ = f.Close()
+		if err != nil {
+			t.Errorf("read %s xattr: %v", path, err)
+		} else if string(got[:n]) != string(xattrValue) {
+			t.Errorf("%s xattr = %q, want %q", path, got[:n], xattrValue)
+		}
 	}
 }
 
