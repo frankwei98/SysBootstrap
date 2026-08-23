@@ -703,9 +703,10 @@ func ufwAllowIfMissing(port int, log *logging.Logger) (added bool, err error) {
 
 func ufwStatusAllowsPort(status string, port int) bool {
 	needle := fmt.Sprintf("%d/tcp", port)
+	barePort := strconv.Itoa(port)
 	for _, line := range strings.Split(status, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != needle {
+		if len(fields) < 2 || (fields[0] != needle && fields[0] != barePort) {
 			continue
 		}
 		actionIndex := 1
