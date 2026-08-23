@@ -119,7 +119,7 @@ func TestLiveSSHTwoPhaseCutover(t *testing.T) {
 	if rootSettings["permitrootlogin"] != "no" {
 		t.Fatalf("PermitRootLogin=%q, want no", rootSettings["permitrootlogin"])
 	}
-	if err := verifyOnlyListeningPorts(ctx, []int{port}); err != nil {
+	if err := verifyOnlyListeningPorts(ctx, []int{port}, detectSSHReloadTarget()); err != nil {
 		t.Fatalf("final listener set is not exclusive to the requested port: %v", err)
 	}
 }
@@ -181,7 +181,7 @@ func TestLiveSSHDeclineKeepsDualPath(t *testing.T) {
 	if err := verifyEffectivePorts(context.Background(), wanted); err != nil {
 		t.Fatalf("decline did not retain old and new effective ports: %v", err)
 	}
-	if err := verifyListeningPorts(context.Background(), wanted); err != nil {
+	if err := verifyListeningPorts(context.Background(), wanted, journal.reloadTarget); err != nil {
 		t.Fatalf("decline did not retain old and new listeners: %v", err)
 	}
 }

@@ -465,15 +465,15 @@ func verifyFinalAuthPolicy(ctx context.Context, sys *system.Context, cfg *types.
 	return nil
 }
 
-func verifyListeningPorts(ctx context.Context, wanted []int) error {
-	return waitForSSHListeningPorts(ctx, wanted, false)
+func verifyListeningPorts(ctx context.Context, wanted []int, target sshReloadTarget) error {
+	return waitForSSHListeningPorts(ctx, wanted, false, target)
 }
 
 // verifyOnlyListeningPorts waits until sshd/socket listeners exactly match the
 // requested ports. Finalization must prove that the legacy listener is gone,
 // not merely that the replacement port appeared.
-func verifyOnlyListeningPorts(ctx context.Context, wanted []int) error {
-	return waitForSSHListeningPorts(ctx, wanted, true)
+func verifyOnlyListeningPorts(ctx context.Context, wanted []int, target sshReloadTarget) error {
+	return waitForSSHListeningPorts(ctx, wanted, true, target)
 }
 
 func requireSSHListenerInspection() error {
@@ -483,7 +483,7 @@ func requireSSHListenerInspection() error {
 	return nil
 }
 
-func waitForSSHListeningPorts(ctx context.Context, wanted []int, requireExact bool) error {
+func waitForSSHListeningPorts(ctx context.Context, wanted []int, requireExact bool, target sshReloadTarget) error {
 	if err := requireSSHListenerInspection(); err != nil {
 		return fmt.Errorf("cannot verify SSH listeners: %w", err)
 	}
@@ -493,13 +493,14 @@ func waitForSSHListeningPorts(ctx context.Context, wanted []int, requireExact bo
 	for _, port := range wanted {
 		wantedSet[port] = true
 	}
+	socketPorts := activeSSHSocketListeningPorts(target)
 	var lastListening map[int]bool
 	for {
 		res, err := system.RunWithContext(opCtx, "ss", "-ltnpH")
 		if err != nil || res == nil || res.ExitCode != 0 {
 			return fmt.Errorf("cannot inspect listening TCP ports: %v (%s)", err, resultStderr(res))
 		}
-		lastListening = parseSSHListeningPorts(res.Stdout)
+		lastListening = parseSSHListeningPorts(res.Stdout, socketPorts)
 		allListening := len(wantedSet) > 0
 		for port := range wantedSet {
 			if !lastListening[port] {
@@ -540,19 +541,32 @@ func sshListeningPortsMatchExactly(observed, wanted map[int]bool) bool {
 	return true
 }
 
-func parseSSHListeningPorts(output string) map[int]bool {
+func activeSSHSocketListeningPorts(target sshReloadTarget) map[int]bool {
+	ports := make(map[int]bool)
+	if !target.socketActivated || (target.unit != "ssh.socket" && target.unit != "sshd.socket") || !systemdUnitActive(target.unit) {
+		return ports
+	}
+	res, err := system.Run("systemctl", "show", target.unit, "--property=Listen", "--value")
+	if err != nil || res == nil || res.ExitCode != 0 {
+		return ports
+	}
+	for _, field := range strings.Fields(res.Stdout) {
+		address := strings.TrimPrefix(field, "Listen=")
+		if idx := strings.LastIndex(address, ":"); idx >= 0 {
+			address = address[idx+1:]
+		}
+		address = strings.Trim(address, "[](),;\"'")
+		port, err := strconv.Atoi(address)
+		if err == nil && port >= 1 && port <= 65535 {
+			ports[port] = true
+		}
+	}
+	return ports
+}
+
+func parseSSHListeningPorts(output string, socketPorts map[int]bool) map[int]bool {
 	listening := make(map[int]bool)
 	for _, line := range strings.Split(output, "\n") {
-		lowerLine := strings.ToLower(line)
-		// ssh.socket is owned by PID 1 and therefore appears as "systemd" in
-		// ss output. Match that exact process name, rather than any process
-		// whose name happens to contain "systemd" (for example
-		// systemd-resolved).
-		isSSHD := strings.Contains(lowerLine, `"sshd",`)
-		isSystemdSocket := strings.Contains(lowerLine, `"systemd",pid=1,`)
-		if !isSSHD && !isSystemdSocket {
-			continue
-		}
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
 			continue
@@ -562,7 +576,17 @@ func parseSSHListeningPorts(output string) map[int]bool {
 		if idx < 0 {
 			continue
 		}
-		if port, err := strconv.Atoi(strings.Trim(address[idx+1:], "[]")); err == nil {
+		port, err := strconv.Atoi(strings.Trim(address[idx+1:], "[]"))
+		if err != nil {
+			continue
+		}
+		lowerLine := strings.ToLower(line)
+		isSSHD := strings.Contains(lowerLine, `"sshd",`)
+		// ss attributes every socket unit owned by PID 1 to the generic systemd
+		// process. Accept it as SSH only when the active ssh.socket/sshd.socket
+		// unit reports the same port through its Listen property.
+		isAttributedSSHSocket := socketPorts[port] && strings.Contains(lowerLine, `"systemd",pid=1,`)
+		if isSSHD || isAttributedSSHSocket {
 			listening[port] = true
 		}
 	}
@@ -739,7 +763,7 @@ func prepareSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Config
 	if err := reloadSSH(j.reloadTarget); err != nil {
 		return fmt.Errorf("SSH service reload failed: %w", err)
 	}
-	if err := verifyListeningPorts(ctx, preparePorts); err != nil {
+	if err := verifyListeningPorts(ctx, preparePorts, j.reloadTarget); err != nil {
 		return fmt.Errorf("SSH listener validation failed: %w", err)
 	}
 	log.Successf("SSH activation unit %s reloaded", j.reloadTarget.unit)
@@ -804,7 +828,7 @@ func finalizeSSHPhase(ctx context.Context, sys *system.Context, cfg *types.Confi
 	if err := reloadSSH(j.reloadTarget); err != nil {
 		return fmt.Errorf("SSH service reload failed during finalization: %w", err)
 	}
-	if err := verifyOnlyListeningPorts(ctx, []int{port}); err != nil {
+	if err := verifyOnlyListeningPorts(ctx, []int{port}, j.reloadTarget); err != nil {
 		return fmt.Errorf("final SSH exclusive-listener validation failed: %w", err)
 	}
 	log.Successf("SSH activation unit %s reloaded", j.reloadTarget.unit)
@@ -927,7 +951,7 @@ func rollbackPrepare(ctx context.Context, j *sshTransactionJournal) error {
 	} else if len(j.oldPorts) > 0 {
 		if err := verifyEffectivePorts(cleanupCtx, j.oldPorts); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("verify restored SSH ports: %w", err))
-		} else if err := verifyListeningPorts(cleanupCtx, j.oldPorts); err != nil {
+		} else if err := verifyListeningPorts(cleanupCtx, j.oldPorts, j.reloadTarget); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("verify restored SSH listeners: %w", err))
 		}
 	}

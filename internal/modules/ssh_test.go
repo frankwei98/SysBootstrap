@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/frankwei98/sys-bootstrap/internal/logging"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
@@ -1234,6 +1235,92 @@ func TestSSHRunReplacesExplicitLegacyPort(t *testing.T) {
 	}
 }
 
+func TestSSHRunRejectsUnattributedPID1SocketBeforeCheckpoint(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	pathEntries := filepath.SplitList(os.Getenv("PATH"))
+	if len(pathEntries) == 0 {
+		t.Fatal("test PATH is empty")
+	}
+	writeFakeCommand(t, pathEntries[0], "ss", `#!/bin/sh
+echo 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=190,fd=6))'
+echo 'LISTEN 0 4096 0.0.0.0:22122 0.0.0.0:* users:(("systemd",pid=1,fd=51))'
+`)
+
+	checkpointReached := false
+	m := NewSSHModule()
+	m.SetCheckpoint(func(context.Context, []types.AccessPath) (bool, error) {
+		checkpointReached = true
+		return true, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := m.Run(ctx, &system.Context{
+		CurrentUser: &user.User{Username: "sys-bootstrap-test-missing-user"},
+	}, &types.Config{SSHPort: 22122}, newQuietLogger(t))
+	if err == nil || !strings.Contains(err.Error(), "SSH listener validation failed") {
+		t.Fatalf("Run error = %v, want prepare listener validation failure", err)
+	}
+	if checkpointReached {
+		t.Fatal("confirmation checkpoint was reached using an unattributed PID 1 socket as SSH evidence")
+	}
+	content, readErr := os.ReadFile(env.configPath)
+	if readErr != nil {
+		t.Fatalf("read restored sshd_config: %v", readErr)
+	}
+	if string(content) != env.originalConfig {
+		t.Fatalf("sshd_config was not restored after listener validation failure:\n%s", content)
+	}
+}
+
+func TestSSHRunIgnoresUnrelatedPID1SocketWhenSSHSocketPortsAreKnown(t *testing.T) {
+	newSSHRunTestEnvironment(t)
+	pathEntries := filepath.SplitList(os.Getenv("PATH"))
+	if len(pathEntries) == 0 {
+		t.Fatal("test PATH is empty")
+	}
+	writeFakeCommand(t, pathEntries[0], "systemctl", `#!/bin/sh
+case "$1" in
+  is-active)
+    if [ "$2" = "ssh.socket" ]; then
+      echo active
+      exit 0
+    fi
+    echo inactive
+    exit 3
+    ;;
+  show)
+    for file in "$SYSBOOTSTRAP_TEST_DROPIN" "$SYSBOOTSTRAP_TEST_SSHD_CONFIG"; do
+      [ -f "$file" ] || continue
+      awk 'BEGIN { IGNORECASE=1 } /^[[:space:]]*#/ { next } tolower($1) == "port" { print $2 }' "$file"
+    done | sort -nu | while read -r port; do
+      echo "0.0.0.0:$port (Stream)"
+    done
+    exit 0
+    ;;
+esac
+exit 0
+`)
+	writeFakeCommand(t, pathEntries[0], "ss", `#!/bin/sh
+for file in "$SYSBOOTSTRAP_TEST_DROPIN" "$SYSBOOTSTRAP_TEST_SSHD_CONFIG"; do
+  [ -f "$file" ] || continue
+  awk 'BEGIN { IGNORECASE=1 } /^[[:space:]]*#/ { next } tolower($1) == "port" { print $2 }' "$file"
+done | sort -nu | while read -r port; do
+  echo "LISTEN 0 4096 0.0.0.0:$port 0.0.0.0:* users:((\"systemd\",pid=1,fd=51))"
+done
+echo 'LISTEN 0 4096 127.0.0.1:8080 0.0.0.0:* users:(("systemd",pid=1,fd=52))'
+`)
+
+	m := NewSSHModule()
+	m.SetCheckpoint(func(context.Context, []types.AccessPath) (bool, error) { return true, nil })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := m.Run(ctx, &system.Context{
+		CurrentUser: &user.User{Username: "sys-bootstrap-test-missing-user"},
+	}, &types.Config{SSHPort: 22122}, newQuietLogger(t)); err != nil {
+		t.Fatalf("socket-activated SSH hardening with an unrelated PID 1 socket: %v", err)
+	}
+}
+
 func TestSSHRunRejectsOutOfRangeRequestedPortBeforeMutation(t *testing.T) {
 	for _, port := range []int{-1, 65536} {
 		t.Run(strconv.Itoa(port), func(t *testing.T) {
@@ -1629,7 +1716,7 @@ func TestParseSSHListeningPorts(t *testing.T) {
 	output := `LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=190,fd=6))
 LISTEN 0 128 [::]:22444 [::]:* users:(("sshd",pid=190,fd=7))
 LISTEN 0 4096 127.0.0.1:8080 0.0.0.0:* users:(("other",pid=1,fd=1))`
-	ports := parseSSHListeningPorts(output)
+	ports := parseSSHListeningPorts(output, nil)
 	if !ports[22] || !ports[22444] {
 		t.Fatalf("expected SSH ports 22 and 22444, got %v", ports)
 	}
@@ -1656,7 +1743,7 @@ func TestCommentLegacyPortDirectivesHandlesInlineComment(t *testing.T) {
 func TestParseSSHListeningPortsRecognizesSocketButNotSystemdResolved(t *testing.T) {
 	output := `LISTEN 0 4096 0.0.0.0:22333 0.0.0.0:* users:(("systemd",pid=1,fd=51))
 LISTEN 0 4096 127.0.0.53:53 0.0.0.0:* users:(("systemd-resolved",pid=35,fd=14))`
-	ports := parseSSHListeningPorts(output)
+	ports := parseSSHListeningPorts(output, map[int]bool{22333: true})
 	if !ports[22333] {
 		t.Fatalf("socket-activated SSH port was not detected: %v", ports)
 	}
