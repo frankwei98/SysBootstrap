@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -94,5 +95,22 @@ func TestStateHomeDirIgnoresRootSudoUser(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("stateHomeDir() = %q, want %q", got, want)
+	}
+}
+
+func TestNewReturnsLogFileCreationError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SUDO_USER", "")
+	t.Setenv("HOME", home)
+	if err := os.Symlink(t.TempDir(), filepath.Join(home, ".local")); err != nil {
+		t.Fatal(err)
+	}
+
+	log, err := New(true)
+	if err == nil {
+		if log != nil {
+			log.Close()
+		}
+		t.Fatal("New() succeeded despite an unsafe log directory")
 	}
 }
