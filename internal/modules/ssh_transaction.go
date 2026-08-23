@@ -496,8 +496,14 @@ func waitForSSHListeningPorts(ctx context.Context, wanted []int, requireExact bo
 	socketPorts := activeSSHSocketListeningPorts(target)
 	var lastListening map[int]bool
 	for {
+		if err := opCtx.Err(); err != nil {
+			return sshListeningConvergenceError(wanted, lastListening, requireExact, err)
+		}
 		res, err := system.RunWithContext(opCtx, "ss", "-ltnpH")
 		if err != nil || res == nil || res.ExitCode != 0 {
+			if ctxErr := opCtx.Err(); ctxErr != nil && lastListening != nil {
+				return sshListeningConvergenceError(wanted, lastListening, requireExact, ctxErr)
+			}
 			return fmt.Errorf("cannot inspect listening TCP ports: %v (%s)", err, resultStderr(res))
 		}
 		lastListening = parseSSHListeningPorts(res.Stdout, socketPorts)
@@ -515,18 +521,22 @@ func waitForSSHListeningPorts(ctx context.Context, wanted []int, requireExact bo
 		select {
 		case <-opCtx.Done():
 			timer.Stop()
-			var observed []int
-			for port := range lastListening {
-				observed = append(observed, port)
-			}
-			sort.Ints(observed)
-			if requireExact {
-				return fmt.Errorf("SSH listeners did not converge exclusively to %v (observed SSH ports: %v): %w", wanted, observed, opCtx.Err())
-			}
-			return fmt.Errorf("SSH listeners %v did not become ready (observed SSH ports: %v): %w", wanted, observed, opCtx.Err())
+			return sshListeningConvergenceError(wanted, lastListening, requireExact, opCtx.Err())
 		case <-timer.C:
 		}
 	}
+}
+
+func sshListeningConvergenceError(wanted []int, lastListening map[int]bool, requireExact bool, cause error) error {
+	var observed []int
+	for port := range lastListening {
+		observed = append(observed, port)
+	}
+	sort.Ints(observed)
+	if requireExact {
+		return fmt.Errorf("SSH listeners did not converge exclusively to %v (observed SSH ports: %v): %w", wanted, observed, cause)
+	}
+	return fmt.Errorf("SSH listeners %v did not become ready (observed SSH ports: %v): %w", wanted, observed, cause)
 }
 
 func sshListeningPortsMatchExactly(observed, wanted map[int]bool) bool {
