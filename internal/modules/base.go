@@ -44,12 +44,11 @@ func (m *BaseModule) Check(ctx context.Context, sys *system.Context, cfg *types.
 	message += ". System package refresh pending"
 
 	return CheckResult{
-		// A read-only check cannot prove package indexes are current or that no
-		// security upgrades are pending. Selecting base therefore always performs
-		// one bounded apt update/upgrade cycle.
-		Satisfied:             false,
-		DependenciesSatisfied: len(missing) == 0 && !mirrorNeedsSwitch,
-		Message:               message,
+		// Package and mirror configuration are converged, but selecting base
+		// still performs one bounded apt update/upgrade cycle per policy.
+		Satisfied:        len(missing) == 0 && !mirrorNeedsSwitch,
+		RunWhenSatisfied: true,
+		Message:          message,
 	}
 }
 

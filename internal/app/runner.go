@@ -134,7 +134,7 @@ func (r *Runner) RunWithResult(ctx context.Context, cfg *types.Config, ids []str
 		if contractErr := moduleStateContractError(m.Name(), check, steps); contractErr != nil {
 			return result, contractErr
 		}
-		if check.Satisfied {
+		if check.Satisfied && !check.RunWhenSatisfied {
 			r.log.Successf(i18n.T("runner_skipping"), m.Name())
 			if check.Message != "" {
 				r.log.Info(check.Message)
