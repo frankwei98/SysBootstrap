@@ -1,12 +1,28 @@
 package system
 
 import (
+	"context"
 	"errors"
 	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestRunInNvmShellForHomeContext_CancelsSubprocess(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+
+	_, err := RunInNvmShellForHomeContext(ctx, t.TempDir(), "sleep 10")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("cancelled subprocess returned after %v", elapsed)
+	}
+}
 
 func TestNvmShellScript(t *testing.T) {
 	script := NvmShellScript("echo hello")

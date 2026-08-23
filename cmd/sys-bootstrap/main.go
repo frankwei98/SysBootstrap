@@ -72,7 +72,7 @@ func main() {
 		}
 
 	case "uninstall":
-		if err := cli.UninstallCmd(args[1:]); err != nil {
+		if err := cli.UninstallCmd(ctx, args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
