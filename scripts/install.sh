@@ -21,6 +21,9 @@ RUN_MODE=""
 DOWNLOAD_DIR=""
 DOWNLOAD_PATH=""
 CHECKSUM_PATH=""
+VERIFIED_SHA256=""
+ROOT_STAGE_DIR=""
+ROOT_STAGE_PATH=""
 
 # Colors
 RED='\033[0;31m'
@@ -132,6 +135,8 @@ init_download_paths() {
 
 cleanup_download_dir() {
     local dir="${DOWNLOAD_DIR:-}"
+
+    cleanup_root_stage || true
     if [[ -n "$dir" && -d "$dir" ]]; then
         rm -rf -- "$dir"
     fi
@@ -202,6 +207,107 @@ run_as_root() {
         die "此操作需要 root 权限，但当前用户不是 root，且未找到 sudo。"
     else
         die "This operation requires root, but the current user is not root and sudo was not found."
+    fi
+}
+
+trusted_system_command() {
+    local name="$1"
+    local candidate
+    local -a candidates=()
+
+    case "$name" in
+        mktemp) candidates=(/usr/bin/mktemp /bin/mktemp) ;;
+        install) candidates=(/usr/bin/install /bin/install) ;;
+        rm) candidates=(/usr/bin/rm /bin/rm) ;;
+        rmdir) candidates=(/usr/bin/rmdir /bin/rmdir) ;;
+        sha256sum) candidates=(/usr/bin/sha256sum /bin/sha256sum) ;;
+        shasum) candidates=(/usr/bin/shasum) ;;
+        *) return 1 ;;
+    esac
+
+    for candidate in "${candidates[@]}"; do
+        if [[ -x "$candidate" ]]; then
+            builtin printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+cleanup_root_stage() {
+    local dir="${ROOT_STAGE_DIR:-}"
+    local path="${ROOT_STAGE_PATH:-}"
+    local rm_path rmdir_path
+
+    [[ -n "$dir" ]] || return 0
+    case "$dir" in
+        /tmp/sys-bootstrap.root.??????) ;;
+        *)
+            warn "Refusing to clean unexpected privileged staging path: ${dir}"
+            return 1
+            ;;
+    esac
+
+    if ! rm_path=$(trusted_system_command rm) \
+        || ! rmdir_path=$(trusted_system_command rmdir); then
+        warn "Cannot clean privileged staging: trusted coreutils are unavailable."
+        return 1
+    fi
+    if [[ -n "$path" ]]; then
+        run_as_root "$rm_path" -f -- "$path" || true
+    fi
+    run_as_root "$rmdir_path" -- "$dir" || true
+    ROOT_STAGE_PATH=""
+    ROOT_STAGE_DIR=""
+}
+
+verify_root_staged_sha256() {
+    local file="$1"
+    local expected_hash="$2"
+    local hash_path
+
+    if hash_path=$(trusted_system_command sha256sum); then
+        builtin printf '%s  %s\n' "$expected_hash" "$file" \
+            | run_as_root "$hash_path" --check --status -
+        return $?
+    fi
+    if hash_path=$(trusted_system_command shasum); then
+        builtin printf '%s  %s\n' "$expected_hash" "$file" \
+            | run_as_root "$hash_path" -a 256 --check --status -
+        return $?
+    fi
+    return 1
+}
+
+stage_verified_binary_as_root() {
+    local install_path mktemp_path
+
+    if [[ ! "$VERIFIED_SHA256" =~ ^[[:xdigit:]]{64}$ ]]; then
+        die "Cannot stage binary: no valid verified SHA256 is available."
+    fi
+    mktemp_path=$(trusted_system_command mktemp) \
+        || die "Cannot stage binary: trusted mktemp is unavailable."
+    install_path=$(trusted_system_command install) \
+        || die "Cannot stage binary: trusted install is unavailable."
+
+    ROOT_STAGE_DIR=$(run_as_root "$mktemp_path" -d "/tmp/${BINARY}.root.XXXXXX") \
+        || die "Failed to create privileged staging directory."
+    case "$ROOT_STAGE_DIR" in
+        /tmp/sys-bootstrap.root.??????) ;;
+        *)
+            ROOT_STAGE_DIR=""
+            die "Privileged staging returned an unexpected path."
+            ;;
+    esac
+    ROOT_STAGE_PATH="${ROOT_STAGE_DIR}/${BINARY}"
+
+    if ! run_as_root "$install_path" -m 0700 -- "$DOWNLOAD_PATH" "$ROOT_STAGE_PATH"; then
+        cleanup_root_stage
+        die "Failed to copy the verified binary into privileged staging."
+    fi
+    if ! verify_root_staged_sha256 "$ROOT_STAGE_PATH" "$VERIFIED_SHA256"; then
+        cleanup_root_stage
+        die "Root-side checksum verification failed; refusing privileged use."
     fi
 }
 
@@ -410,6 +516,7 @@ verify_download() {
         die "Refusing to continue with an untrusted binary."
     fi
 
+    VERIFIED_SHA256="$actual_hash"
     info "Checksum verified: ${actual_hash}"
 }
 
@@ -549,16 +656,18 @@ install_or_run() {
                         info "Running in full initialization mode with sudo..."
                     fi
                 fi
+                stage_verified_binary_as_root
                 if [[ $(current_euid) -eq 0 ]]; then
-                    run_with_tty env "${env_args[@]}" "$DOWNLOAD_PATH"
+                    run_with_tty env "${env_args[@]}" "$ROOT_STAGE_PATH"
                 else
-                    run_with_tty sudo env "${env_args[@]}" "$DOWNLOAD_PATH"
+                    run_with_tty sudo env "${env_args[@]}" "$ROOT_STAGE_PATH"
                 fi
                 cleanup_download_dir
                 maybe_reload_shell_after_temp_run
             fi
             ;;
         2)
+            local install_path
             if ! can_run_as_root; then
                 if [[ "$LANG_CHOICE" == "zh-CN" ]]; then
                     die "安装到 ${INSTALL_DIR} 需要 root 权限，但当前无法使用 sudo。"
@@ -573,7 +682,11 @@ install_or_run() {
                     info "Installing to ${INSTALL_DIR} with sudo..."
                 fi
             fi
-            run_as_root install -m 0755 "$DOWNLOAD_PATH" "${INSTALL_DIR}/${BINARY}"
+            stage_verified_binary_as_root
+            install_path=$(trusted_system_command install) \
+                || die "Cannot install binary: trusted install is unavailable."
+            run_as_root "$install_path" -m 0755 "$ROOT_STAGE_PATH" "${INSTALL_DIR}/${BINARY}"
+            cleanup_root_stage
 
             # Persist settings to system config
             local config_dir="/etc/sys-bootstrap"

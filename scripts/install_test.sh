@@ -65,6 +65,14 @@ reset_state() {
     # shellcheck disable=SC2034
     DOWNLOAD_PATH="/tmp/fake/sys-bootstrap"
     # shellcheck disable=SC2034
+    DOWNLOAD_DIR=""
+    # shellcheck disable=SC2034
+    VERIFIED_SHA256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    # shellcheck disable=SC2034
+    ROOT_STAGE_DIR=""
+    # shellcheck disable=SC2034
+    ROOT_STAGE_PATH=""
+    # shellcheck disable=SC2034
     INSTALL_DIR="/usr/local/bin"
     CAN_USE_SUDO_STUB=1
     CURRENT_EUID_STUB=0
@@ -102,6 +110,8 @@ prompt_read() {
     printf -v "$__var_name" '%s' "$__value"
 }
 
+# Invoked indirectly by sourced installer functions.
+# shellcheck disable=SC2329
 run_with_tty() {
     CAPTURED_CMD="$*"
 }
@@ -118,8 +128,26 @@ current_euid() {
     echo "$CURRENT_EUID_STUB"
 }
 
+# Invoked indirectly by sourced installer functions.
+# shellcheck disable=SC2329
 run_as_root() {
-    CAPTURED_CMD="run_as_root $*"
+    if [[ "$1" != /* ]]; then
+        echo "unexpected PATH-resolved root command: $*" >&2
+        return 1
+    fi
+    case "${1##*/}" in
+        mktemp)
+            printf '%s\n' "/tmp/sys-bootstrap.root.ABC123"
+            ;;
+        sha256sum|shasum)
+            while IFS= read -r _; do :; done
+            ;;
+        rm|rmdir)
+            ;;
+        *)
+            CAPTURED_CMD="run_as_root $*"
+            ;;
+    esac
 }
 
 test_choose_run_mode_user() {
@@ -165,7 +193,8 @@ test_temp_full_mode_nonroot_uses_sudo() {
     install_or_run >/dev/null
     assert_contains "$CAPTURED_CMD" "sudo"
     assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_RUN_MODE=full"
-    assert_contains "$CAPTURED_CMD" "/tmp/fake/sys-bootstrap"
+    assert_contains "$CAPTURED_CMD" "/tmp/sys-bootstrap.root.ABC123/sys-bootstrap"
+    assert_not_contains "$CAPTURED_CMD" "/tmp/fake/sys-bootstrap"
 }
 
 test_temp_full_mode_root_no_sudo() {
@@ -175,7 +204,8 @@ test_temp_full_mode_root_no_sudo() {
     CURRENT_EUID_STUB=0
     install_or_run >/dev/null
     assert_not_contains "$CAPTURED_CMD" "sudo"
-    assert_contains "$CAPTURED_CMD" "/tmp/fake/sys-bootstrap"
+    assert_contains "$CAPTURED_CMD" "/tmp/sys-bootstrap.root.ABC123/sys-bootstrap"
+    assert_not_contains "$CAPTURED_CMD" "/tmp/fake/sys-bootstrap"
 }
 
 test_temp_full_mode_no_sudo_available_dies() {
@@ -239,6 +269,141 @@ test_env_vars_full_mode_combined() {
     assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_LANG=zh-CN"
     assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_APT_MIRROR=cernet"
     assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_RUN_MODE=full"
+}
+
+test_temp_full_mode_uses_verified_root_staging() {
+    TEST_NAME="temp full mode: executes root-staged verified content"
+    reset_state
+
+    local saved_run_as_root saved_run_with_tty attack_dir executed_content=""
+    saved_run_as_root="$(declare -f run_as_root)"
+    saved_run_with_tty="$(declare -f run_with_tty)"
+    attack_dir="$(mktemp -d)"
+    DOWNLOAD_DIR="$attack_dir"
+    DOWNLOAD_PATH="${attack_dir}/sys-bootstrap"
+    printf '%s\n' "trusted binary" > "$DOWNLOAD_PATH"
+    VERIFIED_SHA256="$(file_sha256 "$DOWNLOAD_PATH")"
+
+    # Invoked indirectly by sourced installer functions.
+    # shellcheck disable=SC2329
+    run_as_root() {
+        if [[ "$1" != /* ]]; then
+            echo "unexpected PATH-resolved root command: $*" >&2
+            return 1
+        fi
+        case "${1##*/}" in
+            mktemp)
+                command mktemp -d "/tmp/sys-bootstrap.root.XXXXXX"
+                ;;
+            install|rm|rmdir)
+                command "$@"
+                ;;
+            sha256sum|shasum)
+                command "$@"
+                ;;
+            *)
+                echo "unexpected root command: $*" >&2
+                return 1
+                ;;
+        esac
+    }
+    run_with_tty() {
+        local privileged_path="${!#}"
+        printf '%s\n' "malicious replacement" > "$DOWNLOAD_PATH"
+        executed_content="$(command head -n 1 -- "$privileged_path")"
+    }
+
+    PROMPT_VALUES=("1" "2" "n")
+    CURRENT_EUID_STUB=1000
+    CAN_USE_SUDO_STUB=0
+    install_or_run >/dev/null
+
+    eval "$saved_run_as_root"
+    eval "$saved_run_with_tty"
+    assert_equal "$executed_content" "trusted binary" \
+        "privileged execution must use content bound to the verified download"
+}
+
+test_install_rejects_replacement_during_privileged_copy() {
+    TEST_NAME="install mode: rejects replacement during privileged copy"
+    reset_state
+
+    local saved_run_as_root attack_dir install_dir
+    saved_run_as_root="$(declare -f run_as_root)"
+    attack_dir="$(mktemp -d)"
+    install_dir="$(mktemp -d)"
+    # Consumed by sourced installer functions.
+    # shellcheck disable=SC2034
+    DOWNLOAD_DIR="$attack_dir"
+    DOWNLOAD_PATH="${attack_dir}/sys-bootstrap"
+    # Consumed by sourced installer functions.
+    # shellcheck disable=SC2034
+    INSTALL_DIR="$install_dir"
+    printf '%s\n' "trusted binary" > "$DOWNLOAD_PATH"
+    # Consumed by sourced installer functions in the failure subprocess.
+    # shellcheck disable=SC2034
+    VERIFIED_SHA256="$(file_sha256 "$DOWNLOAD_PATH")"
+
+    # Invoked indirectly by sourced installer functions.
+    # shellcheck disable=SC2329
+    run_as_root() {
+        if [[ "$1" != /* ]]; then
+            echo "unexpected PATH-resolved root command: $*" >&2
+            return 1
+        fi
+        case "${1##*/}" in
+            mktemp)
+                command mktemp -d "/tmp/sys-bootstrap.root.XXXXXX"
+                ;;
+            install)
+                if [[ "${*: -2:1}" == "$DOWNLOAD_PATH" ]]; then
+                    printf '%s\n' "malicious replacement" > "$DOWNLOAD_PATH"
+                fi
+                command "$@"
+                ;;
+            sha256sum|shasum)
+                command "$@"
+                ;;
+            rm|rmdir)
+                command "$@"
+                ;;
+            *)
+                echo "unexpected root command: $*" >&2
+                return 1
+                ;;
+        esac
+    }
+
+    PROMPT_VALUES=("2")
+    CURRENT_EUID_STUB=1000
+    CAN_USE_SUDO_STUB=0
+    if run_expect_fail install_or_run >/dev/null; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL: $TEST_NAME - replacement should fail root-side verification"
+    else
+        PASS=$((PASS + 1))
+    fi
+
+    eval "$saved_run_as_root"
+    command rm -rf -- "$attack_dir" "$install_dir"
+}
+
+test_privileged_staging_avoids_user_path_tools() {
+    TEST_NAME="privileged staging: never resolves root tools through user PATH"
+    reset_state
+
+    local script script_dir staging_code
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    script="$(<"${script_dir}/install.sh")"
+    staging_code="${script#*trusted_system_command() \{}"
+    staging_code="${staging_code%%# --- Language Selection ---*}"
+
+    assert_not_contains "$staging_code" "run_as_root mktemp"
+    assert_not_contains "$staging_code" "run_as_root install"
+    assert_not_contains "$staging_code" "run_as_root rm"
+    assert_not_contains "$staging_code" "run_as_root rmdir"
+    assert_not_contains "$staging_code" "| awk"
+    assert_contains "$staging_code" "builtin printf"
 }
 
 test_temp_run_reload_shell_declined() {
@@ -322,6 +487,9 @@ test_install_requires_root
 test_env_vars_zh_cn
 test_env_vars_apt_mirror
 test_env_vars_full_mode_combined
+test_temp_full_mode_uses_verified_root_staging
+test_install_rejects_replacement_during_privileged_copy
+test_privileged_staging_avoids_user_path_tools
 test_temp_run_reload_shell_declined
 test_temp_run_reload_shell_default_yes
 test_shell_reload_command_is_manual_friendly
