@@ -531,6 +531,16 @@ test_privileged_staging_avoids_user_path_tools() {
     local script script_dir staging_code
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     script="$(<"${script_dir}/install.sh")"
+    if [[ "$script" != *"trusted_system_command() {"* ]]; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL: $TEST_NAME - trusted_system_command marker is missing"
+        return
+    fi
+    if [[ "$script" != *"# --- Language Selection ---"* ]]; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL: $TEST_NAME - staging section end marker is missing"
+        return
+    fi
     staging_code="${script#*trusted_system_command() \{}"
     staging_code="${staging_code%%# --- Language Selection ---*}"
 
