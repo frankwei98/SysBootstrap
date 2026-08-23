@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -150,6 +151,18 @@ func TestPlanJSONStructure(t *testing.T) {
 		if _, ok := firstMod[field]; !ok {
 			t.Errorf("module JSON missing %q field", field)
 		}
+	}
+}
+
+func TestGeneratePlan_PropagatesCancellation(t *testing.T) {
+	registry := modules.NewRegistry()
+	registry.Register(&stubModule{id: "base", name: "Base", steps: []types.Step{{Module: "base", Title: "work"}}})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := GeneratePlan(ctx, &system.Context{}, &types.Config{}, registry, []string{"base"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("GeneratePlan error = %v, want context.Canceled", err)
 	}
 }
 
