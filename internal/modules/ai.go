@@ -168,7 +168,7 @@ pnpm config set global-bin-dir "$PNPM_HOME/bin"
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
 			}
-			return fmt.Errorf("Codex installation verification failed: %v", err)
+			return fmt.Errorf("verification of Codex installation failed: %w", err)
 		}
 		log.Success("Codex installed")
 	}
@@ -190,16 +190,8 @@ func requestedAITools(cfg *types.Config) (installClaude, installCodex bool) {
 	return true, true
 }
 
-func aiToolWorks(sys *system.Context, name string) bool {
-	return aiToolWorksContext(context.Background(), sys, name)
-}
-
 func aiToolWorksContext(ctx context.Context, sys *system.Context, name string) bool {
 	return verifyAIToolContext(ctx, sys, name) == nil
-}
-
-func verifyAITool(sys *system.Context, name string) error {
-	return verifyAIToolContext(context.Background(), sys, name)
 }
 
 func verifyAIToolContext(ctx context.Context, sys *system.Context, name string) error {
@@ -220,17 +212,13 @@ func verifyAIToolContext(ctx context.Context, sys *system.Context, name string) 
 	return nil
 }
 
-func verifyClaudeCode(sys *system.Context, pm string, log *logging.Logger) error {
-	return verifyClaudeCodeContext(context.Background(), sys, pm, log)
-}
-
 func verifyClaudeCodeContext(ctx context.Context, sys *system.Context, pm string, log *logging.Logger) error {
 	if err := verifyAIToolContext(ctx, sys, "claude"); err == nil {
 		return nil
 	} else if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	} else if pm != "pnpm" {
-		return fmt.Errorf("Claude Code installation verification failed: %v", err)
+		return fmt.Errorf("verification of Claude Code installation failed: %w", err)
 	} else {
 		log.Warnf("Claude Code verification failed, running postinstall repair: %v", err)
 	}
@@ -242,7 +230,7 @@ func verifyClaudeCodeContext(ctx context.Context, sys *system.Context, pm string
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		return fmt.Errorf("Claude Code installation verification failed after postinstall repair: %v", err)
+		return fmt.Errorf("verification of Claude Code installation after postinstall repair failed: %w", err)
 	}
 	return nil
 }
