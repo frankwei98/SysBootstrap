@@ -770,6 +770,39 @@ export PATH="$PNPM_HOME:$PATH"
 	}
 }
 
+func TestCleanShellRCPreservesCompositeCommands(t *testing.T) {
+	rcFile := filepath.Join(t.TempDir(), ".bashrc")
+	content := `export NVM_DIR="$HOME/.nvm"; echo keep-nvm
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"; export KEEP_NVM=1
+export NVM_DIR="$HOME/.nvm" KEEP_NVM_ASSIGNMENT=1
+export BUN_INSTALL="$HOME/.bun" && echo keep-bun
+export PATH="$BUN_INSTALL/bin:$PATH"; export KEEP_BUN=1
+export PATH="$BUN_INSTALL/bin:$PATH:/keep-bun"
+export PNPM_HOME="$HOME/.local/share/pnpm"; echo keep-pnpm
+export PATH="$PNPM_HOME:$PATH" && export KEEP_PNPM=1
+export PNPM_HOME="$HOME/.local/share/pnpm" KEEP_PNPM_ASSIGNMENT=1
+export PATH="$PNPM_HOME:$PATH:/keep-pnpm"
+`
+	if err := os.WriteFile(rcFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := CleanShellRC([]string{rcFile}, []string{"nvm", "bun", "pnpm"}, false, createTestLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d, want no composite command removed", removed)
+	}
+	got, err := os.ReadFile(rcFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Fatalf("composite commands changed:\n got %q\nwant %q", got, content)
+	}
+}
+
 func TestCleanShellRC_DryRunDoesNotModify(t *testing.T) {
 	home := t.TempDir()
 	rcFile := filepath.Join(home, ".bashrc")
