@@ -12,9 +12,10 @@ import (
 )
 
 type sshAddressPolicyConflict struct {
-	path      string
-	line      int
-	directive string
+	path           string
+	line           int
+	matchCriterion string
+	directive      string
 }
 
 type sshAddressPolicyScanner struct {
@@ -49,13 +50,14 @@ func rejectAddressDependentSSHAuthPolicy(cfg *types.Config) error {
 
 	conflict, err := findSSHAddressPolicyConflict(sshConfigPath, wanted)
 	if err != nil {
-		return fmt.Errorf("cannot inspect address-dependent SSH authentication policy: %w", err)
+		return fmt.Errorf("cannot inspect conditional SSH authentication policy: %w", err)
 	}
 	if conflict == nil {
 		return nil
 	}
 	return fmt.Errorf(
-		"cannot safely enforce SSH authentication: Match Address controls %s at %s:%d; remove the address-dependent override or harden SSH manually",
+		"cannot safely enforce SSH authentication: Match %s controls %s at %s:%d; remove the conditional override or harden SSH manually",
+		conflict.matchCriterion,
 		conflict.directive,
 		conflict.path,
 		conflict.line,
@@ -68,14 +70,14 @@ func findSSHAddressPolicyConflict(rootPath string, wanted map[string]bool) (*ssh
 		wanted:      wanted,
 		stack:       make(map[string]bool),
 	}
-	return scanner.scanFile(rootPath, false, 0)
+	return scanner.scanFile(rootPath, "", 0)
 }
 
-func (s *sshAddressPolicyScanner) scanFile(path string, addressDependent bool, depth int) (*sshAddressPolicyConflict, error) {
+func (s *sshAddressPolicyScanner) scanFile(path, matchCriterion string, depth int) (*sshAddressPolicyConflict, error) {
 	if depth > 16 {
 		return nil, fmt.Errorf("too many recursive SSH Includes")
 	}
-	enclosingAddressDependent := addressDependent
+	enclosingMatchCriterion := matchCriterion
 	canonicalPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve SSH config path %s: %w", path, err)
@@ -108,11 +110,15 @@ func (s *sshAddressPolicyScanner) scanFile(path string, addressDependent bool, d
 		}
 		switch strings.ToLower(fields[0]) {
 		case "match":
-			dependsOnAddress, err := sshMatchDependsOnAddress(fields)
+			criterion, err := sshUnverifiableMatchCriterion(fields)
 			if err != nil {
 				return nil, fmt.Errorf("parse %s:%d: %w", canonicalPath, lineNumber, err)
 			}
-			addressDependent = enclosingAddressDependent || dependsOnAddress
+			if enclosingMatchCriterion != "" {
+				matchCriterion = enclosingMatchCriterion
+			} else {
+				matchCriterion = criterion
+			}
 		case "include":
 			for _, pattern := range fields[1:] {
 				if strings.HasPrefix(pattern, "~") {
@@ -126,7 +132,7 @@ func (s *sshAddressPolicyScanner) scanFile(path string, addressDependent bool, d
 					return nil, fmt.Errorf("expand SSH Include %q at %s:%d: %w", pattern, canonicalPath, lineNumber, err)
 				}
 				for _, match := range matches {
-					conflict, err := s.scanFile(match, addressDependent, depth+1)
+					conflict, err := s.scanFile(match, matchCriterion, depth+1)
 					if err != nil || conflict != nil {
 						return conflict, err
 					}
@@ -134,8 +140,13 @@ func (s *sshAddressPolicyScanner) scanFile(path string, addressDependent bool, d
 			}
 		default:
 			keyword := strings.ToLower(fields[0])
-			if addressDependent && s.wanted[keyword] {
-				return &sshAddressPolicyConflict{path: canonicalPath, line: lineNumber, directive: fields[0]}, nil
+			if matchCriterion != "" && s.wanted[keyword] {
+				return &sshAddressPolicyConflict{
+					path:           canonicalPath,
+					line:           lineNumber,
+					matchCriterion: matchCriterion,
+					directive:      fields[0],
+				}, nil
 			}
 		}
 	}
@@ -171,14 +182,14 @@ func openSSHGlob(pattern string) ([]string, error) {
 	return filtered, nil
 }
 
-func sshMatchDependsOnAddress(fields []string) (bool, error) {
+func sshUnverifiableMatchCriterion(fields []string) (string, error) {
 	if len(fields) < 2 {
-		return false, fmt.Errorf("Match requires criteria")
+		return "", fmt.Errorf("Match requires criteria")
 	}
 	if len(fields) == 2 && (strings.EqualFold(fields[1], "all") || strings.EqualFold(fields[1], "invalid-user")) {
-		return false, nil
+		return "", nil
 	}
-	addressDependent := false
+	unverifiableCriterion := ""
 	for index := 1; index < len(fields); {
 		criterion := strings.ToLower(fields[index])
 		if criterion == "invalid-user" {
@@ -186,18 +197,20 @@ func sshMatchDependsOnAddress(fields []string) (bool, error) {
 			continue
 		}
 		if index+1 >= len(fields) {
-			return false, fmt.Errorf("Match criterion %s requires a pattern", fields[index])
+			return "", fmt.Errorf("Match criterion %s requires a pattern", fields[index])
 		}
 		switch criterion {
-		case "user", "group", "host", "localaddress", "localport", "version", "rdomain":
-		case "address":
-			addressDependent = true
+		case "localport":
+		case "address", "localaddress", "user", "group", "host", "version", "rdomain":
+			if unverifiableCriterion == "" {
+				unverifiableCriterion = fields[index]
+			}
 		default:
-			return false, fmt.Errorf("unsupported Match criterion %s", fields[index])
+			return "", fmt.Errorf("unsupported Match criterion %s", fields[index])
 		}
 		index += 2
 	}
-	return addressDependent, nil
+	return unverifiableCriterion, nil
 }
 
 func splitSSHConfigFields(line string) ([]string, error) {

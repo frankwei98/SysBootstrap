@@ -37,6 +37,60 @@ func TestSSHPlanRejectsAddressDependentPasswordPolicy(t *testing.T) {
 	}
 }
 
+func TestSSHPlanRejectsLocalAddressDependentPasswordPolicy(t *testing.T) {
+	env := newSSHAddressPlanEnvironment(t)
+	policyPath := filepath.Join(env.dropInDir, "10-local-address-policy.conf")
+	if err := os.WriteFile(
+		policyPath,
+		[]byte("Match LocalAddress 203.0.113.10\n  PasswordAuthentication yes\n"),
+		0o644,
+	); err != nil {
+		t.Fatalf("write local-address policy: %v", err)
+	}
+
+	_, err := env.plan(&types.Config{SSHPort: 22122, SSHDisablePass: true})
+	if err == nil {
+		t.Fatal("expected local-address-dependent password policy to be rejected")
+	}
+	for _, want := range []string{"Match LocalAddress", "PasswordAuthentication", policyPath} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Plan error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestSSHPlanRejectsUnverifiableMatchPasswordPolicy(t *testing.T) {
+	for _, match := range []struct {
+		criterion string
+		pattern   string
+	}{
+		{criterion: "User", pattern: "deploy"},
+		{criterion: "Group", pattern: "operators"},
+		{criterion: "Host", pattern: "bastion.example"},
+		{criterion: "Version", pattern: "OpenSSH_9.*"},
+		{criterion: "RDomain", pattern: "0"},
+	} {
+		t.Run(match.criterion, func(t *testing.T) {
+			env := newSSHAddressPlanEnvironment(t)
+			policyPath := filepath.Join(env.dropInDir, "10-identity-policy.conf")
+			content := "Match " + match.criterion + " " + match.pattern + "\n  PasswordAuthentication yes\n"
+			if err := os.WriteFile(policyPath, []byte(content), 0o644); err != nil {
+				t.Fatalf("write %s policy: %v", match.criterion, err)
+			}
+
+			_, err := env.plan(&types.Config{SSHPort: 22122, SSHDisablePass: true})
+			if err == nil {
+				t.Fatalf("expected Match %s password policy to be rejected", match.criterion)
+			}
+			for _, want := range []string{"Match " + match.criterion, "PasswordAuthentication", policyPath} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Plan error = %q, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestSSHPlanRejectsAddressPolicyUsingEqualsSeparators(t *testing.T) {
 	env := newSSHAddressPlanEnvironment(t)
 	policyPath := filepath.Join(env.dropInDir, "10-address-policy.conf")
@@ -327,5 +381,35 @@ func TestSSHRunRechecksAddressDependentPasswordPolicyBeforeFinalizing(t *testing
 	}
 	if _, statErr := os.Stat(env.dropInPath); !os.IsNotExist(statErr) {
 		t.Fatalf("managed SSH config was not rolled back after final policy rejection: %v", statErr)
+	}
+}
+
+func TestSSHRunRechecksLocalAddressDependentPasswordPolicyBeforeFinalizing(t *testing.T) {
+	env := newSSHRunTestEnvironment(t)
+	policyPath := filepath.Join(filepath.Dir(env.dropInPath), "10-local-address-policy.conf")
+	m := NewSSHModule()
+	m.SetCheckpoint(func(context.Context, []types.AccessPath) (bool, error) {
+		if err := os.WriteFile(
+			policyPath,
+			[]byte("Match LocalAddress 203.0.113.10\n  PasswordAuthentication yes\n"),
+			0o644,
+		); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+
+	err := m.Run(context.Background(), newSSHRunTestAccessPath(t), &types.Config{
+		SSHPort:        22122,
+		SSHDisablePass: true,
+	}, newQuietLogger(t))
+	if err == nil {
+		t.Fatal("expected local-address-dependent policy added during checkpoint to be rejected")
+	}
+	if !strings.Contains(err.Error(), "Match LocalAddress") {
+		t.Fatalf("Run error = %q, want local-address-policy guidance", err)
+	}
+	if _, statErr := os.Stat(env.dropInPath); !os.IsNotExist(statErr) {
+		t.Fatalf("managed SSH config was not rolled back after final local-address policy rejection: %v", statErr)
 	}
 }
