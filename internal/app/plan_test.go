@@ -187,7 +187,7 @@ func TestPlanTextFormat(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	plan, err := GeneratePlan(ctx, &system.Context{}, &types.Config{}, r, []string{"base"})
+	plan, err := GeneratePlan(ctx, &system.Context{HasApt: true}, &types.Config{}, r, []string{"base"})
 	if err != nil {
 		t.Fatalf("GeneratePlan failed: %v", err)
 	}
@@ -286,6 +286,25 @@ func TestPlanChecksReportUnknownUFWState(t *testing.T) {
 		return
 	}
 	t.Fatal("plan checks omitted installed UFW with unknown status")
+}
+
+func TestPlanChecksMarkUnsupportedOSAsFatal(t *testing.T) {
+	checks := buildPlanChecks(&system.Context{OSID: "unsupported-os", OSVersion: "1"})
+	for _, check := range checks {
+		if check.Name != "os" {
+			continue
+		}
+		if check.Status != "fatal" || !strings.Contains(check.Detail, "unsupported") {
+			t.Fatalf("OS check = %+v, want fatal unsupported status", check)
+		}
+		plan := &PlanResult{Checks: []PlanCheck{check}}
+		text := FormatPlanText(plan)
+		if !strings.Contains(text, "✗ os: fatal") || strings.Contains(text, "✓ os:") {
+			t.Fatalf("unsupported OS rendered as success:\n%s", text)
+		}
+		return
+	}
+	t.Fatal("OS check missing")
 }
 
 func TestPlanMarksUserModuleNotConfiguredWithoutUsername(t *testing.T) {
