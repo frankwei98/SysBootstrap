@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -223,10 +222,7 @@ func RunCmd(ctx context.Context, registry *modules.Registry) error {
 	runner := app.NewRunner(registry, sys, log)
 	runner.SetSSHCheckpoint(ui.NewSSHCheckpointFunc())
 	if err := runner.Run(ctx, cfg, ordered); err != nil {
-		if errors.Is(err, types.ErrSSHPendingConfirmation) {
-			return nil
-		}
-		return err
+		return normalizeSSHRunnerError(ctx, err)
 	}
 
 	log.Success(i18n.T("runner_all_done"))
@@ -492,10 +488,7 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 	runner.SetSSHCheckpoint(ui.NewSSHCheckpointFunc())
 	result, err := runner.RunWithResult(ctx, cfg, []string{moduleID})
 	if err != nil {
-		if errors.Is(err, types.ErrSSHPendingConfirmation) {
-			return nil
-		}
-		return err
+		return normalizeSSHRunnerError(ctx, err)
 	}
 	if result.ModuleFailed(moduleID) {
 		return fmt.Errorf("module %s failed; see warning output above", m.Name())
@@ -505,6 +498,19 @@ func ModuleCmd(ctx context.Context, registry *modules.Registry, moduleID string)
 		log.Warnf(i18n.T("shell_reload_hint"), shellReloadCommand())
 	}
 	return nil
+}
+
+func normalizeSSHRunnerError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if err == types.ErrSSHPendingConfirmation {
+		return nil
+	}
+	return err
 }
 
 func missingDependenciesForModule(

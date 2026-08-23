@@ -1,16 +1,116 @@
 package ui
 
 import (
+	"context"
+	"errors"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/frankwei98/sys-bootstrap/internal/modules"
 	"github.com/frankwei98/sys-bootstrap/internal/system"
 	"github.com/frankwei98/sys-bootstrap/internal/types"
 )
+
+func TestSSHCheckpointPreservesCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	confirmed, err := NewSSHCheckpointFunc()(ctx, nil)
+	if confirmed {
+		t.Fatal("cancelled checkpoint must not confirm finalization")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("checkpoint error = %v, want context.Canceled", err)
+	}
+}
+
+func TestSSHCheckpointPreservesCallerDeadline(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	confirmed, err := NewSSHCheckpointFunc()(ctx, nil)
+	if confirmed {
+		t.Fatal("timed out checkpoint must not confirm finalization")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("checkpoint error = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestSSHCheckpointPreservesPromptAbortAndTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "Ctrl-C", err: huh.ErrUserAborted},
+		{name: "timeout", err: huh.ErrTimeout},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalRun := runSSHCheckpointForm
+			runSSHCheckpointForm = func(context.Context, *huh.Form) error { return tt.err }
+			t.Cleanup(func() { runSSHCheckpointForm = originalRun })
+
+			confirmed, err := NewSSHCheckpointFunc()(context.Background(), nil)
+			if confirmed {
+				t.Fatal("failed checkpoint prompt must not confirm finalization")
+			}
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("checkpoint error = %v, want %v", err, tt.err)
+			}
+		})
+	}
+}
+
+func TestSSHCheckpointPreservesEOF(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	originalStdin := os.Stdin
+	input, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stdin writer: %v", err)
+	}
+	os.Stdin = input
+	t.Cleanup(func() {
+		os.Stdin = originalStdin
+		input.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	confirmed, err := NewSSHCheckpointFunc()(ctx, nil)
+	if confirmed {
+		t.Fatal("EOF checkpoint must not confirm finalization")
+	}
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("checkpoint error = %v, want io.EOF", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("checkpoint waited for timeout instead of returning EOF: %v", ctx.Err())
+	}
+}
+
+func TestSSHCheckpointExplicitNoRemainsPendingChoice(t *testing.T) {
+	originalRun := runSSHCheckpointForm
+	runSSHCheckpointForm = func(context.Context, *huh.Form) error { return nil }
+	t.Cleanup(func() { runSSHCheckpointForm = originalRun })
+
+	confirmed, err := NewSSHCheckpointFunc()(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("explicit No checkpoint error = %v, want nil", err)
+	}
+	if confirmed {
+		t.Fatal("explicit No must leave confirmation false")
+	}
+}
 
 func TestSelectedSSHKeyPathUsesSelectedAlgorithm(t *testing.T) {
 	home := t.TempDir()
