@@ -1,10 +1,33 @@
 package system
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestRemoveAllBeneathContextStopsBeforeDeletionWhenCancelled(t *testing.T) {
+	home := t.TempDir()
+	target := filepath.Join(home, ".nvm")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "keep"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := RemoveAllBeneathContext(ctx, home, target)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RemoveAllBeneathContext error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "keep")); err != nil {
+		t.Fatalf("cancelled removal modified target: %v", err)
+	}
+}
 
 func TestRemoveAllBeneathRemovesTreeWithoutFollowingDescendantSymlink(t *testing.T) {
 	home := t.TempDir()

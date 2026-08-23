@@ -1222,6 +1222,32 @@ func TestExecuteUninstall_DryRunRejectsUnsafePath(t *testing.T) {
 	}
 }
 
+func TestExecuteUninstall_CancellationDuringShellRCCleanupIsReported(t *testing.T) {
+	home := t.TempDir()
+	rcFile := filepath.Join(home, ".bashrc")
+	if err := os.WriteFile(rcFile, []byte("export NVM_DIR=\"$HOME/.nvm\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := UninstallPlan{
+		Items:   []UninstallItem{{ID: "nvm"}},
+		RCFiles: []string{rcFile},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	originalWriter := writeShellRCIfUnchanged
+	writeShellRCIfUnchanged = func(path string, expected []byte, metadata shellRCMetadata, cleaned []byte) error {
+		cancel()
+		return originalWriter(path, expected, metadata, cleaned)
+	}
+	t.Cleanup(func() { writeShellRCIfUnchanged = originalWriter })
+
+	err := ExecuteUninstall(ctx, plan, home, false, createTestLogger(t))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ExecuteUninstall error = %v, want context.Canceled", err)
+	}
+}
+
 func TestValidateUninstallPlanRejectsUnsafePathBeforePreview(t *testing.T) {
 	home := t.TempDir()
 	plan := UninstallPlan{DirsToDelete: []string{"/tmp/outside-home"}}

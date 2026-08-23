@@ -1,6 +1,7 @@
 package system
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -17,13 +18,29 @@ const secureRemoveOpenFlags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC 
 // an ancestor or descendant symlink, so a concurrent pathname replacement
 // cannot redirect a privileged uninstall outside baseDir.
 func RemoveAllBeneath(baseDir, target string) error {
+	return RemoveAllBeneathContext(context.Background(), baseDir, target)
+}
+
+// RemoveAllBeneathContext is the context-aware form of RemoveAllBeneath. It
+// checks cancellation before and after every destructive operation while
+// retaining the same descriptor-relative, no-follow safety guarantees.
+func RemoveAllBeneathContext(ctx context.Context, baseDir, target string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	absBase, rel, err := removeAllRelativePath(baseDir, target)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	realBase, err := filepath.EvalSymlinks(absBase)
 	if err != nil {
 		return fmt.Errorf("resolve removal base %s: %w", absBase, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	base, baseStat, err := openPinnedRemovalDir(realBase)
 	if err != nil {
@@ -34,6 +51,12 @@ func RemoveAllBeneath(baseDir, target string) error {
 	components := strings.Split(rel, string(filepath.Separator))
 	parent := base
 	for _, component := range components[:len(components)-1] {
+		if err := ctx.Err(); err != nil {
+			if parent != base {
+				_ = parent.Close()
+			}
+			return err
+		}
 		child, _, openErr := openPinnedRemovalDirAt(parent, component, uint64(baseStat.Dev))
 		if openErr != nil {
 			if parent != base {
@@ -43,6 +66,13 @@ func RemoveAllBeneath(baseDir, target string) error {
 				return nil
 			}
 			return fmt.Errorf("open removal path component %s: %w", component, openErr)
+		}
+		if err := ctx.Err(); err != nil {
+			_ = child.Close()
+			if parent != base {
+				_ = parent.Close()
+			}
+			return err
 		}
 		if parent != base {
 			_ = parent.Close()
@@ -54,6 +84,9 @@ func RemoveAllBeneath(baseDir, target string) error {
 	}
 
 	name := components[len(components)-1]
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	targetDir, targetStat, err := openPinnedRemovalDirAt(parent, name, uint64(baseStat.Dev))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -62,10 +95,16 @@ func RemoveAllBeneath(baseDir, target string) error {
 		return fmt.Errorf("refusing unsafe removal target %s: %w", target, err)
 	}
 	defer targetDir.Close()
-	if err := removePinnedDirectoryContents(targetDir, uint64(baseStat.Dev)); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := removePinnedDirectoryContents(ctx, targetDir, uint64(baseStat.Dev)); err != nil {
 		return fmt.Errorf("remove contents of %s: %w", target, err)
 	}
-	return unlinkPinnedDirectory(parent, name, targetStat)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return unlinkPinnedDirectory(ctx, parent, name, targetStat)
 }
 
 func removeAllRelativePath(baseDir, target string) (string, string, error) {
@@ -135,47 +174,72 @@ func openPinnedRemovalDirAt(parent *os.File, name string, baseDevice uint64) (*o
 	return f, stat, nil
 }
 
-func removePinnedDirectoryContents(dir *os.File, baseDevice uint64) error {
+func removePinnedDirectoryContents(ctx context.Context, dir *os.File, baseDevice uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	entries, err := dir.ReadDir(-1)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		name := entry.Name()
 		if name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
 			return fmt.Errorf("invalid directory entry %q", name)
 		}
-		if err := removePinnedEntry(dir, name, baseDevice); err != nil {
+		if err := removePinnedEntry(ctx, dir, name, baseDevice); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func removePinnedEntry(parent *os.File, name string, baseDevice uint64) error {
+func removePinnedEntry(ctx context.Context, parent *os.File, name string, baseDevice uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	err := unix.Unlinkat(int(parent.Fd()), name, 0)
 	if err == nil || errors.Is(err, unix.ENOENT) {
-		return nil
+		return ctx.Err()
 	}
 	if !errors.Is(err, unix.EISDIR) && !errors.Is(err, unix.EPERM) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return errors.Join(ctxErr, fmt.Errorf("unlink %s: %w", name, err))
+		}
 		return fmt.Errorf("unlink %s: %w", name, err)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
 
 	child, childStat, err := openPinnedRemovalDirAt(parent, name, baseDevice)
 	if err != nil {
 		return fmt.Errorf("open directory %s without following links: %w", name, err)
 	}
-	if err := removePinnedDirectoryContents(child, baseDevice); err != nil {
+	if err := ctx.Err(); err != nil {
+		_ = child.Close()
+		return err
+	}
+	if err := removePinnedDirectoryContents(ctx, child, baseDevice); err != nil {
 		_ = child.Close()
 		return err
 	}
 	if err := child.Close(); err != nil {
 		return fmt.Errorf("close directory %s: %w", name, err)
 	}
-	return unlinkPinnedDirectory(parent, name, childStat)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return unlinkPinnedDirectory(ctx, parent, name, childStat)
 }
 
-func unlinkPinnedDirectory(parent *os.File, name string, opened *unix.Stat_t) error {
+func unlinkPinnedDirectory(ctx context.Context, parent *os.File, name string, opened *unix.Stat_t) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	current := &unix.Stat_t{}
 	if err := unix.Fstatat(int(parent.Fd()), name, current, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		if errors.Is(err, unix.ENOENT) {
@@ -186,8 +250,14 @@ func unlinkPinnedDirectory(parent *os.File, name string, opened *unix.Stat_t) er
 	if uint64(current.Dev) != uint64(opened.Dev) || current.Ino != opened.Ino {
 		return fmt.Errorf("refusing to remove directory %s: path changed during deletion", name)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := unix.Unlinkat(int(parent.Fd()), name, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return errors.Join(ctxErr, fmt.Errorf("remove directory %s: %w", name, err))
+		}
 		return fmt.Errorf("remove directory %s: %w", name, err)
 	}
-	return nil
+	return ctx.Err()
 }
