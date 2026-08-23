@@ -44,6 +44,18 @@ assert_equal() {
     fi
 }
 
+assert_matches() {
+    local actual="$1"
+    local pattern="$2"
+    local msg="${3:-value does not match the expected pattern}"
+    if [[ "$actual" =~ $pattern ]]; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        echo "FAIL: $TEST_NAME - $msg"
+    fi
+}
+
 path_mode() {
     local path="$1"
     local mode
@@ -148,12 +160,13 @@ run_as_root() {
     fi
     case "${1##*/}" in
         mktemp)
-            printf '%s\n' "/tmp/sys-bootstrap.root.ABC123"
+            "$1" -d "/tmp/sys-bootstrap.root.XXXXXX"
             ;;
         sha256sum|shasum)
             while IFS= read -r _; do :; done
             ;;
         rm|rmdir)
+            "$@"
             ;;
         *)
             CAPTURED_CMD="run_as_root $*"
@@ -204,7 +217,8 @@ test_temp_full_mode_nonroot_uses_sudo() {
     install_or_run >/dev/null
     assert_contains "$CAPTURED_CMD" "sudo"
     assert_contains "$CAPTURED_CMD" "SYS_BOOTSTRAP_RUN_MODE=full"
-    assert_contains "$CAPTURED_CMD" "/tmp/sys-bootstrap.root.ABC123/sys-bootstrap"
+    assert_matches "$CAPTURED_CMD" '/tmp/sys-bootstrap\.root\.[[:alnum:]]{6}/sys-bootstrap' \
+        "root staging path must use a random temporary directory"
     assert_not_contains "$CAPTURED_CMD" "/tmp/fake/sys-bootstrap"
 }
 
@@ -215,7 +229,8 @@ test_temp_full_mode_root_no_sudo() {
     CURRENT_EUID_STUB=0
     install_or_run >/dev/null
     assert_not_contains "$CAPTURED_CMD" "sudo"
-    assert_contains "$CAPTURED_CMD" "/tmp/sys-bootstrap.root.ABC123/sys-bootstrap"
+    assert_matches "$CAPTURED_CMD" '/tmp/sys-bootstrap\.root\.[[:alnum:]]{6}/sys-bootstrap' \
+        "root staging path must use a random temporary directory"
     assert_not_contains "$CAPTURED_CMD" "/tmp/fake/sys-bootstrap"
 }
 
