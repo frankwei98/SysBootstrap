@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -148,14 +149,86 @@ func dockerComposePluginInstalled() bool {
 
 func dockerRepoConfigured(sys *system.Context) bool {
 	keyPath, repoPath := dockerRepoPathsFn(sys)
-	if _, err := os.Stat(keyPath); err != nil {
-		return false
-	}
-	content, err := os.ReadFile(repoPath)
+	keyFile, keyInfo, err := system.OpenExistingFileNoFollow(keyPath)
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(content), "download.docker.com/linux/")
+	_ = keyFile.Close()
+	if keyInfo.Size() == 0 {
+		return false
+	}
+	repoOS, codename, err := dockerRepoInfo(sys)
+	if err != nil {
+		return false
+	}
+	repoArch, err := dockerRepoArch(sys)
+	if err != nil {
+		return false
+	}
+	repoFile, _, err := system.OpenExistingFileNoFollow(repoPath)
+	if err != nil {
+		return false
+	}
+	defer repoFile.Close()
+
+	scanner := bufio.NewScanner(repoFile)
+	for scanner.Scan() {
+		if matchesDockerRepoLine(scanner.Text(), keyPath, repoOS, codename, repoArch) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesDockerRepoLine(line, keyPath, repoOS, codename, repoArch string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return false
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 5 || fields[0] != "deb" || !strings.HasPrefix(fields[1], "[") {
+		return false
+	}
+
+	var options []string
+	i := 1
+	closed := false
+	for ; i < len(fields); i++ {
+		option := fields[i]
+		if i == 1 {
+			option = strings.TrimPrefix(option, "[")
+		}
+		if strings.HasSuffix(option, "]") {
+			option = strings.TrimSuffix(option, "]")
+			closed = true
+		}
+		if option != "" {
+			options = append(options, option)
+		}
+		if closed {
+			i++
+			break
+		}
+	}
+	if !closed || len(fields) != i+3 {
+		return false
+	}
+	if fields[i] != "https://download.docker.com/linux/"+repoOS || fields[i+1] != codename || fields[i+2] != "stable" {
+		return false
+	}
+
+	wanted := map[string]string{"arch": repoArch, "signed-by": keyPath}
+	seen := make(map[string]bool, len(wanted))
+	for _, option := range options {
+		key, value, ok := strings.Cut(option, "=")
+		if expected, required := wanted[key]; required {
+			if !ok || value != expected || seen[key] {
+				return false
+			}
+			seen[key] = true
+		}
+	}
+	return len(seen) == len(wanted)
 }
 
 func dockerServiceEnabled() bool {

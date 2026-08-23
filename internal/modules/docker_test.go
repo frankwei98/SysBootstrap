@@ -66,7 +66,7 @@ func TestDockerRepoConfiguredDetectsOfficialRepo(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte("key"), 0o644); err != nil {
 		t.Fatalf("write key: %v", err)
 	}
-	if err := os.WriteFile(repoPath, []byte("deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable\n"), 0o644); err != nil {
+	if err := os.WriteFile(repoPath, []byte("deb [arch=amd64 signed-by="+keyPath+"] https://download.docker.com/linux/debian bookworm stable\n"), 0o644); err != nil {
 		t.Fatalf("write repo: %v", err)
 	}
 
@@ -74,8 +74,43 @@ func TestDockerRepoConfiguredDetectsOfficialRepo(t *testing.T) {
 	dockerRepoPathsFn = func(_ *system.Context) (string, string) { return keyPath, repoPath }
 	t.Cleanup(func() { dockerRepoPathsFn = origPaths })
 
-	if !dockerRepoConfigured(&system.Context{}) {
+	if !dockerRepoConfigured(&system.Context{OSID: "debian", OSCodename: "bookworm", Arch: "linux/amd64"}) {
 		t.Fatal("expected Docker repo to be detected as configured")
+	}
+}
+
+func TestDockerRepoConfiguredRejectsInactiveOrMismatchedEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "docker.asc")
+	repoPath := filepath.Join(tmpDir, "docker.list")
+	origPaths := dockerRepoPathsFn
+	dockerRepoPathsFn = func(_ *system.Context) (string, string) { return keyPath, repoPath }
+	t.Cleanup(func() { dockerRepoPathsFn = origPaths })
+	sys := &system.Context{OSID: "debian", OSCodename: "bookworm", Arch: "linux/amd64"}
+
+	tests := []struct {
+		name string
+		key  string
+		repo string
+	}{
+		{name: "empty key", repo: "deb [arch=amd64 signed-by=" + keyPath + "] https://download.docker.com/linux/debian bookworm stable\n"},
+		{name: "commented source", key: "key", repo: "# deb [arch=amd64 signed-by=" + keyPath + "] https://download.docker.com/linux/debian bookworm stable\n"},
+		{name: "wrong distribution", key: "key", repo: "deb [arch=amd64 signed-by=" + keyPath + "] https://download.docker.com/linux/ubuntu bookworm stable\n"},
+		{name: "wrong codename", key: "key", repo: "deb [arch=amd64 signed-by=" + keyPath + "] https://download.docker.com/linux/debian trixie stable\n"},
+		{name: "wrong key path", key: "key", repo: "deb [arch=amd64 signed-by=/tmp/other.asc] https://download.docker.com/linux/debian bookworm stable\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.WriteFile(keyPath, []byte(tt.key), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(repoPath, []byte(tt.repo), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if dockerRepoConfigured(sys) {
+				t.Fatalf("dockerRepoConfigured() = true for %s", tt.name)
+			}
+		})
 	}
 }
 
