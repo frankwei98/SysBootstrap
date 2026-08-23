@@ -39,7 +39,9 @@ func TestMergeFile_ValidConfig(t *testing.T) {
 	os.WriteFile(path, []byte("lang=zh-CN\napt_mirror=cernet\n"), 0o644)
 
 	s := Settings{}
-	mergeFile(&s, path)
+	if err := mergeFile(&s, path); err != nil {
+		t.Fatalf("mergeFile failed: %v", err)
+	}
 	if s.Lang != "zh-CN" {
 		t.Errorf("Lang = %q, want zh-CN", s.Lang)
 	}
@@ -54,7 +56,9 @@ func TestMergeFile_IgnoresCommentsAndBlanks(t *testing.T) {
 	os.WriteFile(path, []byte("# comment\n\nlang=en\n\n"), 0o644)
 
 	s := Settings{Lang: "zh-CN"}
-	mergeFile(&s, path)
+	if err := mergeFile(&s, path); err != nil {
+		t.Fatalf("mergeFile failed: %v", err)
+	}
 	if s.Lang != "en" {
 		t.Errorf("Lang = %q, want en (should override)", s.Lang)
 	}
@@ -66,7 +70,9 @@ func TestMergeFile_IgnoresInvalidValues(t *testing.T) {
 	os.WriteFile(path, []byte("lang=invalid\napt_mirror=bad\n"), 0o644)
 
 	s := Settings{Lang: "zh-CN", AptMirror: "cernet"}
-	mergeFile(&s, path)
+	if err := mergeFile(&s, path); err != nil {
+		t.Fatalf("mergeFile failed: %v", err)
+	}
 	if s.Lang != "zh-CN" {
 		t.Errorf("Lang = %q, want zh-CN (invalid should be ignored)", s.Lang)
 	}
@@ -77,7 +83,9 @@ func TestMergeFile_IgnoresInvalidValues(t *testing.T) {
 
 func TestMergeFile_MissingFile(t *testing.T) {
 	s := Settings{Lang: "zh-CN"}
-	mergeFile(&s, "/nonexistent/path/config.env")
+	if err := mergeFile(&s, "/nonexistent/path/config.env"); err != nil {
+		t.Fatalf("missing config should be ignored: %v", err)
+	}
 	if s.Lang != "zh-CN" {
 		t.Errorf("Lang = %q, want zh-CN (missing file should be no-op)", s.Lang)
 	}
@@ -91,8 +99,12 @@ func TestMergeFile_UserOverridesSystem(t *testing.T) {
 	os.WriteFile(usrPath, []byte("lang=en\n"), 0o644)
 
 	s := Settings{}
-	mergeFile(&s, sysPath)
-	mergeFile(&s, usrPath)
+	if err := mergeFile(&s, sysPath); err != nil {
+		t.Fatalf("merge system file: %v", err)
+	}
+	if err := mergeFile(&s, usrPath); err != nil {
+		t.Fatalf("merge user file: %v", err)
+	}
 	if s.Lang != "en" {
 		t.Errorf("Lang = %q, want en (user should override system)", s.Lang)
 	}
@@ -264,7 +276,10 @@ func TestLoad_MergesSystemAndUser(t *testing.T) {
 		UserConfigPath = origUser
 	}()
 
-	s := Load()
+	s, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
 	if s.Lang != "en" {
 		t.Errorf("Lang = %q, want en (user overrides system)", s.Lang)
 	}
@@ -287,7 +302,10 @@ func TestLoad_OnlySystem(t *testing.T) {
 		UserConfigPath = origUser
 	}()
 
-	s := Load()
+	s, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
 	if s.Lang != "zh-CN" {
 		t.Errorf("Lang = %q, want zh-CN", s.Lang)
 	}
@@ -308,11 +326,34 @@ func TestLoad_EmptyWhenNoFiles(t *testing.T) {
 		UserConfigPath = origUser
 	}()
 
-	s := Load()
+	s, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
 	if s.Lang != "" {
 		t.Errorf("Lang = %q, want empty", s.Lang)
 	}
 	if s.AptMirror != "" {
 		t.Errorf("AptMirror = %q, want empty", s.AptMirror)
+	}
+}
+
+func TestLoad_ReportsScannerErrors(t *testing.T) {
+	dir := t.TempDir()
+	sysPath := filepath.Join(dir, "system.env")
+	if err := os.WriteFile(sysPath, []byte("lang="+strings.Repeat("x", 70*1024)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origSys := SystemConfigPath
+	origUser := UserConfigPath
+	SystemConfigPath = sysPath
+	UserConfigPath = func() string { return filepath.Join(dir, "missing-user.env") }
+	t.Cleanup(func() {
+		SystemConfigPath = origSys
+		UserConfigPath = origUser
+	})
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected oversized config line to produce a load error")
 	}
 }

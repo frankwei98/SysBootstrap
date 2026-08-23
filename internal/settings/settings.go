@@ -105,11 +105,15 @@ type Settings struct {
 
 // Load reads system then user config files and merges them.
 // User config overrides system config for each key.
-func Load() Settings {
+func Load() (Settings, error) {
 	s := Settings{}
-	mergeFile(&s, SystemConfigPath)
-	mergeFile(&s, UserConfigPath())
-	return s
+	if err := mergeFile(&s, SystemConfigPath); err != nil {
+		return Settings{}, fmt.Errorf("load system settings: %w", err)
+	}
+	if err := mergeFile(&s, UserConfigPath()); err != nil {
+		return Settings{}, fmt.Errorf("load user settings: %w", err)
+	}
+	return s, nil
 }
 
 // SaveUser writes settings to the user config file.
@@ -178,13 +182,16 @@ func SaveSystem(s Settings) error {
 }
 
 // mergeFile reads a config file and overlays non-empty values onto s.
-func mergeFile(s *Settings, path string) {
+func mergeFile(s *Settings, path string) error {
 	if path == "" {
-		return
+		return nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 
@@ -209,6 +216,10 @@ func mergeFile(s *Settings, path string) {
 			}
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	return nil
 }
 
 // parseLine splits "key=value" and returns (key, value, true) or ("", "", false).
