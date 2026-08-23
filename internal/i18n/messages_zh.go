@@ -49,6 +49,7 @@ var zhCNMessages = map[string]string{
 	"runner_failed":                       "%s 失败：%v",
 	"runner_failed_continue":              "%s 失败：%v；继续执行不依赖它的模块",
 	"runner_skipping_failed_dependencies": "%s 已跳过，因为所需模块失败：%v",
+	"runner_completed_with_warnings":      "运行完成，但有模块警告：%v",
 	"runner_all_done":                     "全部完成！",
 	"runner_cancelled":                    "执行已取消",
 
